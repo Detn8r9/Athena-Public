@@ -25,6 +25,38 @@ const ZIM_ARTICLE_LIMIT: usize = 150_000;
 const ZIM_ARTICLE_TEXT_MAX: usize = 60_000;
 const SCANNED_PDF_MIN_TEXT_LEN: usize = 80;
 
+/// Hard cap on stored indexed text per file (UTF-8 bytes). Truncated with a log line when exceeded.
+pub const MAX_INDEXED_TEXT_BYTES: usize = 1_000_000;
+
+fn truncate_utf8_to_max_bytes(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+/// Applies [`MAX_INDEXED_TEXT_BYTES`] after extraction so chunking never sees pathological strings.
+fn limit_text_for_index(path: &Path, text: String) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if t.len() <= MAX_INDEXED_TEXT_BYTES {
+        return Some(t.to_string());
+    }
+    eprintln!(
+        "[indexer] Truncating indexed text to {} bytes for {} (original {} bytes)",
+        MAX_INDEXED_TEXT_BYTES,
+        path.display(),
+        t.len()
+    );
+    Some(truncate_utf8_to_max_bytes(t, MAX_INDEXED_TEXT_BYTES))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
     Text,
@@ -137,21 +169,20 @@ pub fn index_file(path: &std::path::Path) -> Option<IndexedFileData> {
             } else {
                 std::fs::read_to_string(path).ok()
             };
-            let content = text.filter(|s| s.len() <= 2_000_000).map(|s| s.to_string());
+            let content = text.map(|s| s.to_string());
             (content, None)
         }
         FileKind::Pdf => {
             let text = pdf_extract::extract_text(path).ok();
             let content = match &text {
                 Some(t) if t.trim().len() >= SCANNED_PDF_MIN_TEXT_LEN => {
-                    text.filter(|s| s.len() <= 2_000_000).map(|s| s.to_string())
+                    text.map(|s| s.to_string())
                 }
                 _ => {
                     crate::ocr::extract_text_from_scanned_pdf(path)
-                        .or(text.filter(|s| !s.trim().is_empty()).map(|s| s.to_string()))
+                        .or_else(|| text.filter(|s| !s.trim().is_empty()).map(|s| s.to_string()))
                 }
             };
-            let content = content.filter(|s| s.len() <= 2_000_000);
             (content, None)
         }
         FileKind::Image => {
@@ -165,39 +196,41 @@ pub fn index_file(path: &std::path::Path) -> Option<IndexedFileData> {
         }
         FileKind::Video => (None, Some("{}".to_string())),
         FileKind::Pages => {
-            let content = extract_text_from_pages(path).filter(|s| s.len() <= 2_000_000);
+            let content = extract_text_from_pages(path);
             (content, None)
         }
         FileKind::Odt => {
-            let content = extract_text_from_odt(path).filter(|s| s.len() <= 2_000_000);
+            let content = extract_text_from_odt(path);
             (content, None)
         }
         FileKind::Docx => {
-            let content = extract_text_from_docx(path).filter(|s| s.len() <= 2_000_000);
+            let content = extract_text_from_docx(path);
             (content, None)
         }
         FileKind::Epub => {
-            let content = extract_text_from_epub(path).filter(|s| s.len() <= 2_000_000);
+            let content = extract_text_from_epub(path);
             (content, None)
         }
         FileKind::Pptx => {
-            let content = extract_text_from_pptx(path).filter(|s| s.len() <= 2_000_000);
+            let content = extract_text_from_pptx(path);
             (content, None)
         }
         FileKind::Xlsx => {
-            let content = extract_text_from_xlsx(path).filter(|s| s.len() <= 2_000_000);
+            let content = extract_text_from_xlsx(path);
             (content, None)
         }
         FileKind::Rtf => {
-            let content = extract_text_from_rtf(path).filter(|s| s.len() <= 2_000_000);
+            let content = extract_text_from_rtf(path);
             (content, None)
         }
         FileKind::Numbers | FileKind::Key => {
-            let content = extract_text_from_apple_archive(path).filter(|s| s.len() <= 2_000_000);
+            let content = extract_text_from_apple_archive(path);
             (content, None)
         }
         FileKind::Zim | FileKind::Unsupported => (None, None),
     };
+
+    let text_content = text_content.and_then(|t| limit_text_for_index(path, t));
 
     let file_type = match kind {
         FileKind::Text | FileKind::Pdf | FileKind::Pages | FileKind::Odt | FileKind::Docx
@@ -246,7 +279,7 @@ fn extract_text_from_pages(path: &Path) -> Option<String> {
             if entry.read_to_end(&mut buf).is_err() {
                 continue;
             }
-            if buf.len() > 2_000_000 {
+            if buf.len() > 5_000_000 {
                 continue;
             }
             if best.as_ref().map_or(0, |(_, b)| b.len()) < buf.len() {
@@ -362,7 +395,7 @@ fn extract_text_from_epub(path: &Path) -> Option<String> {
         let name = entry.name().to_string();
         if name.ends_with(".xhtml") || name.ends_with(".html") {
             let mut buf = Vec::new();
-            if entry.read_to_end(&mut buf).is_ok() && buf.len() < 2_000_000 {
+            if entry.read_to_end(&mut buf).is_ok() && buf.len() < 5_000_000 {
                 texts.push(strip_html(&String::from_utf8_lossy(&buf)));
             }
         }
@@ -630,4 +663,22 @@ pub fn index_zim_file(path: &std::path::Path) -> Vec<IndexedFileData> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{limit_text_for_index, MAX_INDEXED_TEXT_BYTES};
+    use std::path::Path;
+
+    /// Phase 3: `limit_text_for_index` caps extracted text at exactly [`MAX_INDEXED_TEXT_BYTES`] UTF-8 bytes.
+    #[test]
+    fn extracted_text_truncates_to_one_million_bytes() {
+        let path = Path::new("mock_extract.txt");
+        let two_million_chars = "x".repeat(2_000_000);
+        assert_eq!(two_million_chars.len(), 2_000_000);
+
+        let limited = limit_text_for_index(path, two_million_chars).expect("non-empty after cap");
+        assert_eq!(limited.len(), MAX_INDEXED_TEXT_BYTES);
+        assert_eq!(MAX_INDEXED_TEXT_BYTES, 1_000_000);
+    }
 }

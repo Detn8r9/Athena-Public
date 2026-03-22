@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+/// <reference types="@testing-library/jest-dom/vitest" />
 
 /** Web Speech API (not in all lib.dom versions) */
 interface SpeechRecognitionResult {

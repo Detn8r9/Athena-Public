@@ -89,6 +89,13 @@ impl Database {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode=WAL;
+            PRAGMA busy_timeout=5000;
+            ",
+        )
+        .map_err(|e| e.to_string())?;
         let db = Database {
             conn: Mutex::new(conn),
         };
@@ -480,14 +487,23 @@ impl Database {
                 embeddings::EMBEDDING_DIM
             ));
         }
+        // Never load the entire `chunk_embeddings` table: score a bounded candidate set, then take top_k.
+        let min_candidates: usize = 2_000;
+        let per_topk: usize = 500;
+        let max_candidates: usize = 25_000;
+        let candidate_limit = top_k
+            .saturating_mul(per_topk)
+            .max(min_candidates)
+            .min(max_candidates);
+
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, file_path, chunk_index, chunk_text, vector FROM chunk_embeddings",
+                "SELECT id, file_path, chunk_index, chunk_text, vector FROM chunk_embeddings ORDER BY id LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params![candidate_limit as i64], |row| {
                 let id: i64 = row.get(0)?;
                 let file_path: String = row.get(1)?;
                 let chunk_index: i64 = row.get(2)?;
@@ -522,5 +538,48 @@ impl Database {
             .take(top_k)
             .map(|(_, c)| c)
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+    use crate::embeddings::EMBEDDING_DIM;
+    use tempfile::tempdir;
+
+    /// Phase 3: With 50k rows, `search_similar_chunks` uses `ORDER BY id LIMIT` bounded by 25_000
+    /// before cosine scoring. The perfect-match row at id 25_001 must not appear in results when
+    /// `top_k=50` (candidate_limit = 50 × 500 = 25_000).
+    #[test]
+    fn semantic_search_limits_candidate_fetch_to_25000_before_cosine() {
+        let dir = tempdir().expect("temp dir");
+        let db_path = dir.path().join("semantic_stress.db");
+        let db = Database::new(&db_path).expect("open db");
+
+        let mut query = vec![0.0f32; EMBEDDING_DIM];
+        query[0] = 1.0;
+
+        let mut orthogonal = vec![0.0f32; EMBEDDING_DIM];
+        orthogonal[1] = 1.0;
+
+        for i in 1..=50_000 {
+            let file_path = format!("stress/{i}.txt");
+            let vec = if i == 25_001 {
+                query.clone()
+            } else {
+                orthogonal.clone()
+            };
+            db.upsert_chunk_embedding(&file_path, 0, "chunk", &vec)
+                .unwrap_or_else(|e| panic!("upsert {i}: {e}"));
+        }
+
+        let results = db
+            .search_similar_chunks(&query, 50)
+            .expect("search_similar_chunks");
+        assert_eq!(results.len(), 50);
+        assert!(
+            !results.iter().any(|c| c.id == 25_001),
+            "id 25_001 has cosine 1.0 with the query but must be outside the 25_000-row candidate window"
+        );
     }
 }

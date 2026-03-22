@@ -5,6 +5,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use crate::db::Database;
@@ -19,6 +20,25 @@ pub enum WatchCommand {
 }
 
 const DEBOUNCE_MS: u64 = 600;
+/// Process at most this many file paths before yielding so the OS can schedule other work.
+const WATCHER_BATCH_SIZE: usize = 10;
+
+fn flush_pending_events_map(
+    pending_events: &mut HashMap<PathBuf, EventKind>,
+    db: &Database,
+    app_data_dir: &std::path::Path,
+    app: &tauri::AppHandle,
+) {
+    let keys: Vec<PathBuf> = pending_events.keys().cloned().collect();
+    for chunk in keys.chunks(WATCHER_BATCH_SIZE) {
+        for path in chunk {
+            if let Some(kind) = pending_events.remove(path) {
+                process_event_path(db, path, &kind, app_data_dir, app);
+            }
+        }
+        thread::yield_now();
+    }
+}
 
 fn emit_quarantine(app: &tauri::AppHandle, path: &str, reason: &str, quarantine_path: &str) {
     let _ = app.emit(
@@ -139,6 +159,7 @@ fn initial_scan(
     if !root_path.is_dir() {
         return;
     }
+    let mut paths: Vec<PathBuf> = Vec::new();
     for entry in walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -146,8 +167,14 @@ fn initial_scan(
     {
         let path = entry.path().to_path_buf();
         if path.is_file() {
-            try_process_file(db, &path, app_data_dir, app);
+            paths.push(path);
         }
+    }
+    for chunk in paths.chunks(WATCHER_BATCH_SIZE) {
+        for path in chunk {
+            try_process_file(db, path, app_data_dir, app);
+        }
+        thread::yield_now();
     }
 }
 
@@ -252,9 +279,7 @@ pub fn run_watcher_loop(
             if let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     WatchCommand::SetFolders(folders) => {
-                        for (path, kind) in pending_events.drain() {
-                            process_event_path(db.as_ref(), &path, &kind, &app_data_dir, &app);
-                        }
+                        flush_pending_events_map(&mut pending_events, db.as_ref(), &app_data_dir, &app);
                         pending_folders = Some(folders);
                         _watcher_guard = None;
                         event_rx = None;
@@ -272,14 +297,10 @@ pub fn run_watcher_loop(
                 }
                 Ok(Err(_)) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    for (path, kind) in pending_events.drain() {
-                        process_event_path(db.as_ref(), &path, &kind, &app_data_dir, &app);
-                    }
+                    flush_pending_events_map(&mut pending_events, db.as_ref(), &app_data_dir, &app);
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    for (path, kind) in pending_events.drain() {
-                        process_event_path(db.as_ref(), &path, &kind, &app_data_dir, &app);
-                    }
+                    flush_pending_events_map(&mut pending_events, db.as_ref(), &app_data_dir, &app);
                     event_rx = None;
                     current_folders.clear();
                 }

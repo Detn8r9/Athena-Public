@@ -1,8 +1,56 @@
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::SyncSender;
+use std::time::{Duration, Instant};
 
-const OLLAMA_HOST: &str = "http://127.0.0.1:11434";
+/// Default Ollama base URL (override with `ATHENA_OLLAMA_BASE_URL` for integration tests).
+const OLLAMA_HOST_DEFAULT: &str = "http://127.0.0.1:11434";
+
+fn ollama_base_url() -> String {
+    std::env::var("ATHENA_OLLAMA_BASE_URL").unwrap_or_else(|_| OLLAMA_HOST_DEFAULT.to_string())
+}
+
+/// Upper bound for a single non-streaming `/api/chat` call (initial response).
+const OLLAMA_CHAT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Time allowed for `/api/tags` and availability probes.
+const OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Idle timeout between chunks on the streaming HTTP body (no bytes received).
+const OLLAMA_STREAM_READ_IDLE: Duration = Duration::from_secs(30);
+/// Wall-clock cap for the entire streaming response (first byte to completion).
+const OLLAMA_STREAM_MAX_DURATION: Duration = Duration::from_secs(120);
+
+fn ollama_stream_read_idle() -> Duration {
+    std::env::var("ATHENA_OLLAMA_STREAM_IDLE_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(OLLAMA_STREAM_READ_IDLE)
+}
+
+fn ollama_stream_max_duration() -> Duration {
+    std::env::var("ATHENA_OLLAMA_STREAM_MAX_DURATION_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(OLLAMA_STREAM_MAX_DURATION)
+}
+
+fn blocking_client_chat() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(60))
+        .timeout(OLLAMA_CHAT_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn blocking_client_probe() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(OLLAMA_PROBE_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemSpecs {
@@ -144,9 +192,10 @@ fn tier_for_size(size: u32) -> &'static str {
 }
 
 pub fn get_available_models() -> Result<Vec<ModelInfo>, String> {
-    let url = format!("{}/api/tags", OLLAMA_HOST);
-    let resp = ureq::get(&url).call().map_err(|e| e.to_string())?;
-    let body: TagsResponse = resp.into_json().map_err(|e| e.to_string())?;
+    let url = format!("{}/api/tags", ollama_base_url());
+    let client = blocking_client_probe()?;
+    let resp = client.get(&url).send().map_err(|e| e.to_string())?;
+    let body: TagsResponse = resp.json().map_err(|e| e.to_string())?;
     let models = body.models.unwrap_or_default();
     let mut out: Vec<ModelInfo> = models
         .into_iter()
@@ -165,9 +214,11 @@ pub fn get_available_models() -> Result<Vec<ModelInfo>, String> {
 }
 
 pub fn is_ollama_running() -> bool {
-    ureq::get(&format!("{}/api/tags", OLLAMA_HOST))
-        .call()
-        .is_ok()
+    let url = format!("{}/api/tags", ollama_base_url());
+    if let Ok(client) = blocking_client_probe() {
+        return client.get(&url).send().is_ok();
+    }
+    false
 }
 
 fn ollama_binary_paths() -> Vec<&'static str> {
@@ -244,17 +295,139 @@ pub fn select_model_for_tier(available: &[ModelInfo], tier: &str) -> Option<Stri
 }
 
 pub fn chat(model: &str, messages: Vec<ChatMessage>) -> Result<String, String> {
-    let url = format!("{}/api/chat", OLLAMA_HOST);
+    let client = blocking_client_chat()?;
+    let url = format!("{}/api/chat", ollama_base_url());
     let body = OllamaChatRequest {
         model: model.to_string(),
         messages,
         stream: false,
     };
-    let resp = ureq::post(&url)
-        .send_json(serde_json::to_value(body).map_err(|e| e.to_string())?)
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .map_err(|e| e.to_string())?
+        .error_for_status()
         .map_err(|e| e.to_string())?;
-    let parsed: OllamaChatResponse = resp.into_json().map_err(|e| e.to_string())?;
+    let parsed: OllamaChatResponse = resp.json().map_err(|e| e.to_string())?;
     Ok(parsed.message.map(|m| m.content).unwrap_or_default())
+}
+
+async fn ollama_stream_read_lines(
+    model: String,
+    messages: Vec<ChatMessage>,
+    tx: SyncSender<Result<Option<String>, String>>,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let body = OllamaChatRequest {
+        model,
+        messages,
+        stream: true,
+    };
+
+    let response = client
+        .post(format!("{}/api/chat", ollama_base_url()))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+
+    let mut stream = response.bytes_stream();
+    let mut buf = String::new();
+    let stream_start = Instant::now();
+    let mut saw_done = false;
+
+    loop {
+        if stream_start.elapsed() > ollama_stream_max_duration() {
+            return Err("Ollama stream exceeded maximum duration (120s).".to_string());
+        }
+
+        let next = tokio::time::timeout(ollama_stream_read_idle(), stream.next()).await;
+        let stream_item = match next {
+            Err(_) => {
+                return Err("Ollama stream stalled: no data for 30 seconds.".to_string());
+            }
+            Ok(item) => item,
+        };
+
+        match stream_item {
+            None => {
+                if saw_done {
+                    break;
+                }
+                return Err("Ollama stream ended unexpectedly (connection closed).".to_string());
+            }
+            Some(Err(e)) => {
+                return Err(e.to_string());
+            }
+            Some(Ok(bytes)) => {
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..pos + 1);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Ok(chunk) = serde_json::from_str::<OllamaStreamChunk>(&line) {
+                        if let Some(ref msg) = chunk.message {
+                            if let Some(ref content) = msg.content {
+                                if !content.is_empty() {
+                                    tx.send(Ok(Some(content.clone()))).map_err(|_| {
+                                        "Stream channel closed.".to_string()
+                                    })?;
+                                }
+                            }
+                        }
+                        if chunk.done == Some(true) {
+                            saw_done = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if saw_done {
+            break;
+        }
+    }
+
+    if !buf.trim().is_empty() {
+        for rest in buf.lines() {
+            let line = rest.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(chunk) = serde_json::from_str::<OllamaStreamChunk>(line) {
+                if let Some(ref msg) = chunk.message {
+                    if let Some(ref content) = msg.content {
+                        if !content.is_empty() {
+                            tx.send(Ok(Some(content.clone())))
+                                .map_err(|_| "Stream channel closed.".to_string())?;
+                        }
+                    }
+                }
+                if chunk.done == Some(true) {
+                    saw_done = true;
+                }
+            }
+        }
+    }
+
+    if !saw_done {
+        return Err("Ollama stream ended without completion marker (done: true).".to_string());
+    }
+
+    tx.send(Ok(None))
+        .map_err(|_| "Stream channel closed.".to_string())?;
+    Ok(())
 }
 
 pub fn chat_stream<F, G>(model: &str, messages: Vec<ChatMessage>, on_chunk: &mut F, on_done: G) -> Result<(), String>
@@ -262,33 +435,40 @@ where
     F: FnMut(&str),
     G: FnOnce(),
 {
-    let url = format!("{}/api/chat", OLLAMA_HOST);
-    let body = OllamaChatRequest {
-        model: model.to_string(),
-        messages,
-        stream: true,
-    };
-    let resp = ureq::post(&url)
-        .send_json(serde_json::to_value(body).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let reader = BufReader::new(resp.into_reader());
-    for line in reader.lines() {
-        let line = line.map_err(|e| e.to_string())?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(chunk) = serde_json::from_str::<OllamaStreamChunk>(line) {
-            if let Some(ref msg) = chunk.message {
-                if let Some(ref content) = msg.content {
-                    on_chunk(content);
-                }
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Option<String>, String>>(64);
+    let model = model.to_string();
+    let handle = std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = tx.send(Err(e.to_string()));
+                return;
             }
-            if chunk.done == Some(true) {
-                break;
+        };
+        let result = rt.block_on(ollama_stream_read_lines(model, messages, tx.clone()));
+        if let Err(e) = result {
+            let _ = tx.send(Err(e));
+        }
+    });
+
+    loop {
+        match rx.recv() {
+            Ok(Ok(Some(s))) => on_chunk(&s),
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => {
+                let _ = handle.join();
+                return Err(e);
+            }
+            Err(_) => {
+                let _ = handle.join();
+                return Err("Ollama stream channel closed unexpectedly.".to_string());
             }
         }
     }
+    let _ = handle.join();
     on_done();
     Ok(())
 }

@@ -11,6 +11,7 @@ mod athena_map_protocol;
 mod athena_mbtiles_tile_protocol;
 mod map_manager_catalog;
 mod map_manager_download;
+mod pmtiles_region_extract;
 mod mbtiles_io;
 mod pmtiles_io;
 mod tile_pack;
@@ -27,6 +28,10 @@ mod watcher;
 #[cfg(feature = "piper-tts")]
 mod tts;
 
+/// Re-exported for integration tests (`tests/`) and external callers embedding `athena_lib`.
+pub use db::Database;
+pub use ollama::{chat_stream, ChatMessage};
+
 use crossbeam_channel::Sender;
 use std::collections::HashSet;
 use std::io::Write;
@@ -34,14 +39,14 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 use config::{load_config, save_config, AppConfig, CustomTheme};
-use db::{extract_keywords, ChunkEmbedding, Database, IndexedFile, IndexStats, RagCounts};
+use db::{extract_keywords, ChunkEmbedding, IndexedFile, IndexStats, RagCounts};
 use chats::{get_chat as get_saved_chat, list_chats as list_saved_chats, save_chat as save_saved_chat, update_chat_context_summary as update_saved_chat_context_summary, update_chat_metadata as update_saved_chat_metadata, delete_chat as delete_saved_chat, ChatSummary, SavedChat, SavedMessage};
 use kiwix::{scan_kiwix_zim_files as kiwix_scan_zim_files, DiscoveredZim};
 use ollama::{
     get_system_specs as get_specs, get_available_models, is_ollama_running, max_memory_messages_for_ram,
-    select_model_for_tier, try_launch_ollama_server, chat, chat_stream,
+    select_model_for_tier, try_launch_ollama_server, chat,
     generate_chat_title as ollama_generate_chat_title, generate_chat_description as ollama_generate_chat_description,
-    ChatMessage, ModelInfo, SystemSpecs,
+    ModelInfo, SystemSpecs,
 };
 use watcher::{run_watcher_loop, WatchCommand};
 use learner::build_learned_notes_for_all_text;
@@ -2014,6 +2019,7 @@ pub fn run() {
     let builder = athena_mbtiles_tile_protocol::register_with_builder(athena_map_protocol::register_with_builder(
         tauri::Builder::default(),
     ))
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init());
     #[cfg(target_os = "macos")]
@@ -2025,6 +2031,8 @@ pub fn run() {
             }
             let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+            let _ = map_manager_download::ensure_offline_maps_directory(&app_data_dir);
+            let _ = map_manager_download::cleanup_stale_part_files(&app_data_dir);
             let mesh_control =
                 mesh_listener::spawn_mesh_radio_listener(app.handle().clone(), app_data_dir.clone());
             app.manage(mesh_control);
@@ -2107,6 +2115,7 @@ pub fn run() {
             get_map_catalog,
             get_offline_map_manager_catalog,
             list_downloaded_offline_map_ids,
+            pmtiles_region_extract::extract_pmtiles_region,
             download_offline_map,
             get_downloaded_maps,
             check_network_reachable,

@@ -45,6 +45,9 @@ target/
 # --- Tauri generated ---
 **/gen/schemas/
 
+# Large Protomaps CLI binaries (provision locally; do not commit)
+athena/src-tauri/bin/
+
 # --- Tests & coverage ---
 coverage/
 .nyc_output/

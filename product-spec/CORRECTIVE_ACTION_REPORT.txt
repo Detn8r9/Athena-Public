@@ -1,0 +1,209 @@
+================================================================================
+CORRECTIVE ACTION REPORT — ATHENA (STATIC / THEORETICAL STRESS ANALYSIS)
+================================================================================
+
+Reference: INTENDED_CAPABILITIES.txt (bracketed items treated as the intended bar).
+Method: Read-path review of Rust (athena/src-tauri/src/) and React (athena/src/),
+focused on offline stress, large data, unstable USB, and Ollama failure modes.
+
+Generated as a theoretical QA / architecture review. No code changes were made
+as part of producing this document.
+
+
+================================================================================
+1. OFFLINE RAG & SQLITE (THE LIBRARY)
+================================================================================
+
+IDENTIFIED VULNERABILITIES
+--------------------------
+
+1) Semantic search scales linearly with corpus size (critical)
+   Database::search_similar_chunks loads every row from chunk_embeddings,
+   materializes full vectors and text, then sorts by cosine similarity in memory
+   (full table scan, no LIMIT at SQL level). Effect: with a massive Library, each
+   chat query can allocate huge RAM and CPU proportional to total chunks, not
+   top_k — OOM or multi-second stalls on limited RAM.
+
+2) SQLite concurrency model
+   Single Mutex<Connection>; no PRAGMA journal_mode=WAL in codebase. A second
+   connection opens in send_message_stream on the same file. Under concurrent
+   watcher writes, vector rebuild, and chat retrieval: risk of database is locked,
+   long waits, or writer starvation — especially during long full-table semantic
+   scans.
+
+3) File watcher: burst ingest without backpressure
+   watcher.rs debounces then drains pending_events and processes each path
+   sequentially — no bounded work queue, no concurrency cap, no indexing backlog
+   semantics. Hundreds of large PDFs → hundreds of full-file extracts + vector
+   passes on one thread; RAM spikes and long backend stalls.
+
+4) initial_scan blocks the watcher thread
+   On folder change, initial_scan walks the entire tree before returning to the
+   event loop — massive folders delay further commands/events.
+
+5) Rebuild vs chat (locking)
+   rebuild_vector_index walks all files while doing DB-heavy work; combines with
+   chat full-table search and watcher upserts → lock contention under stress.
+
+6) RAG context size (partially mitigated)
+   build_context_rrf caps combined context (RRF_COMBINED_MAX_CHARS, RRF_TOP_N).
+   Context string is bounded, but retrieval still pays full-table semantic cost
+   before truncation.
+
+USABILITY BOTTLENECKS
+---------------------
+• No global “indexing in progress” / queue depth for watcher-driven work.
+• Rebuild emits athena:rebuild-progress; watcher indexing has no coarse progress.
+• No React error boundary in codebase — render errors can blank the UI.
+• list_library_contents is non-recursive; deep trees may confuse users vs actual
+  indexed content.
+
+CORRECTIVE ACTIONS
+------------------
+P0 — Replace full-scan vector retrieval with approximate NN (sqlite-v, vss, HNSW,
+     or external vector DB); never load all embeddings per query.
+P0 — Enable WAL mode, busy_timeout; consider dedicated writer vs readers.
+P1 — Bounded indexing queue, worker pool, backpressure; chunk or defer initial_scan.
+P1 — Cap per-file and total extracted text size for indexing.
+P2 — Surface indexing backlog/ETA in Library UI; recursive listing or clearer copy.
+P2 — React error boundaries around chat and map panels.
+
+
+================================================================================
+2. MAP MANAGER & CUSTOM PROTOCOLS (athena-map, athena-mbtiles, DOWNLOADS, PMTILES)
+================================================================================
+
+IDENTIFIED VULNERABILITIES
+--------------------------
+
+1) athena-map range requests
+   MAX_SINGLE_RANGE_BYTES = 64 MiB; each request allocates a buffer of that size.
+   Many parallel requests → thread spawn per protocol call + large transient RAM;
+   possible thread explosion under map zoom/pan.
+
+2) Full-file GET guard
+   Archives > MAX_FULL_RESPONSE_BYTES without Range return 403 — good for huge
+   PMTiles. Smaller files may still be fully loaded into memory in one allocation.
+
+3) athena-mbtiles
+   One tile per request; unbounded parallel requests still multiply threads and
+   I/O load.
+
+4) Map download (stream_download_to_file)
+   Uses .part files and rename on success; on error, .part removed in caller.
+   App kill mid-download leaves .part orphans. No overall read timeout on HTTP
+   body — only connect_timeout(60s); stalled transfers can hang indefinitely.
+
+5) PMTiles region extract (extract_pmtiles_region)
+   Bbox validated for numeric/earth limits but not maximum area — huge radius
+   can trigger continent-scale extract, massive output, long network/CPU.
+   Non-zero exit deletes output — good. App/process kill mid-write may leave
+   partial .pmtiles. Sidecar can emit very verbose progress events → IPC flood.
+
+USABILITY BOTTLENECKS
+---------------------
+• No user-visible idle timeout for stalled map downloads.
+• No “operation too large” guardrails on extract bbox area in UI/backend alignment.
+
+CORRECTIVE ACTIONS
+------------------
+P1 — Lower MAX_SINGLE_RANGE_BYTES for typical tiles or stream reads; avoid
+     unbounded thread spawn per request.
+P1 — Add request + idle read timeouts on map downloads; optional resume (Range).
+P1 — Max bbox area / max output size for extract_pmtiles_region; align UI radius
+     caps (geographicBoundingBox.ts has no max radius).
+P2 — Startup cleanup or Troubleshooting action for stale *.part files.
+P2 — Throttle pmtiles_region_extract_progress emissions to the UI.
+
+
+================================================================================
+3. MESHTASTIC & BACKGROUND THREADS
+================================================================================
+
+IDENTIFIED VULNERABILITIES
+--------------------------
+
+1) USB disconnect
+   Stream end → disconnect → reconnect loop; errors logged. Residual risk: panics
+   inside serial/meshtastic stack not ruled out by static review.
+
+2) Event flood to UI
+   Each decoded Primary broadcast emits athena:mesh-text — no rate limiting,
+   coalescing, or drop-oldest. High message rate can saturate IPC and webview.
+
+3) Mesh AI auto-reply
+   Semaphore(3) limits concurrent Ollama mesh jobs — good. Unbounded cmd channel
+   can still grow if outbound serial send lags.
+
+4) Unbounded command channel
+   UnboundedSender/UnboundedReceiver for mesh commands — memory growth under stress.
+
+USABILITY BOTTLENECKS
+---------------------
+• Mesh log may grow without virtualization — large DOM/React cost.
+• No “radio overloaded” or sampling mode.
+
+CORRECTIVE ACTIONS
+------------------
+P1 — Bound mesh command queue; backpressure when full.
+P1 — Rate-limit or batch athena:mesh-text (max N/sec or merge lines).
+P2 — Virtualize mesh log; cap retained lines.
+P2 — Metrics for reconnect storms and serial open failures.
+
+
+================================================================================
+4. OLLAMA & STREAMING
+================================================================================
+
+IDENTIFIED VULNERABILITIES
+--------------------------
+
+1) chat_stream has no read deadline (ollama.rs)
+   BufReader::lines() over HTTP body — if Ollama hangs mid-stream, loop can block
+   indefinitely. Connection drop without hang may surface as stream-error.
+
+2) on_done after line loop
+   Stream ending without JSON done:true may still call on_done — frontend may
+   treat as success with partial text.
+
+3) Separate DB in stream thread
+   Second Database on same file — interacts with locking/WAL issues in §1.
+
+USABILITY BOTTLENECKS
+---------------------
+• App.tsx: no inactivity watchdog — if backend never emits stream-done or
+  stream-error, setSending stays true forever.
+• Every chunk may trigger setMessages (full array copy) — high chunk rate stresses
+  React.
+
+CORRECTIVE ACTIONS
+------------------
+P0 — Overall stream timeout and/or idle timeout in chat_stream; emit error/timeout
+     event on expiry.
+P1 — HTTP client with explicit read timeouts for streaming.
+P1 — Frontend watchdog: reset sending state if stream stalls beyond N seconds.
+P2 — Batch/throttle assistant chunk updates (e.g. rAF or 50ms merge).
+P2 — Distinguish completed-with-truncation vs clean done if protocol allows.
+
+
+================================================================================
+MANIFEST CROSS-CHECK (BRACKETED ITEMS — STRESS RELEVANCE)
+================================================================================
+
+• Watcher / indexing / RAG / rebuild / quarantine: structure is present; scale
+  and concurrency are the main gaps vs harsh offline + huge library (see §1).
+
+• Custom protocols / map downloads / PMTiles extract: range caps and part files
+  exist; gaps are parallelism/RAM, stall timeouts, bbox/output limits, orphan
+  partials (see §2).
+
+• Meshtastic: implemented; UI/event flood and unbounded queues are stress gaps
+  (see §3).
+
+• Ollama streaming: implemented; hang and stuck sending state are critical gaps
+  (see §4).
+
+
+================================================================================
+END OF REPORT
+================================================================================

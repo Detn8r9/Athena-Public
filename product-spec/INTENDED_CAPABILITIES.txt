@@ -1,0 +1,507 @@
+================================================================================
+ATHENA — INTENDED CAPABILITIES & PRODUCT OVERVIEW
+================================================================================
+
+Purpose of this document
+------------------------
+This file is written for two audiences:
+
+  (1) New readers who have never heard of Athena — they should finish with a
+      clear picture of what the app is for, how it behaves, and what features
+      exist (and how they connect).
+
+  (2) Testers and maintainers — the bracketed items [ ] are intended capability
+      checks for QA and regression planning. They describe what the product is
+      designed to do, not a guarantee of bug-free behavior.
+
+Stack (one line): desktop app built with Tauri 2 + Rust backend + React/TypeScript
+UI; local AI via Ollama; SQLite index on disk; optional USB Meshtastic radio.
+
+
+================================================================================
+PART 1 — WHAT ATHENA IS (FOR SOMEONE NEW TO THE PROJECT)
+================================================================================
+
+1.1 Elevator pitch
+-----------------
+Athena is a **local-first, offline-capable desktop assistant** aimed at
+**practical field knowledge**: survival, repair, first aid, and similar topics.
+It runs on your computer as a normal desktop window (not a website in a browser).
+
+The assistant does **not** require a paid cloud AI API. Chat intelligence comes
+from **Ollama**, which runs large language models **on your machine**. Your
+documents and indexes stay on your device.
+
+A defining idea is **RAG (retrieval-augmented generation)**: you point Athena at
+a **Library folder** of files. The app indexes them (keyword + semantic search)
+and pulls relevant excerpts into the model’s context so answers can be grounded
+in *your* manuals, notes, and offline encyclopedias—not only the model’s
+general training.
+
+1.2 Problems it tries to solve
+------------------------------
+  • **Privacy & control** — Prefer local AI and local storage over sending
+    sensitive chats or personal documents to the cloud.
+
+  • **Offline & field use** — Work with downloaded maps, offline Wikipedia-style
+    archives (Kiwix), and cached tiles when network is poor or absent.
+
+  • **Grounded answers** — Tie answers to files you trust (PDFs, ZIM articles,
+    notes) via indexing and citations (when enabled).
+
+  • **Comms in the field (optional)** — Optional **Meshtastic** USB radio support
+    for LoRa mesh text; optional **AI auto-reply** to inbound mesh messages when
+    Ollama is running.
+
+1.3 What Athena is NOT (honest boundaries)
+------------------------------------------
+  • Not a replacement for **911 / emergency services** or professional medical
+    care. In-app **emergency triage** content is **educational**.
+
+  • Not guaranteed “always correct”: RAG quality depends on your Library content,
+    chunking, and model behavior.
+
+  • **Meshtastic**: typically one USB radio per app instance; no built-in
+    multi-device “Athena cloud sync” for mesh—each install is largely standalone.
+
+  • Default path uses **local Ollama only**; cloud LLMs are not the default
+    design (unless you extend the project yourself).
+
+
+================================================================================
+PART 2 — CORE CONCEPTS (READ ONCE)
+================================================================================
+
+2.1 Ollama (required for chat AI)
+---------------------------------
+**Ollama** is separate software that serves LLMs over HTTP (default port 11434).
+Athena discovers whether Ollama is running, may try to start it, lists models,
+and picks model “tiers” (small/medium/large) based on hardware—or you override.
+If Ollama is off or no model is installed, chat sending is expected to fail until
+that’s fixed.
+
+2.2 Library + RAG
+-----------------
+You choose a **Library folder**. A **background file watcher** notices new or
+changed files and **indexes** them into a **SQLite database** (`athena_index.db`)
+under the app data directory. Indexing includes **chunks** and **vector
+embeddings** for semantic search.
+
+When you chat, the backend can **retrieve** relevant chunks (keyword + semantic
+fusion, e.g. RRF-style), inject them into the **system prompt**, and optionally
+**show sources** under assistant messages (setting-dependent).
+
+You can also maintain **`knowledge_block.txt`** in app data: a **persistent**
+user-editable block injected into **every** query (e.g. fixed survival facts).
+
+**Learned notes** (when available): distilled notes from documents to improve
+retrieval; may run after library changes when Ollama is available.
+
+2.3 Kiwix / ZIM (offline Wikipedia-style content)
+-------------------------------------------------
+**Kiwix** distributes **`.zim` archives**—packaged wikis and references. Athena can
+scan for `.zim` files, help you **download** map-related ZIMs from a catalog,
+and **index article text** into the Library/RAG pipeline (subject to indexer
+limits). This is how “offline Wikipedia-like” knowledge enters the same search
+and chat flow as your PDFs.
+
+2.4 Maps (two complementary systems)
+-----------------------------------
+**Feature flag:** “Location-aware answers” / maps feature enables map UI and
+location-aware behavior in prompts.
+
+  A) **Main map (Leaflet)** — In-app map for browsing, POIs (points of interest),
+     and a **map-side chat bar** that can send context to the AI. Basemaps can be
+     online (e.g. OSM) or **offline** via downloaded **tile packs** (raster caches)
+     and imported rasters.
+
+  B) **Map archive manager** — Separate workflow for **vector/raster archives**:
+     **PMTiles** (e.g. global OpenStreetMap-style vector) and **regional MBTiles**
+     (e.g. NOAA charts). Download from an embedded catalog, preview in **MapLibre**
+     inside the modal, and optionally **extract a street region** (Protomaps OSM)
+     around a geocoded location + radius using a bundled **pmtiles** sidecar.
+
+Custom **Tauri URI protocols** serve map files from disk to the webview safely:
+`athena-map` for PMTiles/MBTiles range reads; `athena-mbtiles` for XYZ raster tiles.
+
+2.5 Meshtastic (optional USB LoRa mesh)
+---------------------------------------
+With a compatible **USB-connected** Meshtastic device, Athena can listen for
+**plain text** packets, show a **mesh panel**, send **broadcasts** (e.g. primary
+channel) and **DMs**, and optionally run **mesh AI auto-reply**: inbound traffic
+can trigger Ollama and send replies as DMs, with conversations saved as special
+chats in the sidebar.
+
+2.6 Slash command `/athena`
+----------------------------
+In main chat (and map chat), messages starting with **`/athena`** tell the backend
+to prioritize embedded **project reference** (how the app works) over unrelated
+Library RAG. The prefix is stripped before the model sees the text. Sending only
+`/athena` can trigger a default “summarize Athena’s capabilities” prompt.
+
+2.7 Other special inputs
+------------------------
+  • **`/rag-count`** (UI-handled) — surfaces RAG document/chunk counts.
+  • Composer supports **attachments** (images, files) per Tools.
+  • **Enter** sends; **Shift+Enter** newline; shortcuts like **⌘/Ctrl+K** or **/**
+    focus input; **⌘/Ctrl+F** find in chat.
+
+
+================================================================================
+PART 3 — TYPICAL USER FLOWS (HOW PIECES FIT TOGETHER)
+================================================================================
+
+3.1 “I want a private assistant grounded in my documents”
+---------------------------------------------------------
+  1) Install and run **Ollama**; install at least one chat model.
+  2) Open Athena → **Settings** → set **Library folder** (and optionally model tier,
+     memory window, citations).
+  3) Add PDFs, text, ebooks, etc. to the folder (or use **ingest** / Library UI).
+  4) Wait for indexing; run **Rebuild vector index** after large bulk adds.
+  5) Chat in the main window; enable **show sources** if you want visible citations.
+
+3.2 “I want offline reference like Wikipedia in the same brain”
+---------------------------------------------------------------
+  1) Use **Library → Maps / Kiwix** flows to obtain `.zim` files (download or copy).
+  2) Let the indexer ingest articles (within documented limits).
+  3) Ask questions that benefit from that content; RAG will pull relevant chunks.
+
+3.3 “I need maps when the network is bad”
+-----------------------------------------
+  1) Enable **location-aware / maps** features in Settings.
+  2) Set a **text location** (and understand GPS may be passed when relevant).
+  3) Download **tile packs** (OSM/OpenTopo-style caches) and/or **map archives**
+     (PMTiles/MBTiles) and/or **Kiwix map ZIMs** depending on what you need.
+  4) Use the **main Leaflet map** for navigation-style use; use **Map archive
+     manager** for managing PMTiles/MBTiles catalog downloads and Protomaps region
+     extracts.
+
+3.4 “I want LoRa mesh with optional AI replies”
+-----------------------------------------------
+  1) Connect a Meshtastic device via USB.
+  2) Open the **Meshtastic** panel; verify connection events.
+  3) Optionally enable **mesh AI auto-reply** in settings and ensure Ollama is running.
+  4) Monitor **Primary** traffic; understand auto-reply uses **DMs** back to senders.
+
+
+================================================================================
+PART 4 — MAIN WINDOW TOUR (USER-FACING)
+================================================================================
+
+4.1 Sidebar (chats)
+-------------------
+  • List of **saved chats**; create new; **temporary** chat; **pin**, **delete**,
+    **search**; collapse.
+  • **Mesh-originated** chats may appear with distinctive titles (e.g. private
+    auto-reply threads).
+
+4.2 Header (typical tools)
+-------------------------
+  • **Export PDF** — export the current conversation.
+  • **Emergency triage** — menu of **first aid / emergency** educational
+    checklists (full-screen style overlays: Do / Do NOT steps—not a substitute
+    for professional care).
+  • **Library** — folder picker, file list, Kiwix/map data entry points, scan,
+    **vector rebuild**, stats.
+  • **Meshtastic** — USB mesh panel (broadcast, log, optional ACK, help).
+  • **Settings** — model, features, appearance, troubleshooting; **Developer**
+    may unlock after repeated taps on title (hidden).
+  • **Help** — structured help modal.
+  • **Battery** pill when the OS exposes battery state.
+
+4.3 Composer
+-----------
+  • **Tools** — attach images, files; optional speech when enabled.
+  • **Read-aloud** path may use **Piper TTS** when built with the right feature;
+    otherwise may fall back to messaging about default voice / build flags.
+
+4.4 Map (when enabled)
+----------------------
+  • Header control to open map; **Map archives…** opens the **Map archive manager**.
+  • POI layers; basemap modes online vs offline; **map chat** bar for AI with map
+    context.
+
+
+================================================================================
+PART 5 — SETTINGS AREAS (WHAT THEY’RE FOR)
+================================================================================
+
+Grouped for clarity (exact labels may vary slightly in UI):
+
+  • **General** — onboarding-style help, shortcuts, optional device overlay.
+  • **AI & models** — Ollama connectivity, **model tier** override, **conversation
+    memory** (message count, bounded by RAM estimates), **show sources** in chat.
+  • **Location & maps** — **Location-aware answers** toggle, **text address** for
+    geocoding and prompts, map feature enablement.
+  • **Mesh & voice** — **Meshtastic auto-reply**, text-to-speech options when shown.
+  • **Appearance** — **fullscreen**, **themes** (presets + deep customization:
+    colors, fonts, effects like scanlines/vignette/grain, “personality” presets),
+    **night-vision** style options where applicable.
+  • **Troubleshooting** — **error log** access/copy; hints for **Developer** mode.
+
+Configuration persists under the OS app data directory (e.g. `athena_config.json`).
+
+
+================================================================================
+PART 6 — DATA & PRIVACY (INTENDED DESIGN)
+================================================================================
+
+  • **Local by default**: chats, SQLite index, embeddings, config, downloaded maps,
+    tile packs, and logs live under the **app data** directory unless you export
+    elsewhere.
+  • **No cloud LLM in the default path** — Ollama is local HTTP.
+  • **Location**: text location and optional GPS are used for **local** prompting
+    and maps—not “live business hours” cloud lookups.
+  • **Meshtastic**: radio traffic is a real RF medium; treat content as sensitive
+    as any mesh traffic.
+
+
+================================================================================
+PART 7 — PLATFORM & BUILD NOTES (HIGH LEVEL)
+================================================================================
+
+  • Targets **Windows, macOS, Linux** where Tauri supports; some **device metrics**
+    (GPU temp, battery details) vary by OS.
+  • **macOS** fullscreen uses native fullscreen; **Escape** exits fullscreen per app
+    behavior.
+  • **OCR** for scanned PDFs may use system tools (e.g. Tesseract) when installed;
+    not all OCR surfaces may be exposed in UI.
+  • Embedded **`ATHENA_PROJECT_REFERENCE.md`** is compiled into the Rust crate for
+    `/athena` — product behavior described there should stay aligned with the app.
+
+
+================================================================================
+PART 8 — DETAILED INTENDED CAPABILITIES (QA CHECKLIST)
+================================================================================
+Bracketed items [ ] are verification targets for testers. Wording is technical
+where it matches code (commands, event names, file names).
+
+
+--------------------------------------------------------------------------------
+APPLICATION SHELL & GLOBAL BEHAVIOR
+--------------------------------------------------------------------------------
+[ ] Single main window ("Athena") with non-empty title (avoids known macOS
+    fullscreen/title issues).
+[ ] Startup: ensure app data directory exists; open SQLite index DB; start file
+    watcher with configured library folders + kiwix_downloads; optional try to
+    launch Ollama shortly after start.
+[ ] Background file watcher: watches configured folder(s) and Kiwix downloads path;
+    indexes new/changed supported files; can quarantine bad files and emit
+    athena:file-quarantined.
+[ ] Custom URI protocols (Tauri):
+    - athena-map: serve .pmtiles / .mbtiles under app data maps/ with range
+      requests and size limits.
+    - athena-mbtiles: serve XYZ raster tiles from MBTiles under maps/.
+[ ] Plugins: shell (sidecars), opener, dialog; macOS permissions plugin on macOS.
+[ ] Greet command (greet) — minimal sanity check / dev hook.
+
+--------------------------------------------------------------------------------
+CONFIGURATION & PERSISTENCE (athena_config.json)
+--------------------------------------------------------------------------------
+[ ] Watch folder for library documents (optional).
+[ ] Model tier override (auto / small / medium / large / xlarge).
+[ ] Conversation memory (message count window), clamped by RAM estimate.
+[ ] Maps feature flag (enable/disable map-related UX).
+[ ] User location string (address/area) for AI and map workflows.
+[ ] Theme id, personality id, custom themes (colors, fonts, scanlines, vignette,
+    grain, sharp corners, etc.).
+[ ] Show citations / sources under assistant messages.
+[ ] Meshtastic AI auto-reply (Ollama replies to inbound mesh DMs).
+[ ] Load/save config under app data directory.
+
+--------------------------------------------------------------------------------
+OFFLINE RAG / LIBRARY / KNOWLEDGE BASE
+--------------------------------------------------------------------------------
+
+Indexing & storage
+[ ] SQLite index (athena_index.db) for files, text, metadata, vector chunks, RAG stats.
+[ ] Supported ingest types (indexer): plain text and many formats; PDF; images;
+    video (metadata/path); GeoTIFF; ZIM (Kiwix, article extraction limits);
+    Pages/iWork/Office formats as implemented; EPUB, etc.; scanned PDF path via OCR
+    when system tools exist.
+[ ] Manual ingest (ingest_files) for dropped/selected paths.
+[ ] Remove library file (delete file + DB rows).
+[ ] List library contents (watch folder + Kiwix downloads folder).
+[ ] Vector embeddings + chunking for semantic search.
+[ ] Keyword search + RRF-style merge with semantic chunks in chat.
+[ ] Rebuild vector index for all documents (with progress events
+    athena:rebuild-progress).
+[ ] RAG stats (document/chunk counts).
+[ ] Index stats (files indexed, etc., as exposed).
+[ ] "Learned notes" generation (learner) — distilled notes from documents for
+    retrieval (also triggered after watch folder changes when Ollama available).
+[ ] Build library knowledge command — batch learned notes.
+
+Chat-backed retrieval
+[ ] Non-streaming chat (send_message) with library retrieval, location/personality/
+    POI/map context, /athena project-reference mode.
+[ ] Streaming chat (send_message_stream) with chunk events, done/error, optional
+    sources list, conversation history, optional GPS coords for prompts, chat id
+    for saved-chat context.
+[ ] Persistent knowledge block file in app data injected into system prompt.
+
+Quarantine & errors
+[ ] Quarantine on corrupt/unreadable files during ingest.
+[ ] Append/read error log in app data.
+
+--------------------------------------------------------------------------------
+CHAT / UI CONVERSATION SYSTEM
+--------------------------------------------------------------------------------
+[ ] Chat list (sidebar): save/load/delete; pin; export chat to PDF (frontend).
+[ ] Chat title / description generation via Ollama.
+[ ] Context summary update for saved chats.
+[ ] Temporary chat flow as implemented in UI.
+[ ] Shortcuts (e.g. focus find) as wired in App.tsx.
+[ ] Read-aloud: invoke synthesize_speech — Piper TTS when built with piper-tts
+    feature; otherwise error directing to default voice / build flags.
+[ ] Copy / citation behavior per settings.
+
+--------------------------------------------------------------------------------
+OLLAMA / LOCAL AI
+--------------------------------------------------------------------------------
+[ ] Detect Ollama running; list models; recommended tier from hardware.
+[ ] Try launch Ollama (host integration).
+[ ] Chat and stream completion via Ollama.
+[ ] Memory estimate UI (RAM model + context).
+[ ] Model selection by tier override.
+
+--------------------------------------------------------------------------------
+KIWIX / OFFLINE ZIM LIBRARY
+--------------------------------------------------------------------------------
+[ ] Scan for .zim under watch path / Kiwix downloads (scan_kiwix_zim_files).
+[ ] UI: Kiwix search / install flows (browse library.kiwix.org links, etc.).
+[ ] ZIM indexing for RAG (large article limits as per indexer).
+[ ] Download map ZIM from catalog (download_map) with progress/done/error events
+    (athena:kiwix-*).
+[ ] Downloaded maps list (get_downloaded_maps); remove downloaded map.
+[ ] Regional map catalog (get_map_catalog) + smallest suggestion for user location
+    (get_smallest_kiwix_map_suggestion).
+[ ] Network reachability probe (captive-portal style HTTP checks).
+
+--------------------------------------------------------------------------------
+MAPS — LEAFLET "MAIN MAP" (IN-APP)
+--------------------------------------------------------------------------------
+[ ] Open map when maps feature enabled (header control).
+[ ] Basemap modes: online OSM; offline OSM tile cache; offline OpenTopo; imported
+    raster (MBTiles/PMTiles-backed paths from tile-pack system).
+[ ] POIs: list/add/remove/update (get_pois, etc.).
+[ ] Map chat bar (send to AI with map context).
+[ ] Layer toggles (POIs, roads, rivers — online-dependent layers as labeled).
+[ ] "Map archives…" opens Map archive manager modal from map header.
+[ ] Local tile paths via Tauri convertFileSrc for offline raster tiles.
+
+--------------------------------------------------------------------------------
+MAP ARCHIVE MANAGER (OFFLINE MAP MANAGER MODAL) + MAPLIBRE PREVIEW
+--------------------------------------------------------------------------------
+[ ] Embedded catalog (get_offline_map_manager_catalog) — global PMTiles + NOAA
+    MBTiles regions (production JSON in Rust).
+[ ] Download archives into app_data/maps/ with progress/complete/error events
+    (map_download_*).
+[ ] List downloaded archive ids (list_downloaded_offline_map_ids).
+[ ] Active slot preview: select catalog or local-only id; toggle MBTiles raster
+    base + PMTiles vector overlay when downloaded.
+[ ] MapLibre viewport inside modal: uses pmtiles JS protocol + athena-map URLs for
+    archives; MBTiles via athena-mbtiles tile template; register PMTiles protocol
+    once (maplibrePmtilesProtocolRegistration.ts).
+[ ] Street region (Protomaps) extract: geocode saved/override location + radius →
+    extract_pmtiles_region → pmtiles sidecar against Source Cooperative OSM v3 URL
+    → events pmtiles_region_extract_*; output under maps/.
+
+--------------------------------------------------------------------------------
+PMTILES SIDECAR / SHELL
+--------------------------------------------------------------------------------
+[ ] Bundled pmtiles binary as Tauri externalBin (sidecar).
+[ ] extract_pmtiles_region spawns sidecar via tauri-plugin-shell, streams
+    stdout/stderr, emits progress/complete/error.
+
+--------------------------------------------------------------------------------
+TILE PACKS / OFFLINE RASTER BASEMAPS (SETTINGS + LIBRARY)
+--------------------------------------------------------------------------------
+[ ] Tile pack list (list_tile_packs_cmd).
+[ ] Offline basemap paths (offline_basemap_paths_cmd) for Leaflet map.
+[ ] Estimate tile count for a radius/zoom.
+[ ] Start tile pack download (OSM / OpenTopo sources) with background progress via
+    shared Kiwix-style progress events.
+[ ] Import MBTiles / import PMTiles into tile-pack storage (background jobs).
+[ ] Export tile pack to MBTiles file (user picks path).
+[ ] Remove tile pack.
+
+--------------------------------------------------------------------------------
+GEOLOCATION / GEO HELPERS
+--------------------------------------------------------------------------------
+[ ] Nominatim geocode (geocode_place_query).
+[ ] Bounding-box utility (frontend) for radius around center (used with extract).
+[ ] Local time and sunrise/sunset for lat/lon (get_local_time, get_sun_times).
+
+--------------------------------------------------------------------------------
+MESHTASTIC / MESH RADIO
+--------------------------------------------------------------------------------
+[ ] USB serial Meshtastic link (background task): protobuf decode; connection
+    events athena:mesh-connection.
+[ ] Inbound text events athena:mesh-text (sender id + text).
+[ ] Send mesh message (send_mesh_message) — broadcast or DM, optional ack/channel.
+[ ] Mesh AI auto-reply path: Ollama → DM reply; athena:mesh-chats-updated when mesh
+    chat state changes.
+[ ] UI: Mesh modal when radio "connected" flag true; settings for auto-reply.
+[ ] Query command is_mesh_radio_connected.
+
+--------------------------------------------------------------------------------
+SETTINGS / APPEARANCE / DEVICE
+--------------------------------------------------------------------------------
+[ ] Settings multi-panel: General, AI, Location, Offline maps, Mesh, Voice,
+    Appearance, Themes, Troubleshooting, Developer (hidden).
+[ ] Fullscreen toggle and query.
+[ ] Device stats (CPU, RAM, disk placeholders in some fields, GPU/temp where
+    supported).
+[ ] Battery state (platform-specific).
+[ ] Theme Studio / custom themes (Photoshop-like color picker, etc., in UI).
+[ ] macOS permissions plugin present for relevant prompts.
+
+--------------------------------------------------------------------------------
+LIBRARY (UI) — MODAL TABS
+--------------------------------------------------------------------------------
+[ ] Documents tab: folder picker, file list, RAG index rebuild, vector index, stats.
+[ ] Maps tab: Kiwix map ZIM suggestions/downloads, links to offline map settings,
+    network check, open map archive manager entry point.
+
+--------------------------------------------------------------------------------
+HELP & EDUCATION
+--------------------------------------------------------------------------------
+[ ] Help modal with sections: Overview, Chat, Tools, Sidebar, Header, Library &
+    Kiwix, Meshtastic, Settings, Replies.
+[ ] Triage emergency checklists (header menu) with educational content.
+
+--------------------------------------------------------------------------------
+OTHER SYSTEMS / MISC
+--------------------------------------------------------------------------------
+[ ] PDF export of current chat (client-side).
+[ ] Developer / diagnostics (e.g. error log, dev-only panels, rebuild progress in
+    Library).
+[ ] OCR module (ocr.rs) exists for Tesseract/pdftoppm; not necessarily fully
+    exposed in UI (reserved per code comments).
+[ ] Embedded project reference (ATHENA_PROJECT_REFERENCE.md) for /athena queries.
+
+--------------------------------------------------------------------------------
+INTENDED BACKGROUND PROCESSES (SUMMARY)
+--------------------------------------------------------------------------------
+[ ] File watcher loop (index + optional learned notes).
+[ ] Mesh radio listener thread (Tokio + serial).
+[ ] Optional Ollama launch on startup.
+[ ] Background downloads: Kiwix map ZIM, catalog map archives, tile packs,
+    imports/exports, Protomaps extract.
+[ ] Shell sidecar processes for pmtiles extract (spawned per job).
+
+
+================================================================================
+PART 9 — RELATED DOCS IN THIS REPO (OPTIONAL READING)
+================================================================================
+
+  • `README.md` (repo root) — where to run builds (`athena/`), docs index pointer.
+  • `athena/README.md` — app folder layout, icon script, link to embedded reference.
+  • `athena/ATHENA_PROJECT_REFERENCE.md` — canonical in-app `/athena` reference;
+    update when product behavior changes.
+  • `docs/README.md` — product/engineering notes (compatibility, audits, etc.).
+
+================================================================================
+End of document
+================================================================================

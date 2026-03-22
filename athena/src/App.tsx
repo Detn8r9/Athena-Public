@@ -10,8 +10,11 @@ import { TRIAGE_ITEMS, getTriageItem, TriageId } from "./triageData";
 import { HelpModal } from "./HelpModal";
 import { MeshRadioModal, type MeshRadioMessage } from "./MeshRadioModal";
 import { MapView, type MapBasemap } from "./MapView";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { OfflineMapManagerDashboard } from "./OfflineMapManagerDashboard";
 import { registerPmtilesMaplibreProtocolOnce } from "./maplibrePmtilesProtocolRegistration";
+import { evaluateMainChatWatchdog } from "./streamWatchdog";
+import { appendMeshMessageCapped } from "./meshMessageLog";
 import { PhotoshopColorPicker } from "./PhotoshopColorPicker";
 
 registerPmtilesMaplibreProtocolOnce();
@@ -584,6 +587,8 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  /** Shown when the frontend watchdog detects a stalled Ollama stream (main chat). */
+  const [streamStallMessage, setStreamStallMessage] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -880,12 +885,86 @@ function App() {
   const mapStreamActiveRef = useRef(false);
   const streamUnlistenRef = useRef<Array<() => void>>([]);
   const streamAssistantContentRef = useRef("");
+  /** Watchdog: main chat stream — start time (ms), last chunk time, first chunk received. */
+  const streamSendStartRef = useRef(0);
+  const streamLastChunkAtRef = useRef<number | null>(null);
+  const streamGotFirstChunkRef = useRef(false);
+  /** Watchdog: map chat stream (same thresholds as backend: 120s to first token, 30s idle). */
+  const mapStreamSendStartRef = useRef(0);
+  const mapStreamLastChunkAtRef = useRef<number | null>(null);
+  const mapStreamGotFirstChunkRef = useRef(false);
   const currentChatIdRef = useRef<string | null>(null);
   const temporaryChatRef = useRef(false);
 
   useEffect(() => {
     currentChatIdRef.current = currentChatId;
   }, [currentChatId]);
+
+  /** Local AI stream watchdog: 120s max wait for first chunk, 30s max idle after first chunk. */
+  useEffect(() => {
+    if (!sending && !mapChatSending) return;
+    const tick = () => {
+      const now = Date.now();
+      if (sending) {
+        const w = evaluateMainChatWatchdog({
+          nowMs: now,
+          sending: true,
+          sendStartMs: streamSendStartRef.current,
+          lastChunkAtMs: streamLastChunkAtRef.current,
+          gotFirstChunk: streamGotFirstChunkRef.current,
+        });
+        if (w.action === "stall_first_timeout") {
+          setStreamStallMessage(w.message);
+          setMessages((prev) => {
+            const next = [...prev];
+            const i = next.length - 1;
+            if (i >= 0 && next[i].role === "assistant") {
+              next[i] = {
+                ...next[i],
+                content: w.message,
+              };
+            }
+            return next;
+          });
+          setSending(false);
+        } else if (w.action === "stall_idle") {
+          setStreamStallMessage(w.message);
+          setMessages((prev) => {
+            const next = [...prev];
+            const i = next.length - 1;
+            if (i >= 0 && next[i].role === "assistant") {
+              next[i] = {
+                ...next[i],
+                content: w.message,
+              };
+            }
+            return next;
+          });
+          setSending(false);
+        }
+      }
+      if (mapChatSending) {
+        const start = mapStreamSendStartRef.current;
+        const last = mapStreamLastChunkAtRef.current;
+        const gotFirst = mapStreamGotFirstChunkRef.current;
+        if (!gotFirst) {
+          if (now - start > 120_000) {
+            mapStreamActiveRef.current = false;
+            mapStreamContentRef.current = "";
+            setMapChatLastMessage("The local AI did not respond in time (120s).");
+            setMapChatSending(false);
+          }
+        } else if (last != null && now - last > 30_000) {
+          mapStreamActiveRef.current = false;
+          mapStreamContentRef.current = "";
+          setMapChatLastMessage("The local AI stalled (no output for 30s).");
+          setMapChatSending(false);
+        }
+      }
+    };
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [sending, mapChatSending]);
 
   useEffect(() => {
     conversationModeRef.current = conversationModeActive;
@@ -2300,11 +2379,9 @@ function App() {
       const p = event.payload;
       if (p && typeof p.sender_id === "number" && typeof p.text === "string") {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        setMeshMessages((prev) => {
-          const next = [...prev, { id, senderId: p.sender_id, text: p.text, at: Date.now() }];
-          const cap = 200;
-          return next.length > cap ? next.slice(-cap) : next;
-        });
+        setMeshMessages((prev) =>
+          appendMeshMessageCapped(prev, { id, senderId: p.sender_id, text: p.text, at: Date.now() }),
+        );
       }
     });
     return () => {
@@ -2527,10 +2604,15 @@ function App() {
       streamUnlistenRef.current.push(u);
     };
     listen<string>("athena:stream-chunk", (e) => {
+      const now = Date.now();
       if (mapStreamActiveRef.current) {
         mapStreamContentRef.current += e.payload ?? "";
+        mapStreamLastChunkAtRef.current = now;
+        mapStreamGotFirstChunkRef.current = true;
       } else {
         const chunk = e.payload ?? "";
+        streamLastChunkAtRef.current = now;
+        streamGotFirstChunkRef.current = true;
         streamAssistantContentRef.current += chunk;
         setMessages((prev) => {
           const next = [...prev];
@@ -2564,6 +2646,7 @@ function App() {
         setMapChatLastMessage(content);
         setMapChatSending(false);
       } else {
+        setStreamStallMessage(null);
         setSending(false);
         setTimeout(() => {
           if (temporaryChatRef.current) return;
@@ -2614,6 +2697,7 @@ function App() {
         setMapChatLastMessage(`Error: ${errMsg}`);
         setMapChatSending(false);
       } else {
+        setStreamStallMessage(null);
         setMessages((prev) => {
           const next = [...prev];
           const i = next.length - 1;
@@ -2694,8 +2778,10 @@ function App() {
   }, [applyOfflineBasemapPaths]);
 
   useEffect(() => {
-    if (downloadedMaps.length === 0) setMapOpen(false);
-  }, [downloadedMaps.length]);
+    if (!featureMapEnabled) {
+      setMapOpen(false);
+    }
+  }, [featureMapEnabled]);
 
   useEffect(() => {
     if (mapBasemap === "offline_osm" && !offlineOsmRoot) setMapBasemap("online_osm");
@@ -2785,6 +2871,9 @@ function App() {
       setInput("");
       setMessages((prev) => [...prev, userMessage, { role: "assistant", content: "", timestamp: Date.now() }]);
       setSending(true);
+      streamSendStartRef.current = Date.now();
+      streamGotFirstChunkRef.current = true;
+      streamLastChunkAtRef.current = Date.now();
       try {
         const stats = await invoke<{ document_count: number; chunk_count: number }>("get_rag_stats");
         const assistantMessage: ChatMessage = {
@@ -2835,6 +2924,10 @@ function App() {
     streamAssistantContentRef.current = "";
     setMessages((prev) => [...prev, userMessage, { role: "assistant", content: "", timestamp: Date.now() }]);
     setAttachments([]);
+    streamSendStartRef.current = Date.now();
+    streamLastChunkAtRef.current = null;
+    streamGotFirstChunkRef.current = false;
+    setStreamStallMessage(null);
     setSending(true);
     invoke("send_message_stream", {
       message: text,
@@ -2845,6 +2938,7 @@ function App() {
     }).catch((e) => {
       const errMsg = e != null ? String(e) : "Send failed";
       logError(errMsg);
+      setStreamStallMessage(null);
       setLibraryError(`Message failed: ${errMsg}`);
       setMessages((prev) => {
         const next = [...prev];
@@ -2951,6 +3045,9 @@ function App() {
     setMapChatHistory(newHistory);
     setMapChatInput("");
     setMapChatSending(true);
+    mapStreamSendStartRef.current = Date.now();
+    mapStreamLastChunkAtRef.current = null;
+    mapStreamGotFirstChunkRef.current = false;
     mapStreamActiveRef.current = true;
     mapStreamContentRef.current = "";
 
@@ -3423,30 +3520,27 @@ function App() {
                 document.body
               )}
           </div>
-          <button
-            type="button"
-            className="main-header-icon-btn"
-            onClick={() => setOfflineMapManagerOpen(true)}
-            title="Map manager — offline PMTiles and MBTiles archives"
-            aria-label="Open map manager"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M12 3 3 8l9 5 9-5-9-5Z" />
-              <path d="M3 13 12 18l9-5" />
-              <path d="M3 18 12 23l9-5" />
-            </svg>
-          </button>
-          {downloadedMaps.length > 0 && (
+          {featureMapEnabled && (
             <button
               type="button"
               className="main-header-icon-btn"
               onClick={() => setMapOpen(true)}
-              title="Map (offline Kiwix data installed)"
+              title="Map — open map viewer (offline archives: Map archives in the viewer, or Library → Maps)"
               aria-label="Open map"
             >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M12 21s7-5.35 7-10a7 7 0 1 0-14 0c0 4.65 7 10 7 10z" />
-                <circle cx="12" cy="11" r="2.5" />
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden>
+                <path
+                  d="M1 6v16l7-4V2L1 6zM8 2v16l8 4V6L8 2zM16 6v16l7-4V2l-7 4z"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M10.25 8.5c.9 1.35 1.35 2.85 1.5 4.35M10 13.25c1.1.45 2.35.75 3.65.75M11.5 6.75l1.25 1.1M13.5 16.25l2 1.1"
+                  strokeWidth="1.35"
+                  strokeLinecap="round"
+                  strokeOpacity={0.88}
+                />
               </svg>
             </button>
           )}
@@ -3699,6 +3793,7 @@ function App() {
           </div>
         )}
         <div key={currentChatId ?? "new"} className="chat-messages content-transition">
+        <ErrorBoundary sectionLabel="chat messages">
         {messages.length === 0 && (
           <div className="welcome">
             <p>Ask me anything about survival, repair, or practical skills.</p>
@@ -3793,9 +3888,15 @@ function App() {
           </div>
         ))}
           <div ref={messagesEndRef} />
+        </ErrorBoundary>
         </div>
 
         <div className="chat-input-wrap">
+          {streamStallMessage ? (
+            <div className="chat-stream-stall-banner" role="alert">
+              {streamStallMessage}
+            </div>
+          ) : null}
           {attachments.length > 0 && (
             <div className="chat-attachments-row">
               {attachments.map((a) => (
@@ -4102,10 +4203,12 @@ function App() {
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("maps")}>
                     <span className="settings-nav-label">Offline maps</span>
                     <span className="text-muted">
-                      Kiwix regional maps
-                      {downloadedMaps.length === 0 ? (
-                        <span className="settings-build-note"> · Header map icon appears after your first map download</span>
-                      ) : null}
+                      Kiwix regional maps, tile basemaps, and imports
+                      {featureMapEnabled ? (
+                        <span className="settings-build-note"> · Header map opens the map viewer when Maps is enabled</span>
+                      ) : (
+                        <span className="settings-build-note"> · Turn on Maps under Location to show the map button</span>
+                      )}
                     </span>
                   </button>
                   <button
@@ -5571,30 +5674,39 @@ function App() {
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
 
-      <OfflineMapManagerDashboard open={offlineMapManagerOpen} onClose={() => setOfflineMapManagerOpen(false)} />
+      <OfflineMapManagerDashboard
+        open={offlineMapManagerOpen}
+        onClose={() => setOfflineMapManagerOpen(false)}
+        savedUserLocationAddress={userLocationAddress}
+        tileGeocodeOverride={tileGeocodeQuery}
+        tileRadiusMiles={tileRadiusMiles}
+      />
 
-      {mapOpen && downloadedMaps.length > 0 && (
-        <MapView
-          pois={pois}
-          onClose={() => setMapOpen(false)}
-          onAddPoi={handleAddPoi}
-          onRemovePoi={handleRemovePoi}
-          mapChatInput={mapChatInput}
-          setMapChatInput={setMapChatInput}
-          onMapChatSend={() => void handleMapChatSend()}
-          mapChatSending={mapChatSending}
-          mapChatMessage={mapChatLastMessage}
-          layerFilters={_layerFilters}
-          setLayerFilters={setLayerFilters}
-          convertFileSrcFn={convertFileSrcFn}
-          basemap={mapBasemap}
-          onBasemapChange={setMapBasemap}
-          offlineOsmRoot={offlineOsmRoot}
-          offlineTopoRoot={offlineTopoRoot}
-          offlineImportedRoot={offlineImportedRoot}
-          mapCenter={mapViewCenter}
-          mapZoom={mapViewZoom}
-        />
+      {mapOpen && featureMapEnabled && (
+        <ErrorBoundary sectionLabel="map viewer">
+          <MapView
+            pois={pois}
+            onClose={() => setMapOpen(false)}
+            onAddPoi={handleAddPoi}
+            onRemovePoi={handleRemovePoi}
+            mapChatInput={mapChatInput}
+            setMapChatInput={setMapChatInput}
+            onMapChatSend={() => void handleMapChatSend()}
+            mapChatSending={mapChatSending}
+            mapChatMessage={mapChatLastMessage}
+            layerFilters={_layerFilters}
+            setLayerFilters={setLayerFilters}
+            convertFileSrcFn={convertFileSrcFn}
+            basemap={mapBasemap}
+            onBasemapChange={setMapBasemap}
+            offlineOsmRoot={offlineOsmRoot}
+            offlineTopoRoot={offlineTopoRoot}
+            offlineImportedRoot={offlineImportedRoot}
+            mapCenter={mapViewCenter}
+            mapZoom={mapViewZoom}
+            onOpenOfflineMapManager={() => setOfflineMapManagerOpen(true)}
+          />
+        </ErrorBoundary>
       )}
 
       {meshOpen && (
@@ -5613,7 +5725,7 @@ function App() {
             <div className="library-tabs-scroll">
               <p className="library-desc">
                 Use the tabs below like a browser: <strong>Documents</strong> for RAG files and Kiwix content for search,{" "}
-                <strong>Maps</strong> for offline map packs and downloads. More library types can be added as new tabs later.
+                <strong>Maps</strong> for Kiwix map ZIMs, tile packs, and the <strong>map archive manager</strong> (PMTiles / MBTiles catalog). More library types can be added as new tabs later.
               </p>
               <div className="library-tablist" role="tablist" aria-label="Library sections">
                 <button
@@ -5807,6 +5919,23 @@ function App() {
                   role="tabpanel"
                   aria-labelledby="library-tab-maps"
                 >
+                  <section className="library-section library-section-map-archives">
+                    <h3>Map archive manager</h3>
+                    <p className="text-muted small library-section-lead">
+                      Open the same catalog and preview tool that used to live on its own header button: download regional PMTiles or MBTiles archives, run a Protomaps regional extract, and preview layers. You can also reach this from the map viewer via <strong>Map archives…</strong>
+                    </p>
+                    <div className="library-maps-action-row">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLibraryOpen(false);
+                          setOfflineMapManagerOpen(true);
+                        }}
+                      >
+                        Open map archive manager…
+                      </button>
+                    </div>
+                  </section>
                   <section className="library-section library-section-maps">
                     <h3>Offline maps</h3>
                     <p className="text-muted small library-section-lead">

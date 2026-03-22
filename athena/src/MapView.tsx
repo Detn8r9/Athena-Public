@@ -73,6 +73,8 @@ interface MapViewProps {
   offlineImportedRoot: string | null;
   mapCenter: [number, number];
   mapZoom: number;
+  /** Opens the map archive manager (PMTiles / MBTiles catalog and downloads). */
+  onOpenOfflineMapManager?: () => void;
 }
 
 function AddMarkerOnClick({ onAdd }: { onAdd: (lat: number, lon: number) => void }) {
@@ -110,6 +112,7 @@ export function MapView({
   offlineImportedRoot,
   mapCenter,
   mapZoom,
+  onOpenOfflineMapManager,
 }: MapViewProps) {
   const handleAddAt = useCallback(
     (lat: number, lon: number) => {
@@ -131,6 +134,19 @@ export function MapView({
           ← Back
         </button>
         <h2 className="map-view-title">Map</h2>
+        {onOpenOfflineMapManager !== undefined && (
+          <div className="map-view-header-actions">
+            <button
+              type="button"
+              className="map-view-archives-btn"
+              onClick={onOpenOfflineMapManager}
+              title="Catalog, downloads, and regional Protomaps extracts"
+              aria-label="Open map archive manager"
+            >
+              Map archives…
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="map-view-basemap-bar" role="toolbar" aria-label="Basemap">

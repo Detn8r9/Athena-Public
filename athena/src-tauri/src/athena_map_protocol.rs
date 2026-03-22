@@ -17,7 +17,7 @@ pub const ATHENA_MAP_SCHEME: &str = "athena-map";
 
 const MAPS_DIRECTORY_NAME: &str = "maps";
 const MAX_FULL_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_SINGLE_RANGE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SINGLE_RANGE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Chains [`tauri::Builder::register_asynchronous_uri_scheme_protocol`] for [`ATHENA_MAP_SCHEME`].
 pub fn register_with_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
@@ -436,4 +436,30 @@ fn fallback_error_response() -> Response<Vec<u8>> {
         )
         .body(b"Internal server error while building the HTTP response.".to_vec())
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_single_byte_range, MAX_SINGLE_RANGE_BYTES};
+
+    /// Phase 2: a client asks for 100 MiB in one Range; the handler must clamp to 8 MiB per range.
+    #[test]
+    fn byte_range_span_is_capped_at_eight_megabytes() {
+        const HUNDRED_MIB: u64 = 100 * 1024 * 1024;
+        let file_length: u64 = 256 * 1024 * 1024;
+        let last_index_for_100mib = HUNDRED_MIB - 1;
+        let header = format!("bytes=0-{last_index_for_100mib}");
+
+        let (start, end_inclusive) =
+            parse_single_byte_range(&header, file_length).expect("valid range");
+        assert_eq!(start, 0);
+        let span = end_inclusive
+            .saturating_sub(start)
+            .saturating_add(1);
+        assert_eq!(span, MAX_SINGLE_RANGE_BYTES);
+        assert_eq!(
+            end_inclusive,
+            start.saturating_add(MAX_SINGLE_RANGE_BYTES).saturating_sub(1)
+        );
+    }
 }

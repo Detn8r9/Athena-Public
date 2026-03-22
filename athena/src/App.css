@@ -1930,6 +1930,65 @@ body,
   font-size: 0.85rem;
 }
 
+.chat-stream-stall-banner {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, #c62828 12%, var(--surface-solid));
+  border: 1px solid color-mix(in srgb, #c62828 35%, var(--border));
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.error-boundary-fallback {
+  margin: 0.75rem;
+  padding: 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-solid) 92%, #b71c1c);
+  color: var(--text);
+  max-width: 42rem;
+}
+
+.error-boundary-title {
+  margin: 0 0 0.35rem;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.error-boundary-detail {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  opacity: 0.95;
+}
+
+.error-boundary-message {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-family: ui-monospace, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--hover-overlay);
+  max-height: 8rem;
+  overflow: auto;
+}
+
+.error-boundary-reload {
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--primary);
+  color: var(--surface-solid);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.error-boundary-reload:hover {
+  filter: brightness(1.05);
+}
+
 .ollama-not-running-message {
   flex: 1;
 }
@@ -2858,6 +2917,39 @@ body,
   font-size: 0.85rem;
 }
 
+.map-manager-region-section {
+  margin-bottom: 1rem;
+}
+
+.map-manager-region-section--spaced {
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.map-manager-region-heading {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.map-manager-sidecar-extractor-card {
+  margin-bottom: 0.65rem;
+  border-style: dashed;
+}
+
+.map-manager-catalog-empty {
+  border: none;
+  background: transparent;
+  padding: 0.35rem 0;
+  list-style: none;
+}
+
+.map-manager-catalog-footnote {
+  line-height: 1.45;
+}
+
 .map-manager-catalog-list {
   list-style: none;
   margin: 0;
@@ -3033,9 +3125,13 @@ body,
   background: var(--surface-solid);
 }
 
-.map-manager-controls {
-  flex-shrink: 0;
-  padding: 0.85rem 1.1rem;
+.map-manager-controls-scroll {
+  flex: 1 1 42%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.85rem 1.1rem 1rem;
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -3099,8 +3195,24 @@ body,
   accent-color: var(--primary);
 }
 
+.map-manager-extract-terminal {
+  margin-top: 0.5rem;
+  max-height: 10rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  padding: 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 75%, var(--surface-solid));
+  color: var(--text-muted);
+}
+
 .map-manager-viewport {
-  flex: 1;
+  flex: 1 1 50%;
   min-height: 0;
   overflow: hidden;
   display: flex;
@@ -5850,6 +5962,43 @@ body,
   font-size: 1.1rem;
   font-weight: 600;
   color: var(--primary);
+}
+
+.map-view-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.map-view-header .map-view-archives-btn {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0.4rem 0.85rem;
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-solid) 88%, transparent);
+  color: var(--primary);
+  cursor: pointer;
+  transition:
+    background 0.2s var(--ease-out),
+    border-color 0.2s var(--ease-out),
+    box-shadow 0.2s var(--ease-out);
+}
+
+.map-view-header .map-view-archives-btn:hover {
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
+  background: var(--hover-overlay);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.map-view-header .map-view-archives-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .map-view-filters {

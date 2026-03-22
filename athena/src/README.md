@@ -15,7 +15,7 @@ Vite + React 19. **Most UI is currently in `App.tsx`** (large single file); smal
 | File | Role |
 |------|------|
 | **`MapView.tsx`** | In-app map (Leaflet) |
-| **`OfflineMapManagerDashboard.tsx`** | Map manager modal: PMTiles/MBTiles catalog, download placeholders, viewport shell |
+| **`OfflineMapManagerDashboard.tsx`** | Map archive manager modal: PMTiles/MBTiles catalog, downloads, Protomaps extract, viewport shell |
 | **`offlineMapManagerCatalog.ts`** | `invoke` helper for `get_offline_map_manager_catalog` |
 | **`HelpModal.tsx`** | Help categories / copy |
 | **`MeshRadioModal.tsx`** | Mesh radio UI |

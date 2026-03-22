@@ -132,6 +132,7 @@ pub async fn stream_download_to_file(
 
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(60))
+        .read_timeout(Duration::from_secs(30))
         .user_agent("AthenaMapManager/1.0")
         .redirect(reqwest::redirect::Policy::limited(16))
         .build()
@@ -201,4 +202,75 @@ pub async fn stream_download_to_file(
 
     std::fs::rename(&part_path, &final_path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Removes `*.part` files in `maps/` older than 24 hours (interrupted downloads from prior sessions).
+pub fn cleanup_stale_part_files(app_data_dir: &std::path::Path) -> Result<(), String> {
+    cleanup_stale_part_files_at(app_data_dir, std::time::SystemTime::now())
+}
+
+fn cleanup_stale_part_files_at(app_data_dir: &std::path::Path, now: std::time::SystemTime) -> Result<(), String> {
+    let dir = offline_maps_directory(app_data_dir);
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let max_age = std::time::Duration::from_secs(24 * 60 * 60);
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".part") {
+            continue;
+        }
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let modified = match meta.modified() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if now.duration_since(modified).unwrap_or(std::time::Duration::ZERO) > max_age {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cleanup_stale_part_files_at, offline_maps_directory};
+    use std::time::{Duration, SystemTime};
+    use tempfile::tempdir;
+
+    /// Phase 4: `.part` file with mtime ~25h before the cleanup `now` is removed.
+    #[test]
+    fn cleanup_stale_part_files_removes_old_part_downloads() {
+        let root = tempdir().expect("temp dir");
+        let maps = offline_maps_directory(root.path());
+        std::fs::create_dir_all(&maps).expect("maps dir");
+        let path = maps.join("dummy.pmtiles.part");
+        std::fs::write(&path, b"x").expect("write part");
+
+        let file_mtime = SystemTime::now();
+        let now = file_mtime + Duration::from_secs(25 * 3600 + 10);
+        cleanup_stale_part_files_at(root.path(), now).expect("cleanup");
+        assert!(!path.exists(), "stale .part file should be deleted");
+    }
+
+    /// Phase 4: `.part` file newer than 24h relative to `now` is kept.
+    #[test]
+    fn cleanup_stale_part_files_keeps_recent_part_downloads() {
+        let root = tempdir().expect("temp dir");
+        let maps = offline_maps_directory(root.path());
+        std::fs::create_dir_all(&maps).expect("maps dir");
+        let path = maps.join("fresh.pmtiles.part");
+        std::fs::write(&path, b"x").expect("write part");
+
+        let now = SystemTime::now() + Duration::from_secs(3600);
+        cleanup_stale_part_files_at(root.path(), now).expect("cleanup");
+        assert!(path.exists(), "recent .part file should be retained");
+    }
 }

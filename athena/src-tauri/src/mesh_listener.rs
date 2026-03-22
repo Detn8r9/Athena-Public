@@ -1,7 +1,7 @@
 //! Background Tokio task: USB Meshtastic serial, decode text packets, emit Tauri events, send text,
 //! and optional Meshtastic → Ollama → DM reply.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,14 +13,25 @@ use meshtastic::types::{MeshChannel, NodeId};
 use serde::Serialize;
 use tauri::Emitter;
 use thiserror::Error;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Semaphore;
+use tokio::time::{interval, MissedTickBehavior};
 
 use crate::config::load_config;
 use crate::mesh_ai::{
     process_mesh_message_and_reply, should_run_mesh_ai, MESHTASTIC_BROADCAST_TO, PRIMARY_MESH_CHANNEL,
 };
 use crate::mesh_radio::MeshRadioSerialLink;
+
+/// Capacity for outgoing mesh commands (send_text from UI and mesh-AI replies).
+const MESH_CMD_QUEUE_CAPACITY: usize = 100;
+/// Capacity for pending UI mesh-text notifications before throttle drains.
+const MESH_TEXT_QUEUE_CAPACITY: usize = 200;
+/// At most five `athena:mesh-text` emissions per second (one every 200 ms).
+const MESH_TEXT_EMIT_INTERVAL_MS: u64 = 200;
+/// If the UI cannot keep up, drop oldest pending mesh-text payloads after this many.
+const MESH_TEXT_PENDING_CAP: usize = 500;
 
 /// Error type for [`PacketRouter`] (must implement [`std::error::Error`], not plain `String`).
 #[derive(Debug, Error)]
@@ -74,7 +85,7 @@ enum MeshCommand {
 /// Enqueue outgoing mesh traffic from Tauri commands; the dedicated Meshtastic thread performs I/O.
 #[derive(Clone)]
 pub struct MeshRadioControl {
-    cmd_tx: UnboundedSender<MeshCommand>,
+    cmd_tx: Sender<MeshCommand>,
 }
 
 impl MeshRadioControl {
@@ -86,15 +97,24 @@ impl MeshRadioControl {
         destination_node_id: Option<u32>,
     ) -> Result<(), String> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.cmd_tx
-            .send(MeshCommand::SendText {
-                text,
-                want_ack,
-                channel,
-                destination: destination_node_id,
-                reply: reply_tx,
-            })
-            .map_err(|_| "Meshtastic background thread is not running.".to_string())?;
+        let cmd = MeshCommand::SendText {
+            text,
+            want_ack,
+            channel,
+            destination: destination_node_id,
+            reply: reply_tx,
+        };
+        match self.cmd_tx.try_send(cmd) {
+            Ok(()) => {}
+            Err(TrySendError::Full(cmd)) => {
+                fail_mesh_command(cmd, "Meshtastic command queue is full; wait and retry.".to_string());
+                return Err("Meshtastic command queue is full; wait and retry.".to_string());
+            }
+            Err(TrySendError::Closed(cmd)) => {
+                fail_mesh_command(cmd, "Meshtastic background thread is not running.".to_string());
+                return Err("Meshtastic background thread is not running.".to_string());
+            }
+        }
         reply_rx
             .await
             .map_err(|_| "Meshtastic send was cancelled.".to_string())?
@@ -109,11 +129,50 @@ fn fail_mesh_command(cmd: MeshCommand, err: String) {
     }
 }
 
+/// Throttles mesh-text UI events to at most five per second; drops when the queue is full.
+async fn mesh_text_emit_loop(app: tauri::AppHandle, mut rx: Receiver<MeshTextEventPayload>) {
+    let mut ticker = interval(std::time::Duration::from_millis(MESH_TEXT_EMIT_INTERVAL_MS));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut pending = VecDeque::new();
+    loop {
+        tokio::select! {
+            opt = rx.recv() => {
+                match opt {
+                    Some(p) => {
+                        pending.push_back(p);
+                        while pending.len() > MESH_TEXT_PENDING_CAP {
+                            pending.pop_front();
+                        }
+                    }
+                    None => {
+                        while let Some(p) = pending.pop_front() {
+                            if let Err(e) = app.emit(MESH_TEXT_EVENT, &p) {
+                                eprintln!("[mesh] emit {MESH_TEXT_EVENT} failed: {e}");
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            _ = ticker.tick() => {
+                if let Some(p) = pending.pop_front() {
+                    if let Err(e) = app.emit(MESH_TEXT_EVENT, &p) {
+                        eprintln!("[mesh] emit {MESH_TEXT_EVENT} failed: {e}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Spawns a dedicated thread with a multi-thread Tokio runtime. Register the returned
 /// [`MeshRadioControl`] with [`tauri::Manager::manage`].
 pub fn spawn_mesh_radio_listener(app_handle: tauri::AppHandle, app_data_dir: PathBuf) -> MeshRadioControl {
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-    let control = MeshRadioControl { cmd_tx: cmd_tx.clone() };
+    let (mesh_tx, mesh_rx) = mpsc::channel::<MeshTextEventPayload>(MESH_TEXT_QUEUE_CAPACITY);
+    let (cmd_tx, cmd_rx) = mpsc::channel::<MeshCommand>(MESH_CMD_QUEUE_CAPACITY);
+    let control = MeshRadioControl {
+        cmd_tx: cmd_tx.clone(),
+    };
     let spawn_result = std::thread::Builder::new()
         .name("athena-meshtastic".to_string())
         .spawn(move || {
@@ -128,12 +187,10 @@ pub fn spawn_mesh_radio_listener(app_handle: tauri::AppHandle, app_data_dir: Pat
                     return;
                 }
             };
-            runtime.block_on(mesh_radio_main_loop(
-                app_handle,
-                app_data_dir,
-                cmd_rx,
-                cmd_tx,
-            ));
+            runtime.block_on(async move {
+                tokio::spawn(mesh_text_emit_loop(app_handle.clone(), mesh_rx));
+                mesh_radio_main_loop(app_handle, app_data_dir, cmd_rx, cmd_tx, mesh_tx).await;
+            });
         });
     if let Err(e) = spawn_result {
         eprintln!("[mesh] failed to spawn listener thread: {e}");
@@ -213,7 +270,7 @@ fn try_decode_mesh_text(from_radio: protobufs::FromRadio) -> Option<(u32, u32, u
 
 async fn sleep_or_command(
     duration: std::time::Duration,
-    cmd_rx: &mut UnboundedReceiver<MeshCommand>,
+    cmd_rx: &mut Receiver<MeshCommand>,
 ) -> Option<MeshCommand> {
     tokio::select! {
         _ = tokio::time::sleep(duration) => None,
@@ -224,8 +281,9 @@ async fn sleep_or_command(
 async fn mesh_radio_main_loop(
     app: tauri::AppHandle,
     app_data_dir: PathBuf,
-    mut cmd_rx: UnboundedReceiver<MeshCommand>,
-    cmd_tx: UnboundedSender<MeshCommand>,
+    mut cmd_rx: Receiver<MeshCommand>,
+    cmd_tx: Sender<MeshCommand>,
+    mesh_tx: Sender<MeshTextEventPayload>,
 ) {
     let my_node_num = Arc::new(AtomicU32::new(0));
     let node_names: Arc<Mutex<HashMap<u32, String>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -284,11 +342,14 @@ async fn mesh_radio_main_loop(
                             ingest_node_display_name(&packet, &node_names);
 
                             if let Some((from, to, channel, text)) = try_decode_mesh_text(packet) {
-                                // Mesh panel + UI events: Primary channel broadcast only (visible to all nodes).
                                 if channel == PRIMARY_MESH_CHANNEL && to == MESHTASTIC_BROADCAST_TO {
                                     let payload = MeshTextEventPayload { sender_id: from, text: text.clone() };
-                                    if let Err(e) = app.emit(MESH_TEXT_EVENT, &payload) {
-                                        eprintln!("[mesh] emit {MESH_TEXT_EVENT} failed: {e}");
+                                    match mesh_tx.try_send(payload) {
+                                        Ok(()) => {}
+                                        Err(TrySendError::Full(_)) => {
+                                            eprintln!("[mesh] mesh-text throttle queue full; dropping broadcast notification");
+                                        }
+                                        Err(TrySendError::Closed(_)) => {}
                                     }
                                 }
 
@@ -339,17 +400,23 @@ async fn mesh_radio_main_loop(
                                                 continue;
                                             }
                                             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                                            if cmd_tx_ai
-                                                .send(MeshCommand::SendText {
-                                                    text: part.clone(),
-                                                    want_ack: i + 1 == chunks.len(),
-                                                    channel,
-                                                    destination: Some(from),
-                                                    reply: reply_tx,
-                                                })
-                                                .is_err()
-                                            {
-                                                return;
+                                            match cmd_tx_ai.try_send(MeshCommand::SendText {
+                                                text: part.clone(),
+                                                want_ack: i + 1 == chunks.len(),
+                                                channel,
+                                                destination: Some(from),
+                                                reply: reply_tx,
+                                            }) {
+                                                Ok(()) => {}
+                                                Err(TrySendError::Full(cmd)) => {
+                                                    fail_mesh_command(cmd, "Meshtastic command queue is full.".to_string());
+                                                    eprintln!("[mesh-ai] outgoing command queue full; stopping DM reply");
+                                                    return;
+                                                }
+                                                Err(TrySendError::Closed(cmd)) => {
+                                                    fail_mesh_command(cmd, "Meshtastic command channel closed.".to_string());
+                                                    return;
+                                                }
                                             }
                                             if reply_rx.await.is_err() {
                                                 return;
