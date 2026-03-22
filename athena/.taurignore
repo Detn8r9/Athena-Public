@@ -1,0 +1,7 @@
+# Prevent dev watcher from triggering rebuilds when build outputs or deps change (avoids open/close loop)
+target/
+src-tauri/target/
+node_modules/
+dist/
+*.log
+.git/
