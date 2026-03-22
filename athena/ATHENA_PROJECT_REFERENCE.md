@@ -140,7 +140,7 @@ Not exhaustive; see `src-tauri/src/lib.rs` `invoke_handler`:
 
 ## 11. Platform notes
 
-- **Windows / Linux / macOS** supported; some **device overlay** metrics (battery, GPU temp) vary by OS — see `PLATFORM_COMPATIBILITY.md` in the repo.
+- **Windows / Linux / macOS** supported; some **device overlay** metrics (battery, GPU temp) vary by OS — see `docs/product/PLATFORM_COMPATIBILITY.md`.
 - **macOS** fullscreen uses native fullscreen; **Escape** exits.
 
 ---
@@ -155,9 +155,11 @@ Not exhaustive; see `src-tauri/src/lib.rs` `invoke_handler`:
 
 ## 13. Related files in repo
 
-- `HelpModal.tsx` — in-app help (categories).
-- `MeshRadioModal.tsx` — mesh UI.
-- `OPTIMIZATION_AUDIT.md`, `PLATFORM_COMPATIBILITY.md`, `CODE_REVIEW.md` — engineering notes.
+*(Paths below are from the **repository root**, i.e. the parent folder of `athena/`.)*
+
+- `athena/src/HelpModal.tsx` — in-app help (categories).
+- `athena/src/MeshRadioModal.tsx` — mesh UI.
+- `docs/development/OPTIMIZATION_AUDIT.md`, `docs/product/PLATFORM_COMPATIBILITY.md`, `docs/development/CODE_REVIEW.md` — engineering notes.
 
 ---
 

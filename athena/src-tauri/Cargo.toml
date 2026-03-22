@@ -23,7 +23,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 meshtastic = { version = "0.1.8", features = ["serde", "tokio"] }
-tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "fs"] }
 tokio-serial = "5.4"
 serialport = "4.6"
 serde = { version = "1", features = ["derive"] }
@@ -37,6 +37,8 @@ image = "0.25"
 crossbeam-channel = "0.5"
 sysinfo = "0.30"
 ureq = { version = "2", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 zim = "0.4"
 quick-xml = "0.36"
 urlencoding = "2"

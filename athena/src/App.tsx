@@ -10,7 +10,11 @@ import { TRIAGE_ITEMS, getTriageItem, TriageId } from "./triageData";
 import { HelpModal } from "./HelpModal";
 import { MeshRadioModal, type MeshRadioMessage } from "./MeshRadioModal";
 import { MapView, type MapBasemap } from "./MapView";
+import { OfflineMapManagerDashboard } from "./OfflineMapManagerDashboard";
+import { registerPmtilesMaplibreProtocolOnce } from "./maplibrePmtilesProtocolRegistration";
 import { PhotoshopColorPicker } from "./PhotoshopColorPicker";
+
+registerPmtilesMaplibreProtocolOnce();
 
 interface IndexStats {
   total_files: number;
@@ -25,6 +29,8 @@ interface SystemSpecs {
   ram_gb: number;
   cpu_cores: number;
   recommended_tier: string;
+  /** From backend: scales with detected RAM */
+  max_memory_messages: number;
 }
 
 interface MemoryEstimate {
@@ -42,14 +48,15 @@ interface BatteryState {
   is_charging: boolean | null;
 }
 
-const MODEL_TIERS = ["auto", "small", "medium", "large"] as const;
+const MODEL_TIERS = ["auto", "small", "medium", "large", "xlarge"] as const;
 type ModelTier = (typeof MODEL_TIERS)[number];
 
 const MODEL_TIER_LABELS: Record<ModelTier, string> = {
   auto: "Automatic (recommended)",
   small: "Small",
   medium: "Medium",
-  large: "Large",
+  large: "Large (e.g. 13B)",
+  xlarge: "Extra large (34B+)",
 };
 
 /** External resource links for finding survival, technical, and reference content to ingest.
@@ -580,6 +587,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [offlineMapManagerOpen, setOfflineMapManagerOpen] = useState(false);
   type LibraryTabId = "documents" | "maps";
   const [libraryActiveTab, setLibraryActiveTab] = useState<LibraryTabId>("documents");
   const [meshOpen, setMeshOpen] = useState(false);
@@ -1583,7 +1591,12 @@ function App() {
       setSystemSpecs(specs);
       setOllamaAvailable(available);
       if (available) setOllamaNotRunningBannerDismissed(false);
-      setModelOverride((override?.toLowerCase() as ModelTier) || "auto");
+      {
+        const raw = (override ?? "auto").toLowerCase();
+        setModelOverride(
+          (MODEL_TIERS as readonly string[]).includes(raw) ? (raw as ModelTier) : "auto",
+        );
+      }
       setMemoryMessages(mem);
       setMemoryEstimate(estimate);
     } catch (_) {
@@ -1594,7 +1607,8 @@ function App() {
   }
 
   async function handleMemoryMessagesChange(value: number) {
-    const clamped = Math.min(80, Math.max(5, value));
+    const cap = systemSpecs?.max_memory_messages ?? 80;
+    const clamped = Math.min(cap, Math.max(5, value));
     setMemoryMessages(clamped);
     try {
       await invoke("set_memory_messages", { value: clamped });
@@ -3409,6 +3423,19 @@ function App() {
                 document.body
               )}
           </div>
+          <button
+            type="button"
+            className="main-header-icon-btn"
+            onClick={() => setOfflineMapManagerOpen(true)}
+            title="Map manager — offline PMTiles and MBTiles archives"
+            aria-label="Open map manager"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 3 3 8l9 5 9-5-9-5Z" />
+              <path d="M3 13 12 18l9-5" />
+              <path d="M3 18 12 23l9-5" />
+            </svg>
+          </button>
           {downloadedMaps.length > 0 && (
             <button
               type="button"
@@ -4243,6 +4270,13 @@ function App() {
                       {modelOverride !== "auto" && (
                         <p className="model-warning">
                           Choosing a larger model may slow down responses. Use Automatic for the best balance on this device.
+                          {modelOverride === "xlarge" && systemSpecs !== null && systemSpecs.ram_gb < 32 && (
+                            <span>
+                              {" "}
+                              <strong>Extra large</strong> is best with <strong>32GB+ RAM</strong>; this device reports{" "}
+                              {systemSpecs.ram_gb}GB.
+                            </span>
+                          )}
                         </p>
                       )}
                     </>
@@ -4284,12 +4318,18 @@ function App() {
                   <div className="memory-slider-wrap">
                     <label htmlFor="memory-slider">
                       Context: <strong>{memoryMessages}</strong> messages
+                      {systemSpecs !== null && (
+                        <span className="text-muted small">
+                          {" "}
+                          (max {systemSpecs.max_memory_messages} for this system&apos;s RAM)
+                        </span>
+                      )}
                     </label>
                     <input
                       id="memory-slider"
                       type="range"
                       min={5}
-                      max={80}
+                      max={systemSpecs?.max_memory_messages ?? 80}
                       step={5}
                       value={memoryMessages}
                       onChange={(e) => handleMemoryMessagesChange(Number(e.target.value))}
@@ -5530,6 +5570,8 @@ function App() {
       )}
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+
+      <OfflineMapManagerDashboard open={offlineMapManagerOpen} onClose={() => setOfflineMapManagerOpen(false)} />
 
       {mapOpen && downloadedMaps.length > 0 && (
         <MapView

@@ -7,6 +7,10 @@ mod indexer;
 mod kiwix;
 mod learner;
 mod maps;
+mod athena_map_protocol;
+mod athena_mbtiles_tile_protocol;
+mod map_manager_catalog;
+mod map_manager_download;
 mod mbtiles_io;
 mod pmtiles_io;
 mod tile_pack;
@@ -24,21 +28,28 @@ mod watcher;
 mod tts;
 
 use crossbeam_channel::Sender;
+use std::collections::HashSet;
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 use config::{load_config, save_config, AppConfig, CustomTheme};
 use db::{extract_keywords, ChunkEmbedding, Database, IndexedFile, IndexStats, RagCounts};
 use chats::{get_chat as get_saved_chat, list_chats as list_saved_chats, save_chat as save_saved_chat, update_chat_context_summary as update_saved_chat_context_summary, update_chat_metadata as update_saved_chat_metadata, delete_chat as delete_saved_chat, ChatSummary, SavedChat, SavedMessage};
 use kiwix::{scan_kiwix_zim_files as kiwix_scan_zim_files, DiscoveredZim};
-use ollama::{get_system_specs as get_specs, get_available_models, is_ollama_running, select_model_for_tier, try_launch_ollama_server, chat, chat_stream, generate_chat_title as ollama_generate_chat_title, generate_chat_description as ollama_generate_chat_description, ChatMessage, ModelInfo, SystemSpecs};
+use ollama::{
+    get_system_specs as get_specs, get_available_models, is_ollama_running, max_memory_messages_for_ram,
+    select_model_for_tier, try_launch_ollama_server, chat, chat_stream,
+    generate_chat_title as ollama_generate_chat_title, generate_chat_description as ollama_generate_chat_description,
+    ChatMessage, ModelInfo, SystemSpecs,
+};
 use watcher::{run_watcher_loop, WatchCommand};
 use learner::build_learned_notes_for_all_text;
 
 pub struct AppState {
     pub db: Arc<Database>,
     pub watcher_tx: Sender<WatchCommand>,
+    pub active_offline_map_downloads: Arc<Mutex<HashSet<String>>>,
 }
 
 #[tauri::command]
@@ -417,7 +428,7 @@ fn set_model_override(app: tauri::AppHandle, value: Option<String>) -> Result<()
         let v = v.to_lowercase();
         if v.is_empty() || v == "auto" {
             None
-        } else if v == "small" || v == "medium" || v == "large" {
+        } else if v == "small" || v == "medium" || v == "large" || v == "xlarge" {
             Some(v)
         } else {
             None
@@ -430,19 +441,21 @@ fn set_model_override(app: tauri::AppHandle, value: Option<String>) -> Result<()
 
 const DEFAULT_MEMORY_MESSAGES: u32 = 20;
 const MIN_MEMORY_MESSAGES: u32 = 5;
-const MAX_MEMORY_MESSAGES: u32 = 80;
 
 #[tauri::command]
 fn get_memory_messages(app: tauri::AppHandle) -> Result<u32, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(load_config(&app_data_dir).memory_messages.unwrap_or(DEFAULT_MEMORY_MESSAGES))
+    let max = max_memory_messages_for_ram(get_specs().ram_gb);
+    let v = load_config(&app_data_dir).memory_messages.unwrap_or(DEFAULT_MEMORY_MESSAGES);
+    Ok(v.clamp(MIN_MEMORY_MESSAGES, max))
 }
 
 #[tauri::command]
 fn set_memory_messages(app: tauri::AppHandle, value: u32) -> Result<(), String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let mut config = load_config(&app_data_dir);
-    let clamped = value.clamp(MIN_MEMORY_MESSAGES, MAX_MEMORY_MESSAGES);
+    let max = max_memory_messages_for_ram(get_specs().ram_gb);
+    let clamped = value.clamp(MIN_MEMORY_MESSAGES, max);
     config.memory_messages = Some(clamped);
     save_config(&app_data_dir, &config)?;
     Ok(())
@@ -1420,6 +1433,103 @@ fn get_downloaded_maps(app: tauri::AppHandle) -> Result<Vec<maps::DownloadedMap>
     Ok(maps::get_downloaded_maps(&app_data_dir))
 }
 
+/// Returns the offline map manager catalog (currently embedded mock JSON; later a remote fetch).
+#[tauri::command]
+fn get_offline_map_manager_catalog() -> Result<Vec<map_manager_catalog::OfflineMapCatalogEntry>, String> {
+    map_manager_catalog::catalog_from_embedded_mock_json()
+}
+
+#[tauri::command]
+fn list_downloaded_offline_map_ids(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    map_manager_download::list_downloaded_offline_map_ids(&app_data_dir)
+}
+
+#[tauri::command]
+async fn download_offline_map(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    map_id: String,
+    download_url: String,
+) -> Result<(), String> {
+    let map_id = map_id.trim().to_string();
+    let download_url = download_url.trim().to_string();
+    if map_id.is_empty() {
+        return Err("Map id is required.".to_string());
+    }
+    if download_url.is_empty() {
+        return Err("Download URL is required.".to_string());
+    }
+    let parsed = reqwest::Url::parse(&download_url).map_err(|e| format!("Invalid download URL: {e}"))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err("Download URL must use http or https.".to_string());
+    }
+
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    map_manager_download::ensure_offline_maps_directory(&app_data_dir)?;
+
+    let (final_path, part_path) = map_manager_download::destination_paths(&app_data_dir, &map_id, &download_url)?;
+
+    if final_path.is_file() {
+        return Err("This map archive is already downloaded.".to_string());
+    }
+
+    {
+        let mut active_guard = state
+            .active_offline_map_downloads
+            .lock()
+            .map_err(|_| "Offline map download state lock was poisoned.".to_string())?;
+        if !active_guard.insert(map_id.clone()) {
+            return Err("A download for this map is already in progress.".to_string());
+        }
+    }
+
+    let app_handle = app.clone();
+    let active_offline_map_downloads = Arc::clone(&state.active_offline_map_downloads);
+    let map_id_task = map_id.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let outcome = map_manager_download::stream_download_to_file(
+            app_handle.clone(),
+            map_id_task.clone(),
+            download_url,
+            final_path.clone(),
+            part_path.clone(),
+        )
+        .await;
+
+        if let Ok(mut guard) = active_offline_map_downloads.lock() {
+            guard.remove(&map_id_task);
+        }
+
+        match outcome {
+            Ok(()) => {
+                let path_string = final_path.to_string_lossy().to_string();
+                let _ = app_handle.emit(
+                    map_manager_download::MAP_DOWNLOAD_COMPLETE_EVENT,
+                    map_manager_download::MapDownloadCompletePayload {
+                        map_id: map_id_task,
+                        path: path_string,
+                    },
+                );
+            }
+            Err(message) => {
+                let _ = std::fs::remove_file(&part_path);
+                let _ = app_handle.emit(
+                    map_manager_download::MAP_DOWNLOAD_ERROR_EVENT,
+                    map_manager_download::MapDownloadErrorPayload {
+                        map_id: map_id_task,
+                        message,
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(())
+}
+
 fn network_probe_ok_gstatic(status: u16) -> bool {
     status == 204
 }
@@ -1901,7 +2011,9 @@ fn send_message_stream(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = athena_mbtiles_tile_protocol::register_with_builder(athena_map_protocol::register_with_builder(
+        tauri::Builder::default(),
+    ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init());
     #[cfg(target_os = "macos")]
@@ -1924,6 +2036,7 @@ pub fn run() {
             app.manage(AppState {
                 db,
                 watcher_tx: watcher_tx.clone(),
+                active_offline_map_downloads: Arc::new(Mutex::new(HashSet::new())),
             });
             let config = load_config(&app_data_dir);
             let kiwix_dir = app_data_dir.join("kiwix_downloads");
@@ -1992,6 +2105,9 @@ pub fn run() {
             send_message_stream,
             scan_kiwix_zim_files,
             get_map_catalog,
+            get_offline_map_manager_catalog,
+            list_downloaded_offline_map_ids,
+            download_offline_map,
             get_downloaded_maps,
             check_network_reachable,
             get_smallest_kiwix_map_suggestion,

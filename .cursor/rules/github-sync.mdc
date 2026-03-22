@@ -1,0 +1,21 @@
+---
+description: Push and sync the Athena GitHub repo when the user asks
+alwaysApply: true
+---
+
+# GitHub sync (Athena)
+
+When the user asks to **push**, **sync**, **commit to GitHub**, **update the repo**, **save to GitHub**, or similar for this project:
+
+1. **Working directory**: project root (the folder that contains `athena/` and `.git`).
+2. **Check state**: run `git status` (and optionally `git diff` if changes are unclear).
+3. **If there are changes**:
+   - `git add` only what should be published (prefer `git add -A` or specific paths; do not add secrets or local-only files).
+   - `git commit -m "…"` with a short, accurate message summarizing the change.
+   - `git push origin main` (or the current branch if not `main`—confirm with `git branch --show-current`).
+4. **If nothing to commit**: say so clearly; do not create an empty commit unless the user explicitly asks.
+5. **Permissions**: use the terminal with **`git_write`** and **`network`** so commit and push can succeed.
+6. **Never** `git push --force` to `main` (or the default branch) unless the user **explicitly** requests a force push and understands the risk.
+7. If push fails (auth, rejected, conflicts), report the error and suggest fixes (e.g. `git pull --rebase` then push, or GitHub login / SSH).
+
+Trigger phrases include: *push to GitHub*, *commit and push*, *sync the repo*, *upload these changes*.

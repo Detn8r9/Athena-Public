@@ -9,6 +9,8 @@ pub struct SystemSpecs {
     pub ram_gb: u64,
     pub cpu_cores: usize,
     pub recommended_tier: String,
+    /// Max "previous messages" the UI should allow; scales with installed RAM.
+    pub max_memory_messages: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,10 +72,27 @@ pub fn get_system_specs() -> SystemSpecs {
     let ram_gb = if ram_gb == 0 { 4 } else { ram_gb };
     let cpu_cores = sys.cpus().len().max(1);
     let recommended_tier = recommended_tier_for_specs(ram_gb, cpu_cores);
+    let max_memory_messages = max_memory_messages_for_ram(ram_gb);
     SystemSpecs {
         ram_gb,
         cpu_cores,
         recommended_tier: recommended_tier.to_string(),
+        max_memory_messages,
+    }
+}
+
+/// Upper bound for chat context length (message count), by total system RAM.
+/// Conservative so we do not invite OOM on the rest of the app + OS + Ollama.
+pub fn max_memory_messages_for_ram(ram_gb: u64) -> u32 {
+    match ram_gb {
+        0..=8 => 80,
+        9..=16 => 120,
+        17..=24 => 160,
+        25..=32 => 200,
+        33..=48 => 260,
+        49..=64 => 320,
+        65..=96 => 380,
+        _ => 450,
     }
 }
 
@@ -82,10 +101,10 @@ fn recommended_tier_for_specs(ram_gb: u64, _cpu_cores: usize) -> &'static str {
         "small"
     } else if ram_gb < 16 {
         "medium"
-    } else if ram_gb < 24 {
-        "medium"
-    } else {
+    } else if ram_gb < 32 {
         "large"
+    } else {
+        "xlarge"
     }
 }
 
@@ -117,8 +136,10 @@ fn tier_for_size(size: u32) -> &'static str {
         "small"
     } else if size <= 10 {
         "medium"
-    } else {
+    } else if size <= 20 {
         "large"
+    } else {
+        "xlarge"
     }
 }
 
@@ -191,6 +212,21 @@ pub fn try_launch_ollama_server() {
 
 pub fn select_model_for_tier(available: &[ModelInfo], tier: &str) -> Option<String> {
     let tier_lower = tier.to_lowercase();
+    if tier_lower == "xlarge" {
+        return available
+            .iter()
+            .rev()
+            .find(|m| m.tier.to_lowercase() == "xlarge")
+            .map(|m| m.name.clone())
+            .or_else(|| {
+                available
+                    .iter()
+                    .rev()
+                    .find(|m| m.tier == "large")
+                    .map(|m| m.name.clone())
+            })
+            .or_else(|| available.last().map(|m| m.name.clone()));
+    }
     for m in available {
         if m.tier.to_lowercase() == tier_lower {
             return Some(m.name.clone());
@@ -199,7 +235,11 @@ pub fn select_model_for_tier(available: &[ModelInfo], tier: &str) -> Option<Stri
     match tier_lower.as_str() {
         "small" => available.first().map(|m| m.name.clone()),
         "large" => available.last().map(|m| m.name.clone()),
-        _ => available.iter().find(|m| m.tier == "medium").map(|m| m.name.clone()).or_else(|| available.first().map(|m| m.name.clone())),
+        _ => available
+            .iter()
+            .find(|m| m.tier == "medium")
+            .map(|m| m.name.clone())
+            .or_else(|| available.first().map(|m| m.name.clone())),
     }
 }
 

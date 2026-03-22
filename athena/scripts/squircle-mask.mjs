@@ -12,7 +12,7 @@ import { dirname, join } from "path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
 
-const inputPath = process.argv[2] || join(root, "athena-icon-square.png");
+const inputPath = process.argv[2] || join(root, "branding", "athena-icon-square.png");
 const outputPath = process.argv[3] || inputPath.replace(/\.(png|jpg|jpeg)$/i, "-squircle.$1");
 
 // Apple-style superellipse: |x|^n + |y|^n <= 1 (n ≈ 5)

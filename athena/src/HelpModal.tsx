@@ -351,8 +351,8 @@ function SettingsPanel() {
           <strong>Ollama</strong> — Status and a &quot;Try to start Ollama&quot; action when the server isn&apos;t running.
         </li>
         <li>
-          <strong>Model size &amp; conversation memory</strong> — Tier selection and how many past messages to include; hardware
-          estimate when available.
+          <strong>Model size &amp; conversation memory</strong> — Tier selection (including extra-large 34B+ when installed) and how many
+          past messages to include; <strong>maximum</strong> context scales with this device&apos;s RAM. Hardware estimate when available.
         </li>
         <li>
           <strong>Library citations</strong> — Toggle &quot;From your library&quot; under assistant messages.

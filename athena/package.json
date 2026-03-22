@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "icon": "node scripts/squircle-mask.mjs athena-icon-square.png athena-icon-squircle.png && tauri icon athena-icon-squircle.png",
+    "icon": "node scripts/squircle-mask.mjs branding/athena-icon-square.png branding/athena-icon-squircle.png && tauri icon branding/athena-icon-squircle.png",
     "icon:mask": "node scripts/squircle-mask.mjs"
   },
   "dependencies": {
@@ -16,6 +16,8 @@
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "leaflet": "^1.9.4",
+    "maplibre-gl": "^5.6.0",
+    "pmtiles": "^4.3.0",
     "pdf-lib": "^1.17.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

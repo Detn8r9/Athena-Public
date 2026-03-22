@@ -10,7 +10,7 @@
  *   node scripts/make-icon-source.mjs [scale]
  *
  * - scale defaults to 0.88 (adds ~12% padding on each axis).
- * - output is `athena-icon-square.png` in the project root.
+ * - output is `branding/athena-icon-square.png` (source asset for npm run icon).
  */
 import sharp from "sharp";
 import { fileURLToPath } from "url";
@@ -24,7 +24,7 @@ const scaleArg = process.argv[2];
 const SCALE = Math.max(0.6, Math.min(0.98, scaleArg ? Number(scaleArg) : 0.88));
 
 const input = join(root, "src-tauri", "icons", "icon.png");
-const output = join(root, "athena-icon-square.png");
+const output = join(root, "branding", "athena-icon-square.png");
 
 async function main() {
   if (!fs.existsSync(input)) {

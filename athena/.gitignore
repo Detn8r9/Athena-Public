@@ -1,3 +1,5 @@
+# App-specific ignores. Repo-wide rules: ../../.gitignore (parent of athena/).
+
 # Logs
 logs
 *.log

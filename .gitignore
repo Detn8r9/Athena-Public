@@ -1,0 +1,72 @@
+# --- OS & junk ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+*~
+
+# --- Secrets & local env (never ship) ---
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+*-credentials.json
+
+# --- Node / frontend (regenerate with npm install) ---
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+*.tsbuildinfo
+.eslintcache
+
+# --- Vite / bundler output (rebuild with npm run build) ---
+dist/
+dist-ssr/
+**/dist/
+**/dist-ssr/
+
+# --- Rust / Cargo (rebuild with cargo build) ---
+target/
+**/target/
+**/.cargo-target-phase4/
+
+# --- Tauri generated ---
+**/gen/schemas/
+
+# --- Tests & coverage ---
+coverage/
+.nyc_output/
+*.lcov
+
+# --- Logs ---
+logs/
+*.log
+
+# --- Editor / IDE (optional local settings) ---
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- Merge / patch leftovers ---
+*.orig
+*.rej
+
+# --- Cursor: keep shared rules, drop local logs/state ---
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
