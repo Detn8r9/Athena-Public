@@ -18,6 +18,12 @@ pub struct AppConfig {
     /// User's current location (address or area), used when feature_map_enabled is true.
     #[serde(default)]
     pub user_location_address: Option<String>,
+    /// User-provided API key for licensed satellite tile downloads (stored locally in app data config).
+    #[serde(default)]
+    pub satellite_api_key: Option<String>,
+    /// Enabled MBTiles raster layers for the main map view (file names including `.mbtiles`).
+    #[serde(default)]
+    pub enabled_main_map_raster_archive_file_names: Vec<String>,
     /// Currently selected visual theme / persona preset (e.g. "default", "jarvis", "fallout", or a custom id).
     #[serde(default)]
     pub theme_id: Option<String>,

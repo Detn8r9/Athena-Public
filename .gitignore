@@ -11,6 +11,11 @@ Desktop.ini
 .env.*
 !.env.example
 !.env.*.example
+athena/.env.local
+athena/.satellite-key.local
+# Local app config snapshots (may contain API keys)
+athena_config.json
+athena/athena_config.json
 *.pem
 *.key
 *.p12

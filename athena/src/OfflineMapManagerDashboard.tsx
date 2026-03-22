@@ -6,10 +6,14 @@ import {
   downloadOfflineMap,
   getOfflineMapManagerCatalog,
   listDownloadedOfflineMapIds,
+  startSatelliteRegionDownload,
   type MapDownloadCompleteEventPayload,
   type MapDownloadErrorEventPayload,
   type MapDownloadProgressEventPayload,
   type OfflineMapCatalogEntry,
+  type SatelliteRegionDownloadCompleteEventPayload,
+  type SatelliteRegionDownloadErrorEventPayload,
+  type SatelliteRegionDownloadProgressEventPayload,
 } from "./offlineMapManagerCatalog";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { OfflineMapViewport } from "./OfflineMapViewport";
@@ -23,6 +27,10 @@ export interface OfflineMapManagerDashboardProps {
   tileGeocodeOverride: string;
   /** Radius in miles around the geocoded center (same slider as Settings tile download). */
   tileRadiusMiles: number;
+  /** Controlled list of enabled MBTiles layers available in the main map view. File names include `.mbtiles`. */
+  enabledMainMapRasterArchiveFileNames?: string[];
+  /** Updates the enabled MBTiles list used by the main map view. */
+  onMainMapArchiveRasterLayersChange?: (archiveFileNames: string[]) => void;
 }
 
 type DownloadProgressState = {
@@ -66,11 +74,12 @@ function formatBytes(value: number): string {
 }
 
 function buildSyntheticDownloadedEntry(id: string): OfflineMapCatalogEntry {
+  const inferredType = id.startsWith("satellite_") ? "mbtiles" : "pmtiles";
   return {
     id,
     name: `Local archive · ${id}`,
     region: "Application data",
-    type: "pmtiles",
+    type: inferredType,
     size_mb: 0,
     download_url: "",
   };
@@ -223,6 +232,8 @@ export function OfflineMapManagerDashboard({
   savedUserLocationAddress,
   tileGeocodeOverride,
   tileRadiusMiles,
+  enabledMainMapRasterArchiveFileNames,
+  onMainMapArchiveRasterLayersChange,
 }: OfflineMapManagerDashboardProps) {
   const [entries, setEntries] = useState<OfflineMapCatalogEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -235,11 +246,17 @@ export function OfflineMapManagerDashboard({
   const [downloadInvokeErrorByMapId, setDownloadInvokeErrorByMapId] = useState<Record<string, string>>(() => ({}));
   const [rasterBaseLayerEnabled, setRasterBaseLayerEnabled] = useState(false);
   const [vectorOverlayLayerEnabled, setVectorOverlayLayerEnabled] = useState(false);
+  const [enabledMainMapRasterMapIds, setEnabledMainMapRasterMapIds] = useState<Set<string>>(() => new Set());
 
   const [extractJobId, setExtractJobId] = useState<string | null>(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractTerminalLines, setExtractTerminalLines] = useState<string[]>([]);
   const activeExtractJobIdRef = useRef<string | null>(null);
+  const [satelliteJobId, setSatelliteJobId] = useState<string | null>(null);
+  const [isSatelliteDownloading, setIsSatelliteDownloading] = useState(false);
+  const [satelliteProgressLabel, setSatelliteProgressLabel] = useState<string>("");
+  const [satelliteTerminalLines, setSatelliteTerminalLines] = useState<string[]>([]);
+  const activeSatelliteJobIdRef = useRef<string | null>(null);
 
   const { localRegionEntries, otherRegionEntries } = useMemo(
     () => partitionCatalogBySavedLocation(entries, savedUserLocationAddress),
@@ -433,6 +450,91 @@ export function OfflineMapManagerDashboard({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    let disposed = false;
+    const registeredUnlisten: Array<() => void> = [];
+
+    void (async () => {
+      const unlistenProgress = await listen<SatelliteRegionDownloadProgressEventPayload>(
+        "satellite_region_download_progress",
+        (event) => {
+          const payload = event.payload;
+          if (payload.job_id !== activeSatelliteJobIdRef.current) {
+            return;
+          }
+          const total = Math.max(1, payload.total_tiles);
+          const pct = Math.min(100, (payload.downloaded_tiles / total) * 100);
+          setSatelliteProgressLabel(
+            `${payload.downloaded_tiles.toLocaleString()} / ${payload.total_tiles.toLocaleString()} tiles (${pct.toFixed(1)}%)`,
+          );
+        },
+      );
+      if (disposed) {
+        unlistenProgress();
+        return;
+      }
+      registeredUnlisten.push(unlistenProgress);
+
+      const unlistenComplete = await listen<SatelliteRegionDownloadCompleteEventPayload>(
+        "satellite_region_download_complete",
+        (event) => {
+          const payload = event.payload;
+          if (payload.job_id !== activeSatelliteJobIdRef.current) {
+            return;
+          }
+          activeSatelliteJobIdRef.current = null;
+          setSatelliteJobId(null);
+          setIsSatelliteDownloading(false);
+          setSatelliteProgressLabel("Complete");
+          setSatelliteTerminalLines((previous) => {
+            const next = [...previous, `Saved: ${payload.path}`];
+            return next.length > EXTRACT_TERMINAL_MAX_LINES ? next.slice(-EXTRACT_TERMINAL_MAX_LINES) : next;
+          });
+          void listDownloadedOfflineMapIds().then((ids) => {
+            setDownloadedMapIds(new Set(ids));
+          });
+        },
+      );
+      if (disposed) {
+        unlistenComplete();
+        return;
+      }
+      registeredUnlisten.push(unlistenComplete);
+
+      const unlistenError = await listen<SatelliteRegionDownloadErrorEventPayload>(
+        "satellite_region_download_error",
+        (event) => {
+          const payload = event.payload;
+          if (payload.job_id !== activeSatelliteJobIdRef.current) {
+            return;
+          }
+          activeSatelliteJobIdRef.current = null;
+          setSatelliteJobId(null);
+          setIsSatelliteDownloading(false);
+          setSatelliteTerminalLines((previous) => {
+            const next = [...previous, `Error: ${payload.message}`];
+            return next.length > EXTRACT_TERMINAL_MAX_LINES ? next.slice(-EXTRACT_TERMINAL_MAX_LINES) : next;
+          });
+        },
+      );
+      if (disposed) {
+        unlistenError();
+        return;
+      }
+      registeredUnlisten.push(unlistenError);
+    })();
+
+    return () => {
+      disposed = true;
+      for (const unlisten of registeredUnlisten) {
+        unlisten();
+      }
+    };
+  }, [open]);
+
   const activeEntry = resolveActiveCatalogEntry(activePreviewId, entries, downloadedMapIds);
   const catalogTypeLower = activeEntry !== undefined ? activeEntry.type.toLowerCase() : "";
   const activeDownloaded = activeEntry !== undefined && downloadedMapIds.has(activeEntry.id);
@@ -442,6 +544,23 @@ export function OfflineMapManagerDashboard({
 
   const catalogEntryIds = new Set(entries.map((e) => e.id));
   const downloadedIdsNotInCatalog = [...downloadedMapIds].filter((id) => !catalogEntryIds.has(id)).sort();
+
+  useEffect(() => {
+    const incoming = enabledMainMapRasterArchiveFileNames ?? [];
+    const normalizedIds = incoming
+      .map((name) => name.trim())
+      .filter((name) => name.toLowerCase().endsWith(".mbtiles"))
+      .map((name) => name.slice(0, -".mbtiles".length))
+      .filter((id) => id.length > 0);
+    setEnabledMainMapRasterMapIds(new Set(normalizedIds));
+  }, [enabledMainMapRasterArchiveFileNames]);
+
+  const downloadedMainMapLayerRows = useMemo(() => {
+    return [...downloadedMapIds]
+      .sort((a, b) => a.localeCompare(b))
+      .map((id) => resolveActiveCatalogEntry(id, entries, downloadedMapIds) ?? buildSyntheticDownloadedEntry(id))
+      .map((entry) => ({ id: entry.id, name: entry.name, typeLower: entry.type.toLowerCase() }));
+  }, [downloadedMapIds, entries]);
 
   useEffect(() => {
     const entry = resolveActiveCatalogEntry(activePreviewId, entries, downloadedMapIds);
@@ -459,10 +578,6 @@ export function OfflineMapManagerDashboard({
     }
   }, [activePreviewId, entries, downloadedMapIds]);
 
-  if (!open) {
-    return null;
-  }
-
   const baseRasterArchiveFileName =
     rasterBaseLayerEnabled && activeDownloaded && catalogTypeLower === "mbtiles" && activeEntry !== undefined
       ? `${activeEntry.id}.mbtiles`
@@ -472,6 +587,23 @@ export function OfflineMapManagerDashboard({
     vectorOverlayLayerEnabled && activeDownloaded && catalogTypeLower === "pmtiles" && activeEntry !== undefined
       ? `${activeEntry.id}.pmtiles`
       : null;
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    if (onMainMapArchiveRasterLayersChange === undefined) {
+      return;
+    }
+    const enabledFileNames = [...enabledMainMapRasterMapIds]
+      .sort((a, b) => a.localeCompare(b))
+      .map((id) => `${id}.mbtiles`);
+    onMainMapArchiveRasterLayersChange(enabledFileNames);
+  }, [open, enabledMainMapRasterMapIds, onMainMapArchiveRasterLayersChange]);
+
+  if (!open) {
+    return null;
+  }
 
   const canEnableRasterBase = activeDownloaded && catalogTypeLower === "mbtiles";
   const canEnableVectorOverlay = activeDownloaded && catalogTypeLower === "pmtiles";
@@ -614,6 +746,90 @@ export function OfflineMapManagerDashboard({
                         </pre>
                       )}
                     </div>
+                    <div className="map-manager-catalog-card" aria-label="Satellite imagery regional downloader">
+                      <div className="map-manager-catalog-card-head">
+                        <span className="map-manager-catalog-name">High-resolution satellite region</span>
+                        <span className="map-manager-catalog-badge">MBTiles</span>
+                      </div>
+                      <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
+                        Download an offline satellite MBTiles package centered on your saved location. This download requires
+                        a saved MapTiler key in <strong>Settings → API keys</strong> (or the
+                        <code> ATHENA_SATELLITE_API_KEY </code>
+                        environment fallback), then integrates automatically into Athena.
+                      </p>
+                      <button
+                        type="button"
+                        className="map-manager-download-btn"
+                        disabled={isSatelliteDownloading || !canStartStreetExtract}
+                        onClick={() => {
+                          void (async () => {
+                            const query = (tileGeocodeOverride.trim() || savedUserLocationAddress.trim()).trim();
+                            if (query.length === 0) {
+                              return;
+                            }
+                            setIsSatelliteDownloading(true);
+                            setSatelliteTerminalLines([]);
+                            setSatelliteProgressLabel("");
+                            setSatelliteJobId(null);
+                            activeSatelliteJobIdRef.current = null;
+                            try {
+                              const geo = await invoke<[number, number]>("geocode_place_query", { query });
+                              const centerLatitudeDegrees = geo[0];
+                              const centerLongitudeDegrees = geo[1];
+                              const boundingBox = boundingBoxFromCenterAndRadiusMiles(
+                                centerLatitudeDegrees,
+                                centerLongitudeDegrees,
+                                tileRadiusMiles,
+                              );
+                              const jobId = await startSatelliteRegionDownload({
+                                minLon: boundingBox.min_lon,
+                                minLat: boundingBox.min_lat,
+                                maxLon: boundingBox.max_lon,
+                                maxLat: boundingBox.max_lat,
+                                minZoom: 10,
+                                maxZoom: 15,
+                                locationLabel: query,
+                              });
+                              activeSatelliteJobIdRef.current = jobId;
+                              setSatelliteJobId(jobId);
+                              setSatelliteTerminalLines((previous) => [
+                                ...previous,
+                                `Started satellite region job ${jobId}.`,
+                              ]);
+                            } catch (err: unknown) {
+                              activeSatelliteJobIdRef.current = null;
+                              setSatelliteJobId(null);
+                              setIsSatelliteDownloading(false);
+                              setSatelliteTerminalLines([
+                                err != null ? String(err) : "Satellite download could not be started.",
+                              ]);
+                            }
+                          })();
+                        }}
+                      >
+                        {isSatelliteDownloading ? "Downloading satellite map" : "Download satellite (MBTiles)"}
+                      </button>
+                      {satelliteJobId !== null && (
+                        <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
+                          Job: <code>{satelliteJobId}</code>
+                        </p>
+                      )}
+                      {satelliteProgressLabel.length > 0 && (
+                        <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
+                          {satelliteProgressLabel}
+                        </p>
+                      )}
+                      {satelliteTerminalLines.length > 0 && (
+                        <pre
+                          className="map-manager-extract-terminal"
+                          aria-live="polite"
+                          aria-label="Satellite download output"
+                          style={{ marginTop: "0.5rem" }}
+                        >
+                          {satelliteTerminalLines.join("\n")}
+                        </pre>
+                      )}
+                    </div>
                     <ul className="map-manager-catalog-list" aria-label="Catalog entries matching your saved location">
                       {localRegionEntries.length === 0 && (
                         <li className="map-manager-catalog-empty text-muted small">
@@ -663,9 +879,10 @@ export function OfflineMapManagerDashboard({
                   </section>
 
                   <p className="text-muted small map-manager-catalog-footnote" style={{ marginTop: "0.75rem" }}>
-                    True satellite imagery usually depends on a licensed provider and is not bundled here; import satellite MBTiles
-                    manually if you need aerial imagery. The sidecar extractor supplies street and terrain vector data for your saved
-                    area.
+                    True satellite imagery depends on a licensed provider key. Save your key in
+                    <strong> Settings → API keys </strong>
+                    to enable one-click satellite MBTiles downloads in this panel. The sidecar extractor supplies street and terrain
+                    vector data for your saved area.
                   </p>
                 </>
               )}
@@ -726,6 +943,48 @@ export function OfflineMapManagerDashboard({
                   />
                   <span className="map-manager-toggle-label">Satellite / raster (MBTiles) base</span>
                 </label>
+              </fieldset>
+              <fieldset className="map-manager-toggles-fieldset">
+                <legend className="map-manager-toggles-legend">Downloaded layers (main map)</legend>
+                <p className="text-muted small map-manager-toggles-hint">
+                  Enable any downloaded MBTiles layers here. They will appear in Map view and can be used without reopening this menu.
+                </p>
+                {downloadedMainMapLayerRows.length === 0 && (
+                  <p className="text-muted small map-manager-toggles-hint">No downloaded map layers yet.</p>
+                )}
+                {downloadedMainMapLayerRows.map((layer) => {
+                  const isRaster = layer.typeLower === "mbtiles";
+                  const checked = enabledMainMapRasterMapIds.has(layer.id);
+                  return (
+                    <label
+                      key={layer.id}
+                      className={`map-manager-toggle-row${isRaster ? "" : " map-manager-toggle-row--disabled"}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="map-manager-toggle-input"
+                        checked={checked}
+                        disabled={!isRaster}
+                        onChange={(e) => {
+                          const nextChecked = e.target.checked;
+                          setEnabledMainMapRasterMapIds((previous) => {
+                            const next = new Set(previous);
+                            if (nextChecked) {
+                              next.add(layer.id);
+                            } else {
+                              next.delete(layer.id);
+                            }
+                            return next;
+                          });
+                        }}
+                      />
+                      <span className="map-manager-toggle-label">
+                        {layer.name} ({layer.typeLower.toUpperCase()})
+                        {!isRaster ? " — preview only" : ""}
+                      </span>
+                    </label>
+                  );
+                })}
               </fieldset>
             </div>
             <div className="map-manager-viewport" role="region" aria-label="Map viewport">

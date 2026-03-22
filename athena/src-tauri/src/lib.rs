@@ -2,6 +2,7 @@ mod chats;
 mod chunking;
 mod config;
 mod db;
+mod spatial;
 mod embeddings;
 mod indexer;
 mod kiwix;
@@ -12,6 +13,7 @@ mod athena_mbtiles_tile_protocol;
 mod map_manager_catalog;
 mod map_manager_download;
 mod pmtiles_region_extract;
+mod satellite_region_download;
 mod mbtiles_io;
 mod pmtiles_io;
 mod tile_pack;
@@ -39,7 +41,10 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 use config::{load_config, save_config, AppConfig, CustomTheme};
-use db::{extract_keywords, ChunkEmbedding, IndexedFile, IndexStats, RagCounts};
+use db::{
+    extract_keywords, ChunkEmbedding, IndexedFile, IndexStats, RagCounts,
+    TacticalMeshNodeLocation, TacticalPointOfInterest,
+};
 use chats::{get_chat as get_saved_chat, list_chats as list_saved_chats, save_chat as save_saved_chat, update_chat_context_summary as update_saved_chat_context_summary, update_chat_metadata as update_saved_chat_metadata, delete_chat as delete_saved_chat, ChatSummary, SavedChat, SavedMessage};
 use kiwix::{scan_kiwix_zim_files as kiwix_scan_zim_files, DiscoveredZim};
 use ollama::{
@@ -507,6 +512,207 @@ fn set_user_location(app: tauri::AppHandle, value: Option<String>) -> Result<(),
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let mut config = load_config(&app_data_dir);
     config.user_location_address = value.filter(|s| !s.trim().is_empty());
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+fn normalize_mbtiles_file_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
+        return None;
+    }
+    if !trimmed.to_ascii_lowercase().ends_with(".mbtiles") {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+#[tauri::command]
+fn get_enabled_main_map_raster_archive_file_names(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let cfg = load_config(&app_data_dir);
+    let mut values: Vec<String> = cfg
+        .enabled_main_map_raster_archive_file_names
+        .iter()
+        .filter_map(|name| normalize_mbtiles_file_name(name))
+        .collect();
+    values.sort();
+    values.dedup();
+    Ok(values)
+}
+
+#[tauri::command]
+fn set_enabled_main_map_raster_archive_file_names(
+    app: tauri::AppHandle,
+    archive_file_names: Vec<String>,
+) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut normalized: Vec<String> = archive_file_names
+        .iter()
+        .filter_map(|name| normalize_mbtiles_file_name(name))
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    let mut cfg = load_config(&app_data_dir);
+    cfg.enabled_main_map_raster_archive_file_names = normalized;
+    save_config(&app_data_dir, &cfg)?;
+    Ok(())
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct TacticalDataFile {
+    exported_at: i64,
+    points_of_interest: Vec<TacticalPointOfInterest>,
+    mesh_node_locations: Vec<TacticalMeshNodeLocation>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct TacticalImportResult {
+    imported_points_of_interest: usize,
+    imported_mesh_node_locations: usize,
+    source_path: String,
+}
+
+fn tactical_export_default_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let base_dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&base_dir).map_err(|e| e.to_string())?;
+    Ok(base_dir.join("athena_tactical.athena-tactical"))
+}
+
+#[tauri::command]
+fn export_tactical_data(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let export_path = tactical_export_default_path(&app)?;
+    let points = state.db.list_tactical_points_of_interest()?;
+    let nodes = state.db.list_tactical_mesh_node_locations()?;
+    let payload = TacticalDataFile {
+        exported_at: chrono::Utc::now().timestamp(),
+        points_of_interest: points,
+        mesh_node_locations: nodes,
+    };
+    let encoded = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+    std::fs::write(&export_path, encoded).map_err(|e| e.to_string())?;
+    Ok(export_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn import_tactical_data(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    source_path: Option<String>,
+) -> Result<TacticalImportResult, String> {
+    let path = if let Some(raw) = source_path {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            tactical_export_default_path(&app)?
+        } else {
+            std::path::PathBuf::from(trimmed)
+        }
+    } else {
+        tactical_export_default_path(&app)?
+    };
+    if !path.is_file() {
+        return Err(format!(
+            "Tactical data file not found: {}",
+            path.to_string_lossy()
+        ));
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let payload: TacticalDataFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    state
+        .db
+        .import_tactical_data(&payload.points_of_interest, &payload.mesh_node_locations)?;
+    Ok(TacticalImportResult {
+        imported_points_of_interest: payload.points_of_interest.len(),
+        imported_mesh_node_locations: payload.mesh_node_locations.len(),
+        source_path: path.to_string_lossy().to_string(),
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+struct TacticalMapLayers {
+    points_of_interest: Vec<TacticalPointOfInterest>,
+    mesh_node_locations: Vec<TacticalMeshNodeLocation>,
+}
+
+#[tauri::command]
+fn get_tactical_map_layers(state: tauri::State<'_, AppState>) -> Result<TacticalMapLayers, String> {
+    Ok(TacticalMapLayers {
+        points_of_interest: state.db.list_tactical_points_of_interest()?,
+        mesh_node_locations: state.db.list_tactical_mesh_node_locations()?,
+    })
+}
+
+#[tauri::command]
+fn get_offline_mbtiles_zoom_range(
+    app: tauri::AppHandle,
+    archive_file_name: String,
+) -> Result<Option<(u8, u8)>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let maps_dir = map_manager_download::offline_maps_directory(&app_data_dir);
+    let name = archive_file_name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("Archive file name must be a single file name.".to_string());
+    }
+    if !name.to_ascii_lowercase().ends_with(".mbtiles") {
+        return Err("Archive file name must end with .mbtiles.".to_string());
+    }
+    let path = maps_dir.join(name);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    mbtiles_io::read_mbtiles_zoom_range(&path)
+}
+
+#[tauri::command]
+fn get_offline_mbtiles_bounds(
+    app: tauri::AppHandle,
+    archive_file_name: String,
+) -> Result<Option<(f64, f64, f64, f64)>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let maps_dir = map_manager_download::offline_maps_directory(&app_data_dir);
+    let name = archive_file_name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("Archive file name must be a single file name.".to_string());
+    }
+    if !name.to_ascii_lowercase().ends_with(".mbtiles") {
+        return Err("Archive file name must end with .mbtiles.".to_string());
+    }
+    let path = maps_dir.join(name);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    mbtiles_io::read_mbtiles_bounds(&path)
+}
+
+#[tauri::command]
+fn get_satellite_api_key(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(load_config(&app_data_dir).satellite_api_key.clone())
+}
+
+#[tauri::command]
+fn set_satellite_api_key(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    config.satellite_api_key = value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     save_config(&app_data_dir, &config)?;
     Ok(())
 }
@@ -1255,6 +1461,25 @@ fn build_chat_messages(
     messages
 }
 
+/// Inserts a secondary system message immediately before the final user turn (Ollama receives it after history, before the latest user prompt).
+fn insert_spatial_system_before_last_user_message(
+    mut messages: Vec<ChatMessage>,
+    spatial_content: String,
+) -> Vec<ChatMessage> {
+    if let Some(last) = messages.pop() {
+        if last.role == "user" {
+            messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: spatial_content,
+            });
+            messages.push(last);
+        } else {
+            messages.push(last);
+        }
+    }
+    messages
+}
+
 #[tauri::command]
 fn send_message(app: tauri::AppHandle, message: String, history: Option<Vec<HistoryMessage>>) -> Result<String, String> {
     if !is_ollama_running() {
@@ -1999,7 +2224,21 @@ fn send_message_stream(
         );
 
         let max_memory = config.memory_messages.unwrap_or(20) as usize;
-        let messages = build_chat_messages(system_content, history_ref, &message_for_model, max_memory);
+        let mut messages = build_chat_messages(system_content, history_ref, &message_for_model, max_memory);
+
+        if let (Some(lat), Some(lon)) = (user_lat, user_lon) {
+            if lat.is_finite()
+                && lon.is_finite()
+                && crate::spatial::user_query_suggests_spatial_context(&message_for_model)
+            {
+                if let Ok(spatial_block) =
+                    crate::spatial::build_spatial_context(&db, lat, lon, &message_for_model)
+                {
+                    messages =
+                        insert_spatial_system_before_last_user_message(messages, spatial_block);
+                }
+            }
+        }
 
         let mut on_chunk = |chunk: &str| {
             let _ = app_emit.emit(STREAM_CHUNK_EVENT, chunk);
@@ -2106,6 +2345,15 @@ pub fn run() {
             set_show_sources_in_chat,
             get_user_location,
             set_user_location,
+            get_enabled_main_map_raster_archive_file_names,
+            set_enabled_main_map_raster_archive_file_names,
+            export_tactical_data,
+            import_tactical_data,
+            get_tactical_map_layers,
+            get_offline_mbtiles_zoom_range,
+            get_offline_mbtiles_bounds,
+            get_satellite_api_key,
+            set_satellite_api_key,
             get_memory_estimate,
             get_local_time,
             get_sun_times,
@@ -2116,6 +2364,7 @@ pub fn run() {
             get_offline_map_manager_catalog,
             list_downloaded_offline_map_ids,
             pmtiles_region_extract::extract_pmtiles_region,
+            satellite_region_download::start_satellite_region_download,
             download_offline_map,
             get_downloaded_maps,
             check_network_reachable,

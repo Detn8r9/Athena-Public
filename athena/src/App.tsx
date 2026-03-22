@@ -9,13 +9,14 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { TRIAGE_ITEMS, getTriageItem, TriageId } from "./triageData";
 import { HelpModal } from "./HelpModal";
 import { MeshRadioModal, type MeshRadioMessage } from "./MeshRadioModal";
-import { MapView, type MapBasemap } from "./MapView";
+import { MapView, type MapBasemap, type TacticalMapMeshNodeLocation, type TacticalMapPointOfInterest } from "./MapView";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { OfflineMapManagerDashboard } from "./OfflineMapManagerDashboard";
 import { registerPmtilesMaplibreProtocolOnce } from "./maplibrePmtilesProtocolRegistration";
 import { evaluateMainChatWatchdog } from "./streamWatchdog";
 import { appendMeshMessageCapped } from "./meshMessageLog";
 import { PhotoshopColorPicker } from "./PhotoshopColorPicker";
+import { hexToRgbCsv } from "./colorUtils";
 
 registerPmtilesMaplibreProtocolOnce();
 
@@ -493,6 +494,14 @@ const PRESET_COLORS: Record<Theme, { bg: string; primary: string; text: string }
 
 const DEFAULT_CUSTOM = PRESET_COLORS.blue;
 
+/** RGB triples for `documentElement` CSS vars — default experience uses blue (`PRESET_COLORS.blue`). */
+const DEFAULT_THEME_BG_RGB = hexToRgbCsv(PRESET_COLORS.blue.bg) ?? "12, 18, 34";
+const DEFAULT_THEME_ACCENT_RGB = hexToRgbCsv(PRESET_COLORS.blue.primary) ?? "56, 189, 248";
+
+/** Fallout CRT: green phosphor; bg slightly darker than `PRESET_COLORS.green` for screen depth. */
+const FALLOUT_DEFAULT_BG_RGB = "6, 14, 10";
+const FALLOUT_DEFAULT_ACCENT_RGB = hexToRgbCsv(PRESET_COLORS.green.primary) ?? "52, 211, 153";
+
 function loadTheme(): ThemeOrCustom {
   try {
     const s = localStorage.getItem(STORAGE_KEY_THEME);
@@ -639,6 +648,7 @@ function App() {
     | "general"
     | "ai"
     | "location"
+    | "apiKeys"
     | "maps"
     | "mesh"
     | "voice"
@@ -706,10 +716,18 @@ function App() {
   const [showSourcesInChat, setShowSourcesInChat] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [userLocationAddress, setUserLocationAddress] = useState<string>("");
+  const DEFAULT_SATELLITE_API_KEY_PLACEHOLDER = "MAPTILER_SATELLITE_API_KEY_HERE";
+  const [satelliteApiKeyInput, setSatelliteApiKeyInput] = useState("");
+  const [satelliteApiKeySaved, setSatelliteApiKeySaved] = useState(false);
+  const [satelliteApiKeyStatus, setSatelliteApiKeyStatus] = useState<string | null>(null);
+  const [satelliteApiKeyFocused, setSatelliteApiKeyFocused] = useState(false);
+  const [showSatelliteKeyTutorial, setShowSatelliteKeyTutorial] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
   const [mapCatalog, setMapCatalog] = useState<MapCatalogEntry[]>([]);
   const [downloadedMaps, setDownloadedMaps] = useState<DownloadedMap[]>([]);
   const [pois, setPois] = useState<Poi[]>([]);
+  const [tacticalMapPoints, setTacticalMapPoints] = useState<TacticalMapPointOfInterest[]>([]);
+  const [tacticalMapNodes, setTacticalMapNodes] = useState<TacticalMapMeshNodeLocation[]>([]);
   const [mapChatInput, setMapChatInput] = useState("");
   const [mapChatSending, setMapChatSending] = useState(false);
   const [mapChatLastMessage, setMapChatLastMessage] = useState("");
@@ -729,6 +747,16 @@ function App() {
   const [offlineOsmRoot, setOfflineOsmRoot] = useState<string | null>(null);
   const [offlineTopoRoot, setOfflineTopoRoot] = useState<string | null>(null);
   const [offlineImportedRoot, setOfflineImportedRoot] = useState<string | null>(null);
+  const [enabledArchiveRasterFileNames, setEnabledArchiveRasterFileNames] = useState<string[]>([]);
+  const mapRasterLayersHydratedRef = useRef(false);
+  /** Last browser GPS fix or explicit update from map chat; used for chat spatial RAG when a fresh fix is unavailable. */
+  const lastKnownGpsRef = useRef<{ lat: number; lon: number } | null>(null);
+  const [archiveRasterNativeZoomRangesByFile, setArchiveRasterNativeZoomRangesByFile] = useState<
+    Record<string, [number, number]>
+  >({});
+  const [archiveRasterBoundsByFile, setArchiveRasterBoundsByFile] = useState<
+    Record<string, [number, number, number, number]>
+  >({});
   const [mapBasemap, setMapBasemap] = useState<MapBasemap>("online_osm");
   const [mapViewCenter, setMapViewCenter] = useState<[number, number]>([39.5, -98.35]);
   const [mapViewZoom, setMapViewZoom] = useState(4);
@@ -738,6 +766,30 @@ function App() {
   const [tileGeocodeQuery, setTileGeocodeQuery] = useState("");
   const [tilePackEstimate, setTilePackEstimate] = useState<TilePackEstimate | null>(null);
   const [tileEstimateBusy, setTileEstimateBusy] = useState(false);
+
+  const resolveGpsForChatPayload = useCallback(async (): Promise<{ userLat: number | null; userLon: number | null }> => {
+    if (typeof navigator !== "undefined" && navigator.geolocation) {
+      const fresh = await new Promise<{ lat: number; lon: number } | null>((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+          () => resolve(null),
+          { timeout: 8000, maximumAge: 120000, enableHighAccuracy: false },
+        );
+      });
+      if (fresh) {
+        lastKnownGpsRef.current = fresh;
+        return { userLat: fresh.lat, userLon: fresh.lon };
+      }
+    }
+    const last = lastKnownGpsRef.current;
+    if (last) {
+      return { userLat: last.lat, userLon: last.lon };
+    }
+    if (featureMapEnabled && mapOpen) {
+      return { userLat: mapViewCenter[0], userLon: mapViewCenter[1] };
+    }
+    return { userLat: null, userLon: null };
+  }, [featureMapEnabled, mapOpen, mapViewCenter]);
 
   const headerDownloadBar = useMemo(() => {
     const entries = Object.entries(downloadJobs);
@@ -1051,6 +1103,19 @@ function App() {
     if (id === "fieldguide") {
       setTheme("amber");
       saveTheme("amber");
+      const c = PRESET_COLORS.amber;
+      setCustomBg(c.bg);
+      setCustomPrimary(c.primary);
+      setCustomText(c.text);
+      saveCustomColors(c);
+    } else if (id === "default") {
+      setTheme("blue");
+      saveTheme("blue");
+      const c = PRESET_COLORS.blue;
+      setCustomBg(c.bg);
+      setCustomPrimary(c.primary);
+      setCustomText(c.text);
+      saveCustomColors(c);
     } else {
       const palette: Theme =
         theme !== "custom" && THEMES.includes(theme as Theme) ? (theme as Theme) : "blue";
@@ -1621,6 +1686,14 @@ function App() {
             setCustomPrimary(c.primary);
             setCustomText(c.text);
             saveCustomColors(c);
+          } else if (safeId === "default") {
+            setTheme("blue");
+            saveTheme("blue");
+            const c = PRESET_COLORS.blue;
+            setCustomBg(c.bg);
+            setCustomPrimary(c.primary);
+            setCustomText(c.text);
+            saveCustomColors(c);
           } else {
             const local = loadTheme();
             const pal: Theme =
@@ -2132,6 +2205,25 @@ function App() {
     }
   }
 
+  async function handleSaveSatelliteApiKey() {
+    const trimmed = satelliteApiKeyInput.trim();
+    const isGenericPlaceholder = trimmed === DEFAULT_SATELLITE_API_KEY_PLACEHOLDER;
+    try {
+      await invoke("set_satellite_api_key", { value: trimmed.length > 0 && !isGenericPlaceholder ? trimmed : null });
+      if (trimmed.length > 0 && !isGenericPlaceholder) {
+        setSatelliteApiKeySaved(true);
+        setSatelliteApiKeyStatus("Satellite API key saved locally on this device.");
+      } else {
+        setSatelliteApiKeySaved(false);
+        setSatelliteApiKeyStatus("Satellite API key cleared on this device.");
+      }
+    } catch (e) {
+      const msg = e != null ? String(e) : "Could not save satellite API key.";
+      setSatelliteApiKeyStatus(msg);
+      setLibraryError(msg);
+    }
+  }
+
   async function openLocalDataInstallMenu() {
     invoke<DownloadedMap[]>("get_downloaded_maps").then(setDownloadedMaps).catch(() => {});
     const online = await invoke<boolean>("check_network_reachable").catch(() => false);
@@ -2160,6 +2252,45 @@ function App() {
       .catch(() => setOllamaAvailable(false));
   }, []);
 
+  /* Hydrate persisted map/location toggles on app launch so header icons render immediately. */
+  useEffect(() => {
+    invoke<boolean>("get_feature_map_enabled")
+      .then(setFeatureMapEnabled)
+      .catch(() => setFeatureMapEnabled(false));
+    invoke<string | null>("get_user_location")
+      .then((value) => setUserLocationAddress(value ?? ""))
+      .catch(() => setUserLocationAddress(""));
+    invoke<string[]>("get_enabled_main_map_raster_archive_file_names")
+      .then((names) => {
+        const normalized = [...new Set(names.map((name) => name.trim()).filter((name) => name.length > 0))].sort((a, b) =>
+          a.localeCompare(b),
+        );
+        setEnabledArchiveRasterFileNames(normalized);
+      })
+      .catch(() => setEnabledArchiveRasterFileNames([]))
+      .finally(() => {
+        mapRasterLayersHydratedRef.current = true;
+      });
+  }, []);
+
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        lastKnownGpsRef.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+      },
+      () => {},
+      { timeout: 20000, maximumAge: 600000, enableHighAccuracy: false },
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!mapRasterLayersHydratedRef.current) return;
+    void invoke("set_enabled_main_map_raster_archive_file_names", {
+      archiveFileNames: enabledArchiveRasterFileNames,
+    }).catch(() => {});
+  }, [enabledArchiveRasterFileNames]);
+
   /* When "Ollama not running" banner is visible, re-check every 10s so we update if user starts Ollama */
   useEffect(() => {
     if (ollamaAvailable || ollamaNotRunningBannerDismissed) return;
@@ -2186,6 +2317,22 @@ function App() {
       invoke<boolean>("get_mesh_ai_auto_reply").then(setMeshAiAutoReply).catch(() => setMeshAiAutoReply(true));
       invoke<boolean>("get_show_sources_in_chat").then(setShowSourcesInChat).catch(() => setShowSourcesInChat(true));
       invoke<string | null>("get_user_location").then((v) => setUserLocationAddress(v ?? "")).catch(() => setUserLocationAddress(""));
+      invoke<string | null>("get_satellite_api_key")
+        .then((v) => {
+          const key = v ?? "";
+          setSatelliteApiKeyInput(key);
+          setSatelliteApiKeySaved(key.trim().length > 0 && key.trim() !== DEFAULT_SATELLITE_API_KEY_PLACEHOLDER);
+          setSatelliteApiKeyStatus(null);
+          setSatelliteApiKeyFocused(false);
+          setShowSatelliteKeyTutorial(false);
+        })
+        .catch(() => {
+          setSatelliteApiKeyInput("");
+          setSatelliteApiKeySaved(false);
+          setSatelliteApiKeyStatus(null);
+          setSatelliteApiKeyFocused(false);
+          setShowSatelliteKeyTutorial(false);
+        });
       invoke<DownloadedMap[]>("get_downloaded_maps").then(setDownloadedMaps).catch(() => {});
     }
   }, [settingsOpen]);
@@ -2787,7 +2934,119 @@ function App() {
     if (mapBasemap === "offline_osm" && !offlineOsmRoot) setMapBasemap("online_osm");
     if (mapBasemap === "offline_topo" && !offlineTopoRoot) setMapBasemap("online_osm");
     if (mapBasemap === "offline_imported" && !offlineImportedRoot) setMapBasemap("online_osm");
-  }, [mapBasemap, offlineOsmRoot, offlineTopoRoot, offlineImportedRoot]);
+    if (mapBasemap === "offline_archive_raster" && enabledArchiveRasterFileNames.length === 0) setMapBasemap("online_osm");
+  }, [mapBasemap, offlineOsmRoot, offlineTopoRoot, offlineImportedRoot, enabledArchiveRasterFileNames]);
+
+  useEffect(() => {
+    if (enabledArchiveRasterFileNames.length === 0) {
+      setArchiveRasterNativeZoomRangesByFile({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      enabledArchiveRasterFileNames.map(async (fileName) => {
+        const range = await invoke<[number, number] | null>("get_offline_mbtiles_zoom_range", { archiveFileName: fileName });
+        return { fileName, range };
+      }),
+    )
+      .then((rows) => {
+        if (cancelled) return;
+        const next: Record<string, [number, number]> = {};
+        for (const row of rows) {
+          const range = row.range;
+          if (!Array.isArray(range) || range.length !== 2) continue;
+          const minZoom = Number(range[0]);
+          const maxZoom = Number(range[1]);
+          if (!Number.isFinite(minZoom) || !Number.isFinite(maxZoom)) continue;
+          next[row.fileName] = [minZoom, maxZoom];
+        }
+        setArchiveRasterNativeZoomRangesByFile(next);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setArchiveRasterNativeZoomRangesByFile({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabledArchiveRasterFileNames]);
+
+  useEffect(() => {
+    if (enabledArchiveRasterFileNames.length === 0) {
+      setArchiveRasterBoundsByFile({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      enabledArchiveRasterFileNames.map(async (fileName) => {
+        const bounds = await invoke<[number, number, number, number] | null>("get_offline_mbtiles_bounds", {
+          archiveFileName: fileName,
+        });
+        return { fileName, bounds };
+      }),
+    )
+      .then((rows) => {
+        if (cancelled) return;
+        const next: Record<string, [number, number, number, number]> = {};
+        for (const row of rows) {
+          const bounds = row.bounds;
+          if (!Array.isArray(bounds) || bounds.length !== 4) continue;
+          const minLon = Number(bounds[0]);
+          const minLat = Number(bounds[1]);
+          const maxLon = Number(bounds[2]);
+          const maxLat = Number(bounds[3]);
+          if (![minLon, minLat, maxLon, maxLat].every((v) => Number.isFinite(v))) continue;
+          next[row.fileName] = [minLon, minLat, maxLon, maxLat];
+        }
+        setArchiveRasterBoundsByFile(next);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setArchiveRasterBoundsByFile({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabledArchiveRasterFileNames]);
+
+  const handleMapSatelliteDownloaded = useCallback((mapId: string) => {
+    const normalized = mapId.trim();
+    if (!normalized) return;
+    const fileName = `${normalized}.mbtiles`;
+    setEnabledArchiveRasterFileNames((previous) => (previous.includes(fileName) ? previous : [...previous, fileName]));
+    setMapBasemap("offline_archive_raster");
+    void invoke<DownloadedMap[]>("get_downloaded_maps").then(setDownloadedMaps).catch(() => {});
+  }, []);
+
+  const handleMainMapArchiveRasterLayersChange = useCallback((archiveFileNames: string[]) => {
+    const normalized = [...new Set(archiveFileNames.map((name) => name.trim()).filter((name) => name.length > 0))].sort(
+      (a, b) => a.localeCompare(b),
+    );
+    setEnabledArchiveRasterFileNames((previous) => {
+      const previousNormalized = [...previous].sort((a, b) => a.localeCompare(b));
+      if (
+        previousNormalized.length === normalized.length &&
+        previousNormalized.every((value, index) => value === normalized[index])
+      ) {
+        return previous;
+      }
+      return normalized;
+    });
+  }, []);
+
+  const reloadTacticalMapLayers = useCallback(() => {
+    void invoke<{ points_of_interest: TacticalMapPointOfInterest[]; mesh_node_locations: TacticalMapMeshNodeLocation[] }>(
+      "get_tactical_map_layers",
+    )
+      .then((payload) => {
+        setTacticalMapPoints(payload.points_of_interest);
+        setTacticalMapNodes(payload.mesh_node_locations);
+      })
+      .catch(() => {
+        setTacticalMapPoints([]);
+        setTacticalMapNodes([]);
+      });
+  }, []);
 
   useEffect(() => {
     if (!mapOpen) return;
@@ -2815,6 +3074,11 @@ function App() {
       cancelled = true;
     };
   }, [mapOpen, applyOfflineBasemapPaths]);
+
+  useEffect(() => {
+    if (!mapOpen) return;
+    reloadTacticalMapLayers();
+  }, [mapOpen, reloadTacticalMapLayers]);
 
   useEffect(() => {
     setTilePackEstimate(null);
@@ -2855,6 +3119,75 @@ function App() {
       .catch(() => setMapsSuggestion(null))
       .finally(() => setMapsSuggestionLoading(false));
   }, [localDataInstallOpen]);
+
+  useEffect(() => {
+    const previewThemeStudio = Boolean(
+      settingsOpen && settingsPanel === "themes" && themesSubView === "studio" && studioDraft
+    );
+    const displayTheme: ThemeOrCustom = previewThemeStudio ? "custom" : theme;
+    const studioBaseColors = studioDraft ? resolveBaseColors(studioDraft.base) : null;
+    const displayCustomBg =
+      previewThemeStudio && studioDraft
+        ? studioDraft.bg_color ?? studioBaseColors!.bg
+        : customBg;
+    const displayCustomPrimary =
+      previewThemeStudio && studioDraft
+        ? studioDraft.primary_color ?? studioBaseColors!.primary
+        : customPrimary;
+    const resolvedThemeBgHex =
+      displayTheme === "custom" ? displayCustomBg : PRESET_COLORS[displayTheme as Theme].bg;
+    const resolvedThemeAccentHex =
+      displayTheme === "custom" ? displayCustomPrimary : PRESET_COLORS[displayTheme as Theme].primary;
+
+    const previewFalloutPersona =
+      previewThemeStudio && studioDraft?.personality_id === "fallout";
+    const isFalloutCrt = activeThemeId === "fallout" || previewFalloutPersona || activePersonalityId === "fallout";
+
+    const previewSurvivalManual =
+      previewThemeStudio &&
+      studioDraft &&
+      (studioDraft.base === "fieldguide" || studioDraft.base === "survival-manual");
+    const isSurvivalManualTheme =
+      activeThemeId === "survival-manual" || activeThemeId === "fieldguide" || previewSurvivalManual;
+
+    const root = document.documentElement;
+    let bgRgb =
+      hexToRgbCsv(resolvedThemeBgHex) ?? hexToRgbCsv(DEFAULT_CUSTOM.bg) ?? DEFAULT_THEME_BG_RGB;
+    let accentRgb =
+      hexToRgbCsv(resolvedThemeAccentHex) ?? hexToRgbCsv(DEFAULT_CUSTOM.primary) ?? DEFAULT_THEME_ACCENT_RGB;
+    if (isFalloutCrt) {
+      bgRgb = FALLOUT_DEFAULT_BG_RGB;
+      accentRgb = FALLOUT_DEFAULT_ACCENT_RGB;
+    }
+    root.style.setProperty("--theme-bg-rgb", bgRgb);
+    root.style.setProperty("--theme-accent-rgb", accentRgb);
+    if (isFalloutCrt) {
+      document.body.classList.add("theme-fallout");
+    } else {
+      document.body.classList.remove("theme-fallout");
+    }
+
+    if (isSurvivalManualTheme) {
+      document.body.classList.add("theme-survival-manual");
+    } else {
+      document.body.classList.remove("theme-survival-manual");
+    }
+
+    return () => {
+      document.body.classList.remove("theme-fallout");
+      document.body.classList.remove("theme-survival-manual");
+    };
+  }, [
+    theme,
+    customBg,
+    customPrimary,
+    settingsOpen,
+    settingsPanel,
+    themesSubView,
+    studioDraft,
+    activeThemeId,
+    activePersonalityId,
+  ]);
 
   async function handleSend(overrideText?: string) {
     const text = (overrideText !== undefined ? overrideText : input).trim();
@@ -2929,11 +3262,12 @@ function App() {
     streamGotFirstChunkRef.current = false;
     setStreamStallMessage(null);
     setSending(true);
+    const { userLat, userLon } = await resolveGpsForChatPayload();
     invoke("send_message_stream", {
       message: text,
       history: currentMessages.map((m) => ({ role: m.role, content: m.content })),
-      userLat: null,
-      userLon: null,
+      userLat,
+      userLon,
       chatId: chatIdToUse,
     }).catch((e) => {
       const errMsg = e != null ? String(e) : "Send failed";
@@ -3066,6 +3400,7 @@ function App() {
         });
         userLat = pos.coords.latitude;
         userLon = pos.coords.longitude;
+        lastKnownGpsRef.current = { lat: userLat, lon: userLon };
         await handleAddPoi("My location", userLat, userLon, "Current GPS position");
       } catch (_) {
         /* ignore; send without coords */
@@ -3077,9 +3412,19 @@ function App() {
         });
         userLat = pos.coords.latitude;
         userLon = pos.coords.longitude;
+        lastKnownGpsRef.current = { lat: userLat, lon: userLon };
       } catch (_) {
         /* optional; send without coords */
       }
+    }
+
+    if (userLat === null && lastKnownGpsRef.current) {
+      userLat = lastKnownGpsRef.current.lat;
+      userLon = lastKnownGpsRef.current.lon;
+    }
+    if (userLat === null && featureMapEnabled && mapOpen) {
+      userLat = mapViewCenter[0];
+      userLon = mapViewCenter[1];
     }
 
     try {
@@ -3089,6 +3434,7 @@ function App() {
         history: newHistory.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
         userLat,
         userLon,
+        chatId: null,
       });
     } catch (e) {
       const errMsg = e != null ? String(e) : "Send failed";
@@ -3390,7 +3736,7 @@ function App() {
         </ul>
       </aside>
 
-      <main className="chat-main">
+      <main className="chat-main glass-panel">
         {activePersonalityId === "fieldguide" && (
           <div className="fieldguide-hole-punches" aria-hidden>
             <span /><span /><span />
@@ -4110,7 +4456,7 @@ function App() {
 
       {settingsOpen && (
         <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
-          <div className="library-modal settings-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="library-modal settings-modal glass-panel" onClick={(e) => e.stopPropagation()}>
             <div className="library-header library-header-with-back">
               <div className="library-header-left">
                 {settingsPanel !== "menu" ? (
@@ -4152,6 +4498,8 @@ function App() {
                       ? "AI & Models"
                       : settingsPanel === "location"
                         ? "Location"
+                        : settingsPanel === "apiKeys"
+                          ? "API keys"
                         : settingsPanel === "maps"
                           ? "Offline maps"
                           : settingsPanel === "mesh"
@@ -4199,6 +4547,10 @@ function App() {
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("location")}>
                     <span className="settings-nav-label">Location</span>
                     <span className="text-muted">Place-aware answers and local data downloads</span>
+                  </button>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("apiKeys")}>
+                    <span className="settings-nav-label">API keys</span>
+                    <span className="text-muted">Paste and store provider keys for advanced features</span>
                   </button>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("maps")}>
                     <span className="settings-nav-label">Offline maps</span>
@@ -4551,6 +4903,121 @@ function App() {
                           Open offline maps
                         </button>
                       </div>
+                    </div>
+                  )}
+                </section>
+              </>
+            )}
+            {settingsPanel === "apiKeys" && (
+              <>
+                <section className="library-section">
+                  <h3>API keys</h3>
+                  <p className="text-muted">
+                    Add provider API keys once, directly inside Athena. Keys are stored locally in your app data settings and are
+                    automatically used by features that require them.
+                  </p>
+                  <p className="text-muted small">
+                    Default generic placeholders are shown until you replace them with real values. Generic placeholders are safe to
+                    keep in source control.
+                  </p>
+                </section>
+                <section className="library-section">
+                  <div className="settings-api-key-head">
+                    <h3>MapTiler satellite imagery key</h3>
+                    <button
+                      type="button"
+                      className="settings-api-key-help-btn"
+                      aria-label="Open MapTiler API key setup tutorial"
+                      title="How to get this key"
+                      onClick={() => setShowSatelliteKeyTutorial((previous) => !previous)}
+                    >
+                      ?
+                    </button>
+                  </div>
+                  <p className="text-muted small">
+                    Used by Offline Map Manager to download high-resolution satellite MBTiles for your saved location.
+                  </p>
+                  <input
+                    id="satellite-api-key-input"
+                    type={satelliteApiKeyFocused ? "text" : "password"}
+                    className="settings-input"
+                    placeholder={DEFAULT_SATELLITE_API_KEY_PLACEHOLDER}
+                    value={satelliteApiKeyInput}
+                    onChange={(e) => {
+                      setSatelliteApiKeyInput(e.target.value);
+                      setSatelliteApiKeyStatus(null);
+                    }}
+                    onFocus={() => {
+                      setSatelliteApiKeyFocused(true);
+                      if (satelliteApiKeyInput.trim() === DEFAULT_SATELLITE_API_KEY_PLACEHOLDER) {
+                        setSatelliteApiKeyInput("");
+                      }
+                    }}
+                    onBlur={() => {
+                      setSatelliteApiKeyFocused(false);
+                    }}
+                    aria-label="Satellite imagery API key"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <div className="settings-inline-actions" style={{ marginTop: "0.75rem" }}>
+                    <button type="button" onClick={() => void handleSaveSatelliteApiKey()}>
+                      Save key
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => {
+                        setSatelliteApiKeyInput("");
+                        setSatelliteApiKeyStatus(
+                          "Satellite API key reset to generic placeholder. Click Save to clear stored key.",
+                        );
+                        setSatelliteApiKeyFocused(false);
+                      }}
+                    >
+                      Reset to generic
+                    </button>
+                  </div>
+                  <p className="text-muted small" aria-live="polite" style={{ marginTop: "0.5rem" }}>
+                    {satelliteApiKeyStatus ??
+                      (satelliteApiKeySaved
+                        ? "A real satellite API key is saved for this device."
+                        : "No real satellite API key is saved yet.")}
+                  </p>
+
+                  {showSatelliteKeyTutorial && (
+                    <div className="settings-api-key-tutorial">
+                      <h4>Detailed setup tutorial</h4>
+                      <ol>
+                        <li>
+                          Open <a href="https://www.maptiler.com/cloud/" target="_blank" rel="noopener noreferrer">maptiler.com/cloud</a> and sign in
+                          (or create an account and verify email first).
+                        </li>
+                        <li>
+                          In the dashboard, open <strong>Keys</strong>, click <strong>Create key</strong>, and name it
+                          <code> Athena Satellite</code>.
+                        </li>
+                        <li>
+                          In key capabilities, enable raster tile access and confirm satellite tiles are included for your plan.
+                        </li>
+                        <li>
+                          Save the key and copy the full key value exactly as shown.
+                        </li>
+                        <li>
+                          Return to Athena, open <strong>Settings → API keys</strong>, paste the key in this field, then click
+                          <strong> Save key</strong>.
+                        </li>
+                        <li>
+                          Open <strong>Offline Map Manager</strong>, go to <strong>Local Region</strong>, then click
+                          <strong> Download satellite (MBTiles)</strong>.
+                        </li>
+                        <li>
+                          If you receive an authorization error, regenerate a key in MapTiler, save the new key here, and retry.
+                        </li>
+                        <li>
+                          Keep this key private. Never commit the real value to git or share screenshots that expose it.
+                        </li>
+                      </ol>
                     </div>
                   )}
                 </section>
@@ -5680,6 +6147,8 @@ function App() {
         savedUserLocationAddress={userLocationAddress}
         tileGeocodeOverride={tileGeocodeQuery}
         tileRadiusMiles={tileRadiusMiles}
+        enabledMainMapRasterArchiveFileNames={enabledArchiveRasterFileNames}
+        onMainMapArchiveRasterLayersChange={handleMainMapArchiveRasterLayersChange}
       />
 
       {mapOpen && featureMapEnabled && (
@@ -5702,9 +6171,17 @@ function App() {
             offlineOsmRoot={offlineOsmRoot}
             offlineTopoRoot={offlineTopoRoot}
             offlineImportedRoot={offlineImportedRoot}
+            archiveRasterFileNames={enabledArchiveRasterFileNames}
+            archiveRasterNativeZoomRangesByFile={archiveRasterNativeZoomRangesByFile}
+            archiveRasterBoundsByFile={archiveRasterBoundsByFile}
+            savedUserLocationAddress={userLocationAddress}
+            onSatelliteRegionDownloaded={handleMapSatelliteDownloaded}
             mapCenter={mapViewCenter}
             mapZoom={mapViewZoom}
             onOpenOfflineMapManager={() => setOfflineMapManagerOpen(true)}
+            tacticalPointsOfInterest={tacticalMapPoints}
+            tacticalMeshNodeLocations={tacticalMapNodes}
+            onReloadTacticalMapLayers={reloadTacticalMapLayers}
           />
         </ErrorBoundary>
       )}
@@ -5715,7 +6192,7 @@ function App() {
 
       {libraryOpen && (
         <div className="modal-backdrop" onClick={() => setLibraryOpen(false)}>
-          <div className="library-modal library-modal-tabs" onClick={(e) => e.stopPropagation()}>
+          <div className="library-modal library-modal-tabs glass-panel" onClick={(e) => e.stopPropagation()}>
             <div className="library-header">
               <h2>Library</h2>
               <button type="button" className="close-btn" onClick={() => setLibraryOpen(false)}>

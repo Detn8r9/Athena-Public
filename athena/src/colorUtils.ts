@@ -18,6 +18,13 @@ export function parseHex(hex: string): { r: number; g: number; b: number } | nul
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
+/** Comma-separated `r, g, b` for CSS like `rgba(var(--theme-bg-rgb), 0.75)`. */
+export function hexToRgbCsv(hex: string): string | null {
+  const p = parseHex(hex);
+  if (!p) return null;
+  return `${p.r}, ${p.g}, ${p.b}`;
+}
+
 export function rgbToHex(r: number, g: number, b: number): string {
   const to = (x: number) => clamp(Math.round(x), 0, 255).toString(16).padStart(2, "0");
   return `#${to(r)}${to(g)}${to(b)}`;

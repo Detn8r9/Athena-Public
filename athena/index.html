@@ -11,6 +11,42 @@
   </head>
 
   <body>
+    <!-- SVG filter defs for Survival Manual theme (referenced from App.css via url(#athena-paper-grain)) -->
+    <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="0" height="0" style="position: absolute; overflow: hidden; clip: rect(0, 0, 0, 0)">
+      <defs>
+        <filter
+          id="athena-paper-grain"
+          x="-25%"
+          y="-25%"
+          width="150%"
+          height="150%"
+          color-interpolation-filters="sRGB"
+        >
+          <feTurbulence type="fractalNoise" baseFrequency="0.82" numOctaves="4" seed="23" result="noise" />
+          <feColorMatrix
+            in="noise"
+            type="matrix"
+            values="0.38 0 0 0 0.52
+                    0 0.32 0 0 0.46
+                    0 0 0.26 0 0.22
+                    0 0 0 0.2 0"
+            result="yellowGrain"
+          />
+          <feBlend in="SourceGraphic" in2="yellowGrain" mode="multiply" result="grainBlend" />
+        </filter>
+        <!--
+          Torn page silhouette (objectBoundingBox). Do not use feDisplacementMap on a filled mask rect:
+          displacement samples transparent outside the rect and punches holes through the entire mask,
+          which hides the UI in WebKit/Blink. Fibrous edges belong in a follow-up (edge-only mask or path).
+        -->
+        <mask id="manual-mask-fibrous" maskUnits="objectBoundingBox" maskContentUnits="objectBoundingBox">
+          <path
+            fill="white"
+            d="M 0 0.04 L 0.03 0 L 0.1 0.06 L 0.14 0 L 0.25 0.05 L 0.28 0 L 0.4 0 L 0.5 0 L 0.6 0 L 0.7 0 L 0.8 0 L 0.9 0 L 1 0 L 1 0.1 L 0.99 0.2 L 1 0.3 L 1 0.4 L 1 0.5 L 1 0.6 L 1 0.7 L 1 0.8 L 1 0.9 L 1 1 L 0.92 0.96 L 0.84 1 L 0.74 1 L 0.64 1 L 0.54 1 L 0.44 1 L 0.34 1 L 0.24 1 L 0.14 1 L 0.04 1 L 0 1 L 0 0.88 L 0.02 0.76 L 0 0.64 L 0 0.52 L 0 0.4 L 0 0.28 L 0 0.16 Z"
+          />
+        </mask>
+      </defs>
+    </svg>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

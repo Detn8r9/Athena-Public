@@ -1,6 +1,6 @@
 use chrono::Utc;
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -83,6 +83,25 @@ pub struct RagCounts {
     pub chunk_count: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TacticalPointOfInterest {
+    pub id: String,
+    pub name: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub notes: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TacticalMeshNodeLocation {
+    pub node_id: String,
+    pub label: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub last_seen_at: i64,
+}
+
 impl Database {
     pub fn new(db_path: &Path) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
@@ -130,6 +149,23 @@ impl Database {
                 UNIQUE(file_path, chunk_index)
             );
             CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_file_path ON chunk_embeddings(file_path);
+            CREATE TABLE IF NOT EXISTS points_of_interest (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                lat REAL NOT NULL,
+                lon REAL NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_points_of_interest_lat_lon ON points_of_interest(lat, lon);
+            CREATE TABLE IF NOT EXISTS mesh_node_locations (
+                node_id TEXT PRIMARY KEY,
+                label TEXT NOT NULL DEFAULT '',
+                lat REAL NOT NULL,
+                lon REAL NOT NULL,
+                last_seen_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mesh_node_locations_lat_lon ON mesh_node_locations(lat, lon);
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -422,6 +458,191 @@ impl Database {
             document_count,
             chunk_count,
         })
+    }
+
+    pub fn upsert_tactical_point_of_interest(
+        &self,
+        point: &TacticalPointOfInterest,
+    ) -> Result<(), String> {
+        let id = point.id.trim();
+        let name = point.name.trim();
+        if id.is_empty() {
+            return Err("Point of interest id is required.".to_string());
+        }
+        if name.is_empty() {
+            return Err("Point of interest name is required.".to_string());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO points_of_interest (id, name, lat, lon, notes, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               lat = excluded.lat,
+               lon = excluded.lon,
+               notes = excluded.notes,
+               updated_at = excluded.updated_at",
+            params![
+                id,
+                name,
+                point.lat,
+                point.lon,
+                point.notes,
+                point.updated_at
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn upsert_tactical_mesh_node_location(
+        &self,
+        node: &TacticalMeshNodeLocation,
+    ) -> Result<(), String> {
+        let node_id = node.node_id.trim();
+        if node_id.is_empty() {
+            return Err("Mesh node id is required.".to_string());
+        }
+        let label = node.label.trim();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO mesh_node_locations (node_id, label, lat, lon, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(node_id) DO UPDATE SET
+               label = excluded.label,
+               lat = excluded.lat,
+               lon = excluded.lon,
+               last_seen_at = excluded.last_seen_at",
+            params![node_id, label, node.lat, node.lon, node.last_seen_at],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_tactical_points_of_interest(&self) -> Result<Vec<TacticalPointOfInterest>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut statement = conn
+            .prepare(
+                "SELECT id, name, lat, lon, notes, updated_at
+                 FROM points_of_interest
+                 ORDER BY name COLLATE NOCASE, id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(TacticalPointOfInterest {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    lat: row.get(2)?,
+                    lon: row.get(3)?,
+                    notes: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn list_tactical_mesh_node_locations(&self) -> Result<Vec<TacticalMeshNodeLocation>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut statement = conn
+            .prepare(
+                "SELECT node_id, label, lat, lon, last_seen_at
+                 FROM mesh_node_locations
+                 ORDER BY node_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(TacticalMeshNodeLocation {
+                    node_id: row.get(0)?,
+                    label: row.get(1)?,
+                    lat: row.get(2)?,
+                    lon: row.get(3)?,
+                    last_seen_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn import_tactical_data(
+        &self,
+        points_of_interest: &[TacticalPointOfInterest],
+        mesh_node_locations: &[TacticalMeshNodeLocation],
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO points_of_interest (id, name, lat, lon, notes, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(id) DO UPDATE SET
+                       name = excluded.name,
+                       lat = excluded.lat,
+                       lon = excluded.lon,
+                       notes = excluded.notes,
+                       updated_at = excluded.updated_at",
+                )
+                .map_err(|e| e.to_string())?;
+            for point in points_of_interest {
+                let id = point.id.trim();
+                let name = point.name.trim();
+                if id.is_empty() || name.is_empty() {
+                    continue;
+                }
+                stmt.execute(params![
+                    id,
+                    name,
+                    point.lat,
+                    point.lon,
+                    point.notes,
+                    point.updated_at
+                ])
+                .map_err(|e| e.to_string())?;
+            }
+        }
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO mesh_node_locations (node_id, label, lat, lon, last_seen_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(node_id) DO UPDATE SET
+                       label = excluded.label,
+                       lat = excluded.lat,
+                       lon = excluded.lon,
+                       last_seen_at = excluded.last_seen_at",
+                )
+                .map_err(|e| e.to_string())?;
+            for node in mesh_node_locations {
+                let node_id = node.node_id.trim();
+                if node_id.is_empty() {
+                    continue;
+                }
+                stmt.execute(params![
+                    node_id,
+                    node.label.trim(),
+                    node.lat,
+                    node.lon,
+                    node.last_seen_at
+                ])
+                .map_err(|e| e.to_string())?;
+            }
+        }
+
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn upsert_chunk_embedding(

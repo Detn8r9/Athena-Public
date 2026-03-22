@@ -1,3 +1,336 @@
+@import url("https://fonts.googleapis.com/css2?family=VT323&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&display=swap");
+
+/* ─── Old Survival Manual: Step 1 — materials, typography, aged vellum + ink tokens ─── */
+body.theme-survival-manual,
+.theme-survival-manual {
+  --font-manual-serif: "EB Garamond", Palatino, "Palatino Linotype", "Book Antiqua", Georgia, "Times New Roman", serif;
+  --font-manual-typewriter: "Courier New", Courier, "Nimbus Mono PS", "Liberation Mono", ui-monospace, monospace;
+  --manual-vellum: #e8dcc8;
+  --manual-vellum-mid: #d9c9a8;
+  --manual-vellum-shadow: #c9b896;
+  --manual-vellum-edge: #b8a078;
+  /* Darker ink improves contrast on vellum */
+  --manual-ink: #1a120c;
+  --manual-ink-soft: #2a2018;
+  --manual-ink-muted: #453828;
+  --manual-paper-filter: url(#athena-paper-grain);
+  --manual-paper-filter-fallback: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='athena-paper-grain-data' x='-25%25' y='-25%25' width='150%25' height='150%25' color-interpolation-filters='sRGB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='4' seed='23' result='noise'/%3E%3CfeColorMatrix in='noise' type='matrix' values='0.38 0 0 0 0.52 0 0.32 0 0 0.46 0 0 0.26 0 0.22 0 0 0 0.2 0' result='yellowGrain'/%3E%3CfeBlend in='SourceGraphic' in2='yellowGrain' mode='multiply'/%3E%3C/filter%3E%3C/svg%3E%23athena-paper-grain-data");
+  /* High-frequency tiled SVG noise (base64) — pulp grain under vellum; blended in ::before stacks */
+  --manual-pulp-noise: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0OCIgaGVpZ2h0PSI0OCI+PGZpbHRlciBpZD0ibXAiIHg9IjAiIHk9IjAiIHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiPjxmZVR1cmJ1bGVuY2UgdHlwZT0iZnJhY3RhbE5vaXNlIiBiYXNlRnJlcXVlbmN5PSIxLjE1IiBudW1PY3RhdmVzPSIyIiBzdGl0Y2hUaWxlcz0ic3RpdGNoIi8+PC9maWx0ZXI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsdGVyPSJ1cmwoI21wKSIgb3BhY2l0eT0iMC4yMiIvPjwvc3ZnPg==");
+  /* Step 2 — page lift off table + inner edge oxidation / dirt */
+  --manual-panel-shadow-depth:
+    0 1px 0 rgba(255, 248, 235, 0.14),
+    0 2px 4px rgba(14, 9, 5, 0.22),
+    0 5px 14px rgba(22, 14, 8, 0.32),
+    0 10px 26px rgba(16, 10, 6, 0.24),
+    0 18px 44px rgba(10, 6, 4, 0.16),
+    0 28px 64px rgba(6, 4, 2, 0.08),
+    inset 0 0 0 1px rgba(56, 40, 28, 0.22),
+    inset 0 2px 5px rgba(44, 32, 22, 0.14),
+    inset 0 -3px 10px rgba(26, 18, 12, 0.22);
+}
+
+body.theme-survival-manual {
+  font-family: var(--font-manual-serif);
+  font-feature-settings: "kern" 1, "liga" 1;
+}
+
+/* Apply to timestamps, codes, or metadata when the manual theme is active */
+body.theme-survival-manual .manual-data-readout,
+.theme-survival-manual .manual-data-readout {
+  font-family: var(--font-manual-typewriter);
+  letter-spacing: 0.02em;
+}
+
+/* ─── Old Survival Manual: Step 1 (fibrous mask + pulp) · Step 2 — wood “table”, paper panels ─── */
+body.theme-survival-manual {
+  background-color: #1c1008;
+  background-image:
+    radial-gradient(ellipse 140% 90% at 50% 115%, rgba(0, 0, 0, 0.55) 0%, transparent 55%),
+    radial-gradient(ellipse 80% 50% at 20% 30%, rgba(255, 220, 160, 0.06) 0%, transparent 45%),
+    repeating-linear-gradient(
+      92deg,
+      rgba(0, 0, 0, 0.12) 0 1px,
+      transparent 1px 14px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgba(40, 22, 12, 0.35) 0 3px,
+      rgba(28, 16, 8, 0.2) 3px 9px
+    ),
+    linear-gradient(175deg, #2a1810 0%, #1a0e08 38%, #140a06 100%);
+  background-attachment: fixed;
+}
+
+body.theme-survival-manual #root {
+  background: transparent;
+}
+
+body.theme-survival-manual .app {
+  background: transparent !important;
+  color: var(--manual-ink) !important;
+  --bg: var(--manual-vellum) !important;
+  --surface: color-mix(in srgb, var(--manual-vellum-mid) 88%, var(--manual-ink) 12%) !important;
+  --surface-solid: var(--manual-vellum-mid) !important;
+  --text: var(--manual-ink) !important;
+  --text-muted: var(--manual-ink-muted) !important;
+  --primary: var(--manual-ink-soft) !important;
+  --border: color-mix(in srgb, var(--manual-ink) 22%, transparent) !important;
+}
+
+/* Paper-tint surfaces that were transparent (wood showed through) + readable chrome */
+body.theme-survival-manual .chat-main.glass-panel .main-header {
+  background: color-mix(in srgb, var(--manual-vellum) 96%, rgba(0, 0, 0, 0.05)) !important;
+  border-bottom-color: color-mix(in srgb, var(--manual-ink) 18%, transparent) !important;
+}
+
+body.theme-survival-manual .chat-main.glass-panel .chat-messages {
+  background: color-mix(in srgb, var(--manual-vellum) 88%, rgba(255, 255, 255, 0.35));
+}
+
+body.theme-survival-manual .chat-main.glass-panel .chat-input-wrap {
+  background: color-mix(in srgb, var(--manual-vellum) 94%, rgba(0, 0, 0, 0.04)) !important;
+  border-top-color: color-mix(in srgb, var(--manual-ink) 16%, transparent) !important;
+}
+
+body.theme-survival-manual .main-header-icon-btn {
+  color: var(--manual-ink-muted) !important;
+}
+
+body.theme-survival-manual .main-header-icon-btn:hover {
+  color: var(--manual-ink) !important;
+  background: color-mix(in srgb, var(--manual-ink) 8%, transparent) !important;
+}
+
+body.theme-survival-manual .main-header-icon-btn-active {
+  color: var(--manual-ink) !important;
+}
+
+body.theme-survival-manual .welcome p {
+  color: var(--manual-ink);
+  font-weight: 500;
+}
+
+body.theme-survival-manual .welcome-hint {
+  color: var(--manual-ink-muted);
+}
+
+body.theme-survival-manual .welcome-hint strong {
+  color: var(--manual-ink);
+}
+
+body.theme-survival-manual .welcome-tip {
+  background: color-mix(in srgb, var(--manual-vellum) 90%, var(--manual-ink) 10%);
+  border-color: color-mix(in srgb, var(--manual-ink) 24%, transparent);
+}
+
+body.theme-survival-manual .welcome-tip-label {
+  color: var(--manual-ink-muted);
+  font-weight: 700;
+}
+
+body.theme-survival-manual .welcome-tip-text {
+  color: var(--manual-ink);
+}
+
+body.theme-survival-manual .library-btn {
+  color: var(--manual-ink-muted) !important;
+  border-color: color-mix(in srgb, var(--manual-ink) 28%, transparent) !important;
+}
+
+body.theme-survival-manual .library-btn:hover {
+  color: var(--manual-ink) !important;
+  background: color-mix(in srgb, var(--manual-ink) 10%, transparent) !important;
+}
+
+body.theme-survival-manual .sidebar-title {
+  color: var(--manual-ink);
+  font-weight: 600;
+}
+
+body.theme-survival-manual .sidebar-tagline {
+  color: var(--manual-ink-muted);
+}
+
+body.theme-survival-manual .glass-panel {
+  position: relative;
+  isolation: isolate;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: transparent !important;
+  border-radius: 5px 2px 8px 3px !important;
+  border: 1px solid color-mix(in srgb, var(--manual-ink) 22%, transparent) !important;
+  box-shadow: var(--manual-panel-shadow-depth) !important;
+}
+
+/* Vellum + high-frequency pulp tile; aged grain filter applies to full composite */
+body.theme-survival-manual .glass-panel::before,
+body.theme-survival-manual .chat-sidebar::before,
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main.glass-panel::before,
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-sidebar::before,
+body.theme-survival-manual .app[data-persona="fieldguide"] .triage-overlay-panel::before {
+  content: "" !important;
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image:
+    var(--manual-pulp-noise),
+    linear-gradient(
+      168deg,
+      var(--manual-vellum) 0%,
+      var(--manual-vellum-mid) 52%,
+      var(--manual-vellum-shadow) 100%
+    );
+  background-size: 48px 48px, 100% 100%;
+  background-repeat: repeat, no-repeat;
+  background-position: 0 0, 0 0;
+  background-blend-mode: soft-light, normal;
+  filter: var(--manual-paper-filter);
+}
+
+body.theme-survival-manual .chat-sidebar,
+body.theme-survival-manual .chat-main.glass-panel,
+body.theme-survival-manual .library-modal,
+body.theme-survival-manual .triage-overlay-panel {
+  -webkit-mask-image: url(#manual-mask-fibrous);
+  mask-image: url(#manual-mask-fibrous);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+body.theme-survival-manual .chat-sidebar {
+  position: relative;
+  isolation: isolate;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--manual-vellum-mid) 92%, var(--manual-ink) 8%) 0%,
+    var(--manual-vellum-shadow) 100%
+  ) !important;
+  border-right: 1px solid color-mix(in srgb, var(--manual-ink) 18%, transparent) !important;
+  box-shadow: var(--manual-panel-shadow-depth) !important;
+}
+
+/* CRT terminal animations (Fallout-style); apply in .theme-fallout rules */
+@keyframes crt-text-flicker {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  17% {
+    opacity: 0.99;
+    filter: brightness(0.992);
+  }
+  52% {
+    opacity: 1;
+    filter: brightness(1.008);
+  }
+  71% {
+    opacity: 0.985;
+    filter: brightness(0.98);
+  }
+  88% {
+    opacity: 1;
+    filter: brightness(1.01);
+  }
+}
+
+/* Seamless vertical drift for horizontal scanline stripes (use with repeating-linear-gradient + background-size) */
+@keyframes crt-scanline-move {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 0 4px;
+  }
+}
+
+/* ─── Fallout CRT terminal: scoped to body.theme-fallout (class toggled from App.tsx) ─── */
+body.theme-fallout {
+  font-family: "VT323", "Courier New", Consolas, "Liberation Mono", ui-monospace, monospace;
+  background-color: #040a07;
+  color: rgb(var(--theme-accent-rgb, 52, 211, 153));
+  text-shadow: 0 0 6px rgba(var(--theme-accent-rgb, 52, 211, 153), 0.88);
+}
+
+/* Fallout shell: dark green; accent from JS (--theme-accent-rgb) */
+body.theme-fallout .app {
+  --bg: #07140e !important;
+  --surface: rgba(14, 32, 24, 0.94) !important;
+  --surface-solid: #0f1f18 !important;
+  background-color: var(--bg) !important;
+}
+
+body.theme-fallout #root {
+  color: rgb(var(--theme-accent-rgb, 52, 211, 153));
+}
+
+body.theme-fallout *,
+body.theme-fallout *::placeholder {
+  color: rgb(var(--theme-accent-rgb, 52, 211, 153)) !important;
+  text-shadow: 0 0 6px rgba(var(--theme-accent-rgb, 52, 211, 153), 0.88) !important;
+}
+
+body.theme-fallout img,
+body.theme-fallout video,
+body.theme-fallout canvas,
+body.theme-fallout iframe {
+  color: unset !important;
+  text-shadow: none !important;
+}
+
+body.theme-fallout .glass-panel {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: rgba(6, 22, 14, 0.95) !important;
+  border-radius: 0 !important;
+  border: 2px solid rgb(var(--theme-accent-rgb, 52, 211, 153)) !important;
+  box-shadow: none !important;
+}
+
+/* Drift scanlines only; vignette layer stays fixed (second background-position value) */
+@keyframes crt-scanline-overlay-drift {
+  0% {
+    background-position: 0 0, center center;
+  }
+  100% {
+    background-position: 0 4px, center center;
+  }
+}
+
+body.theme-fallout::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background-image:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0) 0,
+      rgba(0, 0, 0, 0) 2px,
+      rgba(0, 0, 0, 0.16) 2px,
+      rgba(0, 0, 0, 0.16) 3px
+    ),
+    radial-gradient(
+      ellipse 85% 75% at 50% 48%,
+      rgba(0, 0, 0, 0) 0%,
+      rgba(0, 0, 0, 0.34) 62%,
+      rgba(0, 0, 0, 0.55) 100%
+    );
+  background-size: 100% 4px, 100% 100%;
+  background-repeat: repeat, no-repeat;
+  background-position: 0 0, center center;
+  animation: crt-scanline-overlay-drift 7s linear infinite;
+}
+
 /* JARVIS-inspired: sleek, modern, high contrast */
 html,
 body,
@@ -26,10 +359,6 @@ body,
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
-}
-
-.app {
-  background-color: var(--bg);
 }
 
 /* Blue – deep navy (default) */
@@ -116,16 +445,30 @@ body,
   border-radius: 0;
   border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
   box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.7),
-    0 0 20px color-mix(in srgb, var(--primary) 18%, transparent),
-    inset 0 0 24px rgba(0, 0, 0, 0.8);
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 0 20px color-mix(in srgb, var(--primary) 22%, transparent),
+    inset 0 0 18px rgba(0, 0, 0, 0.45);
   background-image: repeating-linear-gradient(
     to bottom,
-    color-mix(in srgb, var(--primary) 6%, transparent),
-    color-mix(in srgb, var(--primary) 6%, transparent) 1px,
+    color-mix(in srgb, var(--primary) 8%, transparent),
+    color-mix(in srgb, var(--primary) 8%, transparent) 1px,
     transparent 1px,
     transparent 3px
   );
+}
+
+.app[data-persona="fallout"] .chat-main.glass-panel {
+  background: color-mix(in srgb, var(--glass-bg) 88%, rgb(var(--theme-accent-rgb, 52, 211, 153)));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: var(--glass-border);
+  border-radius: 16px;
+  background-image: none;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.32),
+    0 0 22px color-mix(in srgb, var(--primary) 24%, transparent),
+    inset 0 0 14px rgba(0, 0, 0, 0.28),
+    var(--glass-edge);
 }
 
 .app[data-persona="fallout"] .sidebar-title,
@@ -138,7 +481,7 @@ body,
 .app[data-persona="fallout"] .message-content {
   border-radius: 0;
   border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(5, 16, 11, 0.82);
 }
 
 .app[data-persona="fallout"] .triage-icon,
@@ -258,6 +601,27 @@ body,
   background: radial-gradient(circle at center, rgba(92, 74, 61, 0.1) 0%, transparent 65%);
   pointer-events: none;
   z-index: 0;
+}
+
+.app[data-persona="fieldguide"] .chat-main.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: var(--glass-border);
+  border-radius: 16px;
+  background-image: none;
+  box-shadow: var(--glass-shadow-lift), var(--glass-edge);
+  overflow: hidden;
+}
+
+.app[data-persona="fieldguide"] .chat-main.glass-panel::before,
+.app[data-persona="fieldguide"] .chat-main.glass-panel::after {
+  content: none;
+}
+
+.app[data-persona="fieldguide"] .chat-main.glass-panel .chat-messages::before,
+.app[data-persona="fieldguide"] .chat-main.glass-panel .chat-messages::after {
+  content: none;
 }
 
 /* Crease in the page (fold line) */
@@ -531,6 +895,242 @@ body,
   background: radial-gradient(circle at 30% 30%, rgba(60, 50, 40, 0.5), rgba(40, 32, 28, 0.85));
 }
 
+/* Old Survival Manual: Step 2 — must follow fieldguide rules so cascade wins over [data-persona="fieldguide"] */
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main,
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-sidebar {
+  background-image: none !important;
+  border-radius: 5px 2px 8px 3px !important;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main.glass-panel {
+  position: relative;
+  isolation: isolate;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: transparent !important;
+  border: 1px solid color-mix(in srgb, var(--manual-ink) 22%, transparent) !important;
+  box-shadow: var(--manual-panel-shadow-depth) !important;
+  overflow: hidden;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-sidebar {
+  position: relative;
+  isolation: isolate;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--manual-vellum-mid) 92%, var(--manual-ink) 8%) 0%,
+    var(--manual-vellum-shadow) 100%
+  ) !important;
+  border: 1px solid color-mix(in srgb, var(--manual-ink) 22%, transparent) !important;
+  border-right: 1px solid color-mix(in srgb, var(--manual-ink) 18%, transparent) !important;
+  box-shadow: var(--manual-panel-shadow-depth) !important;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main .chat-messages::before,
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main .chat-messages::after {
+  content: none !important;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main .chat-messages {
+  line-height: 1.55;
+  padding-top: 1rem;
+  padding-left: 1.25rem;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main .chat-messages .message {
+  margin-bottom: 0.85rem;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main .chat-messages .message-role,
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main .chat-messages .message-content,
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main .chat-messages .welcome,
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main .chat-messages .welcome p {
+  line-height: inherit;
+  min-height: unset;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .triage-overlay-panel {
+  position: relative;
+  isolation: isolate;
+  background-color: transparent !important;
+  background-image: none !important;
+  border: 1px solid color-mix(in srgb, var(--manual-ink) 22%, transparent) !important;
+  box-shadow: var(--manual-panel-shadow-depth) !important;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .triage-overlay-panel .triage-panel-header-sticky {
+  background: color-mix(in srgb, var(--manual-vellum) 92%, var(--manual-ink) 8%) !important;
+  border-bottom-color: color-mix(in srgb, var(--manual-ink) 22%, transparent) !important;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .sidebar-chat-list::before {
+  color: var(--manual-ink-muted) !important;
+  font-weight: 700;
+  border-bottom-color: color-mix(in srgb, var(--manual-ink) 22%, transparent) !important;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .sidebar-chat-btn {
+  color: var(--manual-ink) !important;
+  font-weight: 500;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .sidebar-chat-index-page {
+  color: var(--manual-ink-muted) !important;
+  font-weight: 700;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .sidebar-new-chat,
+body.theme-survival-manual .app[data-persona="fieldguide"] .send-btn {
+  background: color-mix(in srgb, var(--manual-vellum) 94%, var(--manual-ink) 6%) !important;
+  color: var(--manual-ink) !important;
+  border-color: color-mix(in srgb, var(--manual-ink) 38%, transparent) !important;
+  font-weight: 600;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .sidebar-new-chat:hover,
+body.theme-survival-manual .app[data-persona="fieldguide"] .send-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--manual-vellum-mid) 88%, var(--manual-ink) 12%) !important;
+  color: var(--manual-ink) !important;
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .send-btn.send-btn-active:not(:disabled) {
+  background: color-mix(in srgb, var(--manual-vellum-mid) 82%, var(--manual-ink) 18%) !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+
+body.theme-survival-manual .app[data-persona="fieldguide"] .send-btn:disabled {
+  color: var(--manual-ink-muted) !important;
+  opacity: 0.85;
+}
+
+/* ─── Old Survival Manual: Step 3 — cellophane tape, absorbed stains (multiply), subtle frost ─── */
+body.theme-survival-manual .library-modal:not(.glass-panel) {
+  position: relative;
+  isolation: isolate;
+  box-shadow: var(--manual-panel-shadow-depth) !important;
+}
+
+body.theme-survival-manual .triage-overlay-panel {
+  position: relative;
+  box-shadow: var(--manual-panel-shadow-depth) !important;
+}
+
+body.theme-survival-manual .glass-panel::after,
+body.theme-survival-manual .chat-sidebar::after,
+body.theme-survival-manual .library-modal:not(.glass-panel)::after,
+body.theme-survival-manual .triage-overlay-panel::after,
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-main.glass-panel::after,
+body.theme-survival-manual .app[data-persona="fieldguide"] .chat-sidebar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+  transform: rotate(-0.35deg);
+  transform-origin: 50% 42%;
+  isolation: isolate;
+  /* Slight frost over the paper stack only (sits under in-flow content); not a full opaque veil */
+  -webkit-backdrop-filter: blur(0.65px) saturate(1.04);
+  backdrop-filter: blur(0.65px) saturate(1.04);
+  background-color: rgba(255, 252, 245, 0.04);
+  opacity: 0.94;
+  /* First image = top layer: tape strips (milky white→warm yellow, specular band); lower layers: wrinkles + rings */
+  background-image:
+    linear-gradient(
+      116deg,
+      transparent 0%,
+      transparent 36%,
+      rgba(255, 255, 253, 0.52) 37%,
+      rgba(255, 252, 228, 0.44) 42%,
+      rgba(255, 255, 255, 0.62) 49.5%,
+      rgba(255, 248, 205, 0.4) 56%,
+      rgba(255, 254, 248, 0.48) 63%,
+      transparent 64%,
+      transparent 100%
+    ),
+    linear-gradient(
+      -26deg,
+      transparent 0%,
+      transparent 40%,
+      rgba(255, 255, 252, 0.48) 41%,
+      rgba(255, 250, 215, 0.38) 48%,
+      rgba(255, 255, 255, 0.55) 50%,
+      rgba(255, 246, 210, 0.36) 54%,
+      rgba(255, 253, 248, 0.42) 59%,
+      transparent 60%,
+      transparent 100%
+    ),
+    linear-gradient(
+      93deg,
+      transparent 0%,
+      transparent 38%,
+      rgba(255, 254, 250, 0.46) 40%,
+      rgba(255, 248, 218, 0.34) 47%,
+      rgba(255, 255, 255, 0.5) 50%,
+      rgba(255, 252, 225, 0.38) 54%,
+      transparent 58%,
+      transparent 100%
+    ),
+    radial-gradient(
+      ellipse 115% 90% at 22% 32%,
+      rgba(42, 34, 24, 0.09) 0%,
+      rgba(42, 34, 24, 0.02) 44%,
+      rgba(42, 34, 24, 0.065) 49%,
+      rgba(42, 34, 24, 0.015) 54%,
+      transparent 58%
+    ),
+    radial-gradient(
+      ellipse 85% 110% at 78% 68%,
+      rgba(42, 34, 24, 0.07) 0%,
+      rgba(42, 34, 24, 0.022) 40%,
+      rgba(42, 34, 24, 0.055) 49%,
+      rgba(42, 34, 24, 0.012) 55%,
+      transparent 60%
+    ),
+    radial-gradient(
+      circle at 80% 12%,
+      rgba(42, 32, 22, 0.22) 0%,
+      rgba(42, 32, 22, 0.18) 27%,
+      rgba(42, 32, 22, 0.08) 36%,
+      rgba(42, 32, 22, 0.03) 41%,
+      rgba(42, 32, 22, 0.01) 44%,
+      transparent 45%
+    ),
+    radial-gradient(
+      circle at 14% 86%,
+      rgba(38, 28, 20, 0.18) 0%,
+      rgba(38, 28, 20, 0.14) 25%,
+      rgba(38, 28, 20, 0.06) 36%,
+      rgba(38, 28, 20, 0.02) 41%,
+      transparent 43%
+    );
+  background-size:
+    44% 6.5%,
+    38% 5.5%,
+    48% 4.8%,
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    100% 100%;
+  background-position:
+    0% 0%,
+    100% 4%,
+    7% 100%,
+    0 0,
+    0 0,
+    0 0,
+    0 0;
+  background-repeat: no-repeat;
+  background-blend-mode: soft-light, soft-light, soft-light, multiply, multiply, multiply, multiply;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 0 1px rgba(255, 255, 255, 0.45),
+    0 1px 4px rgba(0, 0, 0, 0.09),
+    0 2px 6px rgba(18, 12, 8, 0.06);
+}
+
 /* Amber – warm */
 .app[data-theme="amber"] {
   --bg: #1a1508;
@@ -772,6 +1372,23 @@ body,
   scrollbar-color: var(--primary) var(--surface-solid);
 }
 
+/* Old survival manual: ink tokens must win over [data-theme] / custom (settings body text uses --text-muted) */
+body.theme-survival-manual .app[data-theme],
+body.theme-survival-manual .app[data-theme="custom"] {
+  --bg: var(--manual-vellum) !important;
+  --surface: color-mix(in srgb, var(--manual-vellum-mid) 88%, var(--manual-ink) 12%) !important;
+  --surface-solid: var(--manual-vellum-mid) !important;
+  --text: var(--manual-ink) !important;
+  --text-muted: var(--manual-ink-muted) !important;
+  --primary: var(--manual-ink-soft) !important;
+  --secondary: color-mix(in srgb, var(--manual-ink) 78%, var(--manual-vellum-mid) 22%) !important;
+  --border: color-mix(in srgb, var(--manual-ink) 22%, transparent) !important;
+  --glow: rgba(42, 32, 22, 0.2) !important;
+  --user-bubble: rgba(42, 32, 22, 0.12) !important;
+  --hover-overlay: rgba(42, 32, 22, 0.1) !important;
+  scrollbar-color: var(--manual-ink-soft) var(--manual-vellum-mid) !important;
+}
+
 /* Night-vision mode: deep reds, reduced blue/green to preserve dark adaptation */
 .app[data-nightvision="true"] {
   --bg: #050000;
@@ -790,11 +1407,32 @@ body,
 }
 
 .app {
+  background-color: var(--bg);
   display: flex;
   flex-direction: row;
   height: 100vh;
   overflow: hidden;
   position: relative;
+  /* Glass surfaces: --theme-bg-rgb from document (App); palette from [data-theme] / custom / night / persona */
+  --glass-bg: rgba(var(--theme-bg-rgb, 12, 18, 34), 0.76);
+  --glass-bg-soft: rgba(var(--theme-bg-rgb, 12, 18, 34), 0.42);
+  --glass-bg-strong: rgba(var(--theme-bg-rgb, 12, 18, 34), 0.6);
+  --glass-border: 1px solid color-mix(in srgb, var(--primary) 34%, transparent);
+  --glass-border-subtle: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  --glass-shadow-lift: 0 22px 56px color-mix(in srgb, var(--bg) 42%, rgba(0, 0, 0, 0.68));
+  --glass-shadow-modal: 0 24px 64px color-mix(in srgb, var(--bg) 44%, rgba(0, 0, 0, 0.72));
+  --glass-shadow-popover: 0 18px 48px color-mix(in srgb, var(--bg) 40%, rgba(0, 0, 0, 0.62));
+  --glass-shadow-trigger: 0 4px 24px color-mix(in srgb, var(--bg) 48%, rgba(0, 0, 0, 0.52));
+  --glass-edge: 0 0 0 1px color-mix(in srgb, var(--primary) 15%, transparent);
+}
+
+.app .glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: var(--glass-border);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow-lift), var(--glass-edge);
 }
 
 /* Left sidebar: new chat + search + chat list + footer */
@@ -1283,6 +1921,26 @@ body,
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
+}
+
+.chat-main.glass-panel {
+  margin: 0.75rem;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.chat-main.glass-panel .main-header {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+}
+
+.chat-main.glass-panel .chat-input-wrap {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
 }
 
 /* Smooth content transition when switching chats */
@@ -2743,6 +3401,25 @@ body,
   animation: modalFadeIn 0.28s var(--ease-out);
 }
 
+/* Glass shell: wins over solid .library-modal */
+.library-modal.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: var(--glass-border);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow-modal), var(--glass-edge);
+}
+
+.library-modal.glass-panel .library-tablist {
+  background: var(--glass-bg-soft);
+  border-bottom-color: color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.library-modal.glass-panel .library-tab.library-tab-active {
+  background: var(--glass-bg-strong);
+}
+
 /* Library: browser-style tabs (Documents | Maps) — wider so intro copy wraps less */
 .library-modal.library-modal-tabs {
   display: flex;
@@ -2773,6 +3450,11 @@ body,
   z-index: 5;
   background: var(--surface-solid);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.library-modal.library-modal-tabs.glass-panel .library-tablist {
+  background: var(--glass-bg-soft);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--bg) 55%, rgba(0, 0, 0, 0.2));
 }
 
 .library-tablist {
@@ -4351,7 +5033,7 @@ body,
 .settings-modal .model-warning {
   font-size: 0.9375rem;
   line-height: 1.55;
-  color: #b8c5d6;
+  color: var(--text-muted);
 }
 
 .settings-modal .settings-nav-label {
@@ -4364,7 +5046,7 @@ body,
 .settings-modal .settings-nav-item .text-muted {
   font-size: 0.875rem;
   line-height: 1.45;
-  color: #b8c5d6;
+  color: var(--text-muted);
 }
 
 .library-header-with-back {
@@ -4717,6 +5399,57 @@ body,
   margin-bottom: 0.25rem;
 }
 
+.settings-api-key-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.settings-api-key-help-btn {
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-solid);
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.settings-api-key-help-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.settings-api-key-tutorial {
+  margin-top: 0.85rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2, var(--surface-solid));
+}
+
+.settings-api-key-tutorial h4 {
+  margin: 0 0 0.5rem;
+}
+
+.settings-api-key-tutorial ol {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.settings-api-key-tutorial code {
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.05rem 0.3rem;
+}
+
 .text-muted.small {
   font-size: 0.8rem;
   margin-top: 0.5rem;
@@ -4877,8 +5610,8 @@ body,
 
 .theme-preset-card {
   border-radius: 14px;
-  border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.75);
+  border: var(--glass-border);
+  background: var(--glass-bg);
   padding: 0.75rem 0.9rem;
   text-align: left;
   cursor: pointer;
@@ -4896,7 +5629,8 @@ body,
 
 .theme-preset-card.active {
   border-color: var(--primary);
-  background: radial-gradient(circle at top left, rgba(56, 189, 248, 0.4), rgba(15, 23, 42, 0.9));
+  background: color-mix(in srgb, var(--primary) 22%, var(--glass-bg));
+  box-shadow: var(--glass-edge);
 }
 
 .theme-preset-header {
@@ -5905,42 +6639,34 @@ body,
   flex-direction: column;
 }
 
-.map-view-basemap-bar {
-  flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
-  padding: 0.45rem 1rem;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  background: color-mix(in srgb, var(--surface-solid) 40%, transparent);
-}
-
-.map-basemap-label {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.map-basemap-select {
+.map-view-container {
   flex: 1;
-  min-width: 200px;
-  max-width: 420px;
-  padding: 0.35rem 0.5rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface-solid);
-  color: var(--text);
-  font-size: 0.875rem;
+  min-height: 0;
+  position: relative;
 }
 
 .map-view-header {
-  flex-shrink: 0;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1100;
   display: flex;
   align-items: center;
   gap: 1rem;
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--border);
+  padding-top: calc(0.75rem + env(safe-area-inset-top, 0px));
+  padding-left: calc(1rem + env(safe-area-inset-left, 0px));
+  padding-right: calc(1rem + env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  background: rgba(var(--theme-bg-rgb, 12, 18, 34), 0.52);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  pointer-events: none;
+}
+
+.map-view-header > * {
+  pointer-events: auto;
 }
 
 .map-view-back {
@@ -5950,18 +6676,20 @@ body,
   font-size: 0.95rem;
   cursor: pointer;
   padding: 0.35rem 0.5rem;
-  border-radius: 6px;
+  border-radius: 12px;
+  transition: background 0.2s var(--ease-out);
 }
 
 .map-view-back:hover {
-  background: var(--hover-overlay);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
 .map-view-title {
   margin: 0;
   font-size: 1.1rem;
   font-weight: 600;
-  color: var(--primary);
+  color: var(--text);
+  text-shadow: 0 1px 2px color-mix(in srgb, var(--bg) 65%, rgba(0, 0, 0, 0.45));
 }
 
 .map-view-header-actions {
@@ -5979,21 +6707,19 @@ body,
   font-size: 0.85rem;
   font-weight: 500;
   white-space: nowrap;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface-solid) 88%, transparent);
-  color: var(--primary);
+  border-radius: 12px;
+  border: var(--glass-border-subtle);
+  background: color-mix(in srgb, var(--glass-bg) 55%, transparent);
+  color: var(--text);
   cursor: pointer;
   transition:
     background 0.2s var(--ease-out),
-    border-color 0.2s var(--ease-out),
-    box-shadow 0.2s var(--ease-out);
+    border-color 0.2s var(--ease-out);
 }
 
 .map-view-header .map-view-archives-btn:hover {
-  border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
-  background: var(--hover-overlay);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 50%, transparent);
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  background: color-mix(in srgb, var(--glass-bg) 72%, var(--primary));
 }
 
 .map-view-header .map-view-archives-btn:focus-visible {
@@ -6001,59 +6727,37 @@ body,
   outline-offset: 2px;
 }
 
-.map-view-filters {
-  position: absolute;
-  top: 3.5rem;
-  left: 0.75rem;
-  z-index: 1000;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  background: var(--surface-solid);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  font-size: 0.9rem;
-}
-
-.map-filter-item {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-  color: var(--text);
-}
-
 .map-view-chat-zone {
   position: absolute;
-  bottom: 1rem;
-  left: 1rem;
-  right: 1rem;
-  z-index: 1000;
+  bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1250;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.6rem;
   align-items: stretch;
-  max-width: 420px;
-  margin-left: auto;
-  margin-right: 1rem;
+  width: min(36rem, calc(100vw - 2rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+  max-width: 100%;
+  box-sizing: border-box;
   transition: transform 0.3s var(--ease-out);
 }
 
 .map-view-chat-zone-with-response {
-  align-items: flex-end;
+  align-items: stretch;
 }
 
 .map-view-response-box {
   width: 100%;
-  max-height: 180px;
+  max-height: min(40vh, 220px);
   overflow-y: auto;
-  padding: 0.75rem 1rem;
-  background: color-mix(in srgb, var(--surface-solid) 92%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  border-radius: 12px;
+  padding: 0.85rem 1.05rem;
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: var(--glass-border);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow-popover), var(--glass-edge);
   animation: map-response-in 0.3s var(--ease-out);
 }
 
@@ -6080,18 +6784,25 @@ body,
 .map-view-chat-bar {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.6rem;
-  background: color-mix(in srgb, var(--surface-solid) 88%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-  border-radius: 24px;
-  transition: box-shadow 0.2s;
+  gap: 0.55rem;
+  padding: 0.55rem 0.65rem 0.55rem 0.85rem;
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: var(--glass-border);
+  border-radius: 999px;
+  box-shadow: var(--glass-shadow-popover), var(--glass-edge);
+  transition:
+    box-shadow 0.22s var(--ease-out),
+    border-color 0.22s var(--ease-out);
 }
 
 .map-view-chat-bar:focus-within {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 40%, transparent);
+  border-color: color-mix(in srgb, var(--primary) 38%, transparent);
+  box-shadow:
+    var(--glass-shadow-popover),
+    var(--glass-edge),
+    0 0 0 2px color-mix(in srgb, var(--primary) 24%, transparent);
 }
 
 .map-chat-input {
@@ -6140,14 +6851,223 @@ body,
   cursor: not-allowed;
 }
 
-.map-view-container {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-}
-
 .map-view-map {
   z-index: 0;
+}
+
+.leaflet-div-icon.tactical-mesh-node-marker,
+.leaflet-div-icon.tactical-resource-marker {
+  border: none;
+  background: transparent;
+}
+
+.map-settings-popover-root {
+  position: absolute;
+  top: calc(4.5rem + env(safe-area-inset-top, 0px));
+  right: calc(0.75rem + env(safe-area-inset-right, 0px));
+  z-index: 1300;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.map-settings-popover-root > * {
+  pointer-events: auto;
+}
+
+.map-settings-trigger {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  border: var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: var(--glass-shadow-trigger), var(--glass-edge);
+  transition:
+    background 0.2s var(--ease-out),
+    border-color 0.2s var(--ease-out),
+    transform 0.15s var(--ease-out);
+}
+
+.map-settings-trigger:hover {
+  background: color-mix(in srgb, var(--glass-bg) 88%, var(--primary));
+  border: 1px solid color-mix(in srgb, var(--primary) 48%, transparent);
+}
+
+.map-settings-trigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.map-settings-glass-panel {
+  width: min(360px, calc(100vw - 2rem));
+  max-height: min(72vh, 560px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  border: var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: var(--glass-shadow-popover), var(--glass-edge);
+}
+
+.map-settings-popover-inner {
+  overflow-y: auto;
+  padding: 1rem 1.05rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.map-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.map-settings-section-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.map-settings-section-title-satellite {
+  color: #fca5a5;
+}
+
+.map-settings-section-satellite {
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.map-settings-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.map-settings-layer-chip {
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(30, 41, 59, 0.45);
+  color: #e2e8f0;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.3rem 0.65rem;
+  cursor: pointer;
+  transition:
+    border-color 0.2s var(--ease-out),
+    background 0.2s var(--ease-out);
+}
+
+.map-settings-layer-chip:hover {
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.map-settings-layer-chip.is-active {
+  border-color: rgba(56, 189, 248, 0.85);
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.map-settings-basemap-select {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(30, 41, 59, 0.55);
+  color: #e2e8f0;
+  font-size: 0.84rem;
+  font-family: inherit;
+}
+
+.map-settings-basemap-select:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+.map-settings-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  color: #e2e8f0;
+  font-size: 0.86rem;
+}
+
+.map-settings-check input {
+  accent-color: #38bdf8;
+}
+
+.map-settings-help {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  color: #94a3b8;
+}
+
+.map-settings-help code {
+  font-size: 0.72rem;
+  color: #cbd5e1;
+}
+
+.map-settings-satellite-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.map-settings-satellite-btn {
+  margin: 0;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  background: rgba(30, 41, 59, 0.5);
+  color: #fecaca;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 0.3rem 0.65rem;
+  cursor: pointer;
+  transition:
+    border-color 0.2s var(--ease-out),
+    background 0.2s var(--ease-out);
+}
+
+.map-settings-satellite-btn:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.75);
+  background: rgba(127, 29, 29, 0.2);
+}
+
+.map-settings-satellite-btn.is-active {
+  border-color: #f87171;
+  color: #fecaca;
+  background: rgba(248, 113, 113, 0.15);
+}
+
+.map-settings-satellite-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.map-settings-satellite-status {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: #fca5a5;
 }
 
 .map-popup-remove {
@@ -6330,6 +7250,12 @@ body,
   border-radius: 8px;
   background: var(--surface-solid);
   border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.library-modal.mesh-radio-modal.glass-panel .mesh-radio-log {
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  border: var(--glass-border-subtle);
+  border-radius: 10px;
 }
 
 .mesh-radio-log-empty {

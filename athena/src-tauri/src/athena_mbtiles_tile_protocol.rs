@@ -19,8 +19,11 @@ const MAPS_DIRECTORY_NAME: &str = "maps";
 pub fn register_with_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.register_asynchronous_uri_scheme_protocol(ATHENA_MBTILES_SCHEME, |context, request, responder| {
         let application_handle = context.app_handle().clone();
-        std::thread::spawn(move || {
-            let response = process_request(&application_handle, request);
+        tauri::async_runtime::spawn(async move {
+            let response = match tauri::async_runtime::spawn_blocking(move || process_request(&application_handle, request)).await {
+                Ok(resp) => resp,
+                Err(_) => fallback_error_response(),
+            };
             responder.respond(response);
         });
     })

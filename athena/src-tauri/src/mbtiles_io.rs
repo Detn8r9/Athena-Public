@@ -263,3 +263,160 @@ pub fn read_mbtiles_raster_format_mime(mbtiles_path: &Path) -> Result<&'static s
     })
 }
 
+/// Returns the native zoom range present in an MBTiles archive (`tiles` table), as `(min_zoom, max_zoom)`.
+pub fn read_mbtiles_zoom_range(mbtiles_path: &Path) -> Result<Option<(u8, u8)>, String> {
+    let connection = Connection::open_with_flags(mbtiles_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| e.to_string())?;
+    let row: Option<(i64, i64)> = connection
+        .query_row(
+            "SELECT MIN(zoom_level), MAX(zoom_level) FROM tiles",
+            [],
+            |r| {
+                let min_z: Option<i64> = r.get(0)?;
+                let max_z: Option<i64> = r.get(1)?;
+                Ok(match (min_z, max_z) {
+                    (Some(a), Some(b)) => Some((a, b)),
+                    _ => None,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+
+    let Some((min_i, max_i)) = row else {
+        return Ok(None);
+    };
+    if min_i < 0 || max_i < 0 || min_i > max_i {
+        return Ok(None);
+    }
+    if min_i > u8::MAX as i64 || max_i > u8::MAX as i64 {
+        return Ok(None);
+    }
+    Ok(Some((min_i as u8, max_i as u8)))
+}
+
+fn parse_metadata_bounds(raw_bounds: &str) -> Option<(f64, f64, f64, f64)> {
+    let parts: Vec<&str> = raw_bounds.split(',').map(|part| part.trim()).collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let parse = |s: &str| s.parse::<f64>().ok();
+    let (Some(min_lon), Some(min_lat), Some(max_lon), Some(max_lat)) =
+        (parse(parts[0]), parse(parts[1]), parse(parts[2]), parse(parts[3]))
+    else {
+        return None;
+    };
+    if !min_lon.is_finite() || !min_lat.is_finite() || !max_lon.is_finite() || !max_lat.is_finite() {
+        return None;
+    }
+    if min_lon >= max_lon || min_lat >= max_lat {
+        return None;
+    }
+    Some((min_lon, min_lat, max_lon, max_lat))
+}
+
+fn tile_x_to_lon(x: u64, z: u8) -> Option<f64> {
+    let n = 1u64.checked_shl(z as u32)? as f64;
+    Some((x as f64 / n) * 360.0 - 180.0)
+}
+
+fn tile_y_to_lat(y: u64, z: u8) -> Option<f64> {
+    let n = 1u64.checked_shl(z as u32)? as f64;
+    let mercator = std::f64::consts::PI * (1.0 - (2.0 * y as f64) / n);
+    Some(mercator.sinh().atan().to_degrees())
+}
+
+/// Returns geographic bounds from actual tile coverage across all zoom levels (`tiles` table), as `(min_lon, min_lat, max_lon, max_lat)`.
+/// Falls back to MBTiles metadata (`metadata.bounds`) when tile-derived bounds are unavailable.
+pub fn read_mbtiles_bounds(mbtiles_path: &Path) -> Result<Option<(f64, f64, f64, f64)>, String> {
+    let connection = Connection::open_with_flags(mbtiles_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| e.to_string())?;
+
+    let mut statement = connection
+        .prepare(
+            "SELECT zoom_level, MIN(tile_column), MAX(tile_column), MIN(tile_row), MAX(tile_row)
+             FROM tiles
+             GROUP BY zoom_level",
+        )
+        .map_err(|e| e.to_string())?;
+    let zoom_rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut union_min_lon: Option<f64> = None;
+    let mut union_min_lat: Option<f64> = None;
+    let mut union_max_lon: Option<f64> = None;
+    let mut union_max_lat: Option<f64> = None;
+
+    for row in zoom_rows {
+        let (z_i, x_min_i, x_max_i, y_tms_min_i, y_tms_max_i) = row.map_err(|e| e.to_string())?;
+        if z_i < 0
+            || z_i > u8::MAX as i64
+            || x_min_i < 0
+            || x_max_i < x_min_i
+            || y_tms_min_i < 0
+            || y_tms_max_i < y_tms_min_i
+        {
+            continue;
+        }
+        let z = z_i as u8;
+        let Some(n) = 1u64.checked_shl(z as u32) else {
+            continue;
+        };
+        let x_min = x_min_i as u64;
+        let x_max = x_max_i as u64;
+        let y_tms_min = y_tms_min_i as u64;
+        let y_tms_max = y_tms_max_i as u64;
+        if x_max >= n || y_tms_max >= n {
+            continue;
+        }
+
+        // MBTiles tile_row is TMS; convert top/bottom edges to XYZ boundaries.
+        let y_xyz_top = (n - 1).saturating_sub(y_tms_max);
+        let y_xyz_bottom = (n - 1).saturating_sub(y_tms_min);
+        let west_lon = tile_x_to_lon(x_min, z);
+        let east_lon = tile_x_to_lon(x_max.saturating_add(1), z);
+        let north_lat = tile_y_to_lat(y_xyz_top, z);
+        let south_lat = tile_y_to_lat(y_xyz_bottom.saturating_add(1), z);
+        let (Some(west_lon), Some(south_lat), Some(east_lon), Some(north_lat)) =
+            (west_lon, south_lat, east_lon, north_lat)
+        else {
+            continue;
+        };
+        if !(west_lon < east_lon && south_lat < north_lat) {
+            continue;
+        }
+        union_min_lon = Some(union_min_lon.map_or(west_lon, |v| v.min(west_lon)));
+        union_min_lat = Some(union_min_lat.map_or(south_lat, |v| v.min(south_lat)));
+        union_max_lon = Some(union_max_lon.map_or(east_lon, |v| v.max(east_lon)));
+        union_max_lat = Some(union_max_lat.map_or(north_lat, |v| v.max(north_lat)));
+    }
+
+    if let (Some(min_lon), Some(min_lat), Some(max_lon), Some(max_lat)) =
+        (union_min_lon, union_min_lat, union_max_lon, union_max_lat)
+    {
+        if min_lon < max_lon && min_lat < max_lat {
+            return Ok(Some((min_lon, min_lat, max_lon, max_lat)));
+        }
+    }
+
+    let raw_bounds: Option<String> = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE name='bounds' LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(raw_bounds.as_deref().and_then(parse_metadata_bounds))
+}
+

@@ -74,7 +74,7 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
 
   return (
     <div className="modal-backdrop mesh-radio-backdrop" onClick={onClose}>
-      <div className="library-modal mesh-radio-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="library-modal mesh-radio-modal glass-panel" onClick={(e) => e.stopPropagation()}>
         <div className="library-header mesh-radio-header">
           <h2>Meshtastic</h2>
           <div className="mesh-radio-header-actions">

@@ -29,6 +29,25 @@ export interface MapDownloadErrorEventPayload {
   message: string;
 }
 
+export interface SatelliteRegionDownloadProgressEventPayload {
+  job_id: string;
+  map_id: string;
+  downloaded_tiles: number;
+  total_tiles: number;
+}
+
+export interface SatelliteRegionDownloadCompleteEventPayload {
+  job_id: string;
+  map_id: string;
+  path: string;
+}
+
+export interface SatelliteRegionDownloadErrorEventPayload {
+  job_id: string;
+  map_id: string;
+  message: string;
+}
+
 /** Loads the offline map manager catalog (embedded mock JSON until remote URL is wired). */
 export async function getOfflineMapManagerCatalog(): Promise<OfflineMapCatalogEntry[]> {
   return invoke<OfflineMapCatalogEntry[]>("get_offline_map_manager_catalog");
@@ -45,4 +64,16 @@ export async function listDownloadedOfflineMapIds(): Promise<string[]> {
  */
 export async function downloadOfflineMap(mapId: string, downloadUrl: string): Promise<void> {
   return invoke<void>("download_offline_map", { mapId, downloadUrl });
+}
+
+export async function startSatelliteRegionDownload(args: {
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
+  minZoom?: number;
+  maxZoom?: number;
+  locationLabel?: string;
+}): Promise<string> {
+  return invoke<string>("start_satellite_region_download", args);
 }
