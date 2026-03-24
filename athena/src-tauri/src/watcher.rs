@@ -1,12 +1,12 @@
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use tauri::Emitter;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use tauri::Emitter;
 
 use crate::db::Database;
 use crate::indexer;
@@ -25,10 +25,14 @@ const WATCHER_BATCH_SIZE: usize = 10;
 
 fn flush_pending_events_map(
     pending_events: &mut HashMap<PathBuf, EventKind>,
-    db: &Database,
+    db: &Arc<Mutex<Database>>,
     app_data_dir: &std::path::Path,
     app: &tauri::AppHandle,
 ) {
+    let Ok(guard) = db.lock() else {
+        return;
+    };
+    let db = &*guard;
     let keys: Vec<PathBuf> = pending_events.keys().cloned().collect();
     for chunk in keys.chunks(WATCHER_BATCH_SIZE) {
         for path in chunk {
@@ -66,7 +70,10 @@ fn try_process_file(
     }
     let path_str = path.to_string_lossy();
 
-    if path.extension().map_or(false, |e| e.eq_ignore_ascii_case("zim")) {
+    if path
+        .extension()
+        .map_or(false, |e| e.eq_ignore_ascii_case("zim"))
+    {
         let result = catch_unwind(AssertUnwindSafe(|| indexer::index_zim_file(path)));
         match result {
             Ok(vec) => {
@@ -150,11 +157,15 @@ fn try_process_file(
 }
 
 fn initial_scan(
-    db: &Database,
+    db: &Arc<Mutex<Database>>,
     root: &str,
     app_data_dir: &std::path::Path,
     app: &tauri::AppHandle,
 ) {
+    let Ok(guard) = db.lock() else {
+        return;
+    };
+    let db = &*guard;
     let root_path = PathBuf::from(root);
     if !root_path.is_dir() {
         return;
@@ -199,7 +210,10 @@ fn process_event_path(
         }
         EventKind::Remove(_) => {
             let path_str = path.to_string_lossy();
-            if path.extension().map_or(false, |e| e.eq_ignore_ascii_case("zim")) {
+            if path
+                .extension()
+                .map_or(false, |e| e.eq_ignore_ascii_case("zim"))
+            {
                 let _ = db.delete_by_path_prefix(&path_str);
             } else {
                 let _ = db.delete_by_path(&path_str);
@@ -211,7 +225,7 @@ fn process_event_path(
 }
 
 pub fn run_watcher_loop(
-    db: Arc<Database>,
+    db: Arc<Mutex<Database>>,
     cmd_rx: crossbeam_channel::Receiver<WatchCommand>,
     app_data_dir: PathBuf,
     app: tauri::AppHandle,
@@ -241,8 +255,11 @@ pub fn run_watcher_loop(
                         for folder in &folders {
                             let folder_path = PathBuf::from(folder);
                             if folder_path.is_dir() {
-                                initial_scan(db.as_ref(), folder, &app_data_dir, &app);
-                                if watcher.watch(&folder_path, RecursiveMode::Recursive).is_ok() {
+                                initial_scan(&db, folder, &app_data_dir, &app);
+                                if watcher
+                                    .watch(&folder_path, RecursiveMode::Recursive)
+                                    .is_ok()
+                                {
                                     any_ok = true;
                                 }
                             }
@@ -279,7 +296,12 @@ pub fn run_watcher_loop(
             if let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     WatchCommand::SetFolders(folders) => {
-                        flush_pending_events_map(&mut pending_events, db.as_ref(), &app_data_dir, &app);
+                        flush_pending_events_map(
+                            &mut pending_events,
+                            &db,
+                            &app_data_dir,
+                            &app,
+                        );
                         pending_folders = Some(folders);
                         _watcher_guard = None;
                         event_rx = None;
@@ -297,10 +319,10 @@ pub fn run_watcher_loop(
                 }
                 Ok(Err(_)) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    flush_pending_events_map(&mut pending_events, db.as_ref(), &app_data_dir, &app);
+                    flush_pending_events_map(&mut pending_events, &db, &app_data_dir, &app);
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    flush_pending_events_map(&mut pending_events, db.as_ref(), &app_data_dir, &app);
+                    flush_pending_events_map(&mut pending_events, &db, &app_data_dir, &app);
                     event_rx = None;
                     current_folders.clear();
                 }

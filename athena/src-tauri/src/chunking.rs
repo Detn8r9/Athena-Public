@@ -43,7 +43,10 @@ impl Default for ChunkOptions {
 
 /// Normalize line endings to \n and trim.
 fn normalize(text: &str) -> String {
-    text.replace("\r\n", "\n").replace('\r', "\n").trim().to_string()
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_string()
 }
 
 /// True if the line looks like a markdown ATX header (e.g. ## Section).
@@ -78,7 +81,9 @@ fn is_table_separator(line: &str) -> bool {
         return false;
     }
     let inner = trimmed[1..trimmed.len() - 1].trim();
-    inner.chars().all(|c| c == '-' || c == ':' || c == ' ' || c == '|')
+    inner
+        .chars()
+        .all(|c| c == '-' || c == ':' || c == ' ' || c == '|')
 }
 
 /// Classifies a line for block boundary detection.
@@ -309,7 +314,13 @@ pub fn chunk_text(text: &str, options: &ChunkOptions) -> Vec<SemanticChunk> {
 
     for block in blocks {
         if block.text.len() > max_chars {
-            flush(&mut buffer, &mut buffer_start, &mut buffer_end, &mut out, &mut chunk_index);
+            flush(
+                &mut buffer,
+                &mut buffer_start,
+                &mut buffer_end,
+                &mut out,
+                &mut chunk_index,
+            );
             for (piece, start, end) in split_large_block(&block, max_chars) {
                 out.push(SemanticChunk {
                     text: piece,
@@ -328,7 +339,13 @@ pub fn chunk_text(text: &str, options: &ChunkOptions) -> Vec<SemanticChunk> {
             || (at_target && !header_or_table && buffer.len() + 1 + block.text.len() <= max_chars)
             || (header_or_table && !buffer.is_empty() && (block.is_header_block || block.is_table));
         if should_flush && !buffer.is_empty() {
-            flush(&mut buffer, &mut buffer_start, &mut buffer_end, &mut out, &mut chunk_index);
+            flush(
+                &mut buffer,
+                &mut buffer_start,
+                &mut buffer_end,
+                &mut out,
+                &mut chunk_index,
+            );
         }
         if buffer.is_empty() {
             buffer_start = Some(block.start_byte);
@@ -341,7 +358,13 @@ pub fn chunk_text(text: &str, options: &ChunkOptions) -> Vec<SemanticChunk> {
         buffer.push_str(&block.text);
     }
     if buffer.len() >= min_chars || (!buffer.is_empty() && out.is_empty()) {
-        flush(&mut buffer, &mut buffer_start, &mut buffer_end, &mut out, &mut chunk_index);
+        flush(
+            &mut buffer,
+            &mut buffer_start,
+            &mut buffer_end,
+            &mut out,
+            &mut chunk_index,
+        );
     }
     out
 }

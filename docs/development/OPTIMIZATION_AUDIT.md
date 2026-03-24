@@ -174,7 +174,7 @@ This document lists inefficiencies and optimization opportunities to reduce CPU,
 
 **Where:** `MapView.tsx`; `pois.map` for markers.
 
-**Issue:** Map is only mounted when `mapOpen` is true. POI list is typically small. No major inefficiency; Leaflet is a known cost when the map is open.
+**Issue:** Map is only mounted when the map view is active (`currentView === "map"`). POI list is typically small. No major inefficiency; Leaflet is a known cost when the map is open.
 
 **Impact:** Low for normal use. If the user had hundreds of POIs, consider clustering or limiting rendered markers.
 

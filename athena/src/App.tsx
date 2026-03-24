@@ -10,6 +10,7 @@ import { TRIAGE_ITEMS, getTriageItem, TriageId } from "./triageData";
 import { HelpModal } from "./HelpModal";
 import { MeshRadioModal, type MeshRadioMessage } from "./MeshRadioModal";
 import { MapView, type MapBasemap, type TacticalMapMeshNodeLocation, type TacticalMapPointOfInterest } from "./MapView";
+import { defaultTacticalLayerVisibilityState, type TacticalLayerVisibilityState } from "./TacticalSidebar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { OfflineMapManagerDashboard } from "./OfflineMapManagerDashboard";
 import { registerPmtilesMaplibreProtocolOnce } from "./maplibrePmtilesProtocolRegistration";
@@ -17,8 +18,68 @@ import { evaluateMainChatWatchdog } from "./streamWatchdog";
 import { appendMeshMessageCapped } from "./meshMessageLog";
 import { PhotoshopColorPicker } from "./PhotoshopColorPicker";
 import { hexToRgbCsv } from "./colorUtils";
+import type { AppView } from "./appView";
+import { APP_VIEW_LABELS, APP_VIEWS, readStartupView, saveStartupView } from "./appView";
+import { UniversalHeader } from "./UniversalHeader";
+import { DashboardView, type DashboardDestination } from "./DashboardView";
+import { usePageVisible } from "./usePageVisible";
+import { LogbookView } from "./LogbookView";
+import { AiModelManager } from "./AiModelManager";
+import { RadioView } from "./RadioView";
+import { RadioSettingsView } from "./RadioSettingsView";
+import { KnowledgeCatalogView } from "./KnowledgeCatalogView";
+
+type UserAndInferenceSettings = {
+  user_display_name: string | null;
+  user_birthdate_iso: string | null;
+  allow_nsfw_unrestricted_models: boolean;
+  is_at_least_18: boolean;
+  is_birthday_today: boolean;
+  inference_backend: string | null;
+  explicit_ollama_model: string | null;
+  openai_compatible_base_url: string | null;
+  openai_compatible_model: string | null;
+  openai_compatible_api_key_set: boolean;
+};
 
 registerPmtilesMaplibreProtocolOnce();
+
+const ATHENA_TACTICAL_MAP_LAYER_VISIBILITY_KEY = "athena-tactical-map-layer-visibility-v3";
+
+function readTacticalMapLayerVisibilityFromStorage(): TacticalLayerVisibilityState {
+  if (typeof window === "undefined" || typeof window.localStorage === "undefined") {
+    return defaultTacticalLayerVisibilityState;
+  }
+  try {
+    let raw = window.localStorage.getItem(ATHENA_TACTICAL_MAP_LAYER_VISIBILITY_KEY);
+    if (!raw) {
+      raw = window.localStorage.getItem("athena-tactical-map-layer-visibility-v2");
+    }
+    if (!raw) {
+      return defaultTacticalLayerVisibilityState;
+    }
+    const parsed = JSON.parse(raw) as Partial<TacticalLayerVisibilityState>;
+    return {
+      activeFamily: parsed.activeFamily ?? defaultTacticalLayerVisibilityState.activeFamily,
+      network: {
+        nodes: parsed.network?.nodes ?? defaultTacticalLayerVisibilityState.network.nodes,
+        coverageCircles:
+          parsed.network?.coverageCircles ?? defaultTacticalLayerVisibilityState.network.coverageCircles,
+        links: parsed.network?.links ?? defaultTacticalLayerVisibilityState.network.links,
+      },
+      resources: {
+        power: parsed.resources?.power ?? defaultTacticalLayerVisibilityState.resources.power,
+        water: parsed.resources?.water ?? defaultTacticalLayerVisibilityState.resources.water,
+        food: parsed.resources?.food ?? defaultTacticalLayerVisibilityState.resources.food,
+        equipment:
+          parsed.resources?.equipment ?? defaultTacticalLayerVisibilityState.resources.equipment,
+      },
+      customPins: parsed.customPins ?? defaultTacticalLayerVisibilityState.customPins,
+    };
+  } catch {
+    return defaultTacticalLayerVisibilityState;
+  }
+}
 
 interface IndexStats {
   total_files: number;
@@ -47,9 +108,20 @@ interface MemoryEstimate {
   total_estimated_ram_gb: number;
 }
 
+interface OllamaSetupStatus {
+  http_reachable: boolean;
+  sidecar_child_active: boolean;
+  managed_binary_exists: boolean;
+  managed_binary_path: string;
+  configured_cli_path: string | null;
+  detected_ollama_paths: string[];
+  unconventional_ollama_path: string | null;
+}
+
 interface BatteryState {
   percentage: number | null;
   is_charging: boolean | null;
+  time_to_empty_minutes?: number | null;
 }
 
 const MODEL_TIERS = ["auto", "small", "medium", "large", "xlarge"] as const;
@@ -153,6 +225,15 @@ interface LibraryFile {
   size_bytes: number;
 }
 
+interface RagIngestionProgressPayload {
+  file_path: string;
+  filename: string;
+  completed: boolean;
+  chunks: number;
+  document_id?: string | null;
+  error?: string | null;
+}
+
 interface MapCatalogEntry {
   id: string;
   name: string;
@@ -250,6 +331,30 @@ interface ChatMessage {
   timestamp?: number;
   /** Library doc names used to answer (citations) */
   sources?: string[];
+}
+
+interface RagSearchChunk {
+  chunk_id: string;
+  document_id: string;
+  chunk_index: number;
+  content: string;
+  score: number;
+  source?: string;
+  content_type?: string;
+}
+
+interface RagSearchFilters {
+  file_types?: string[];
+  source_contains?: string;
+  content_type?: string;
+  tags?: string[];
+}
+
+interface RadioLogEntry {
+  id: string;
+  direction: string;
+  message: string;
+  timestamp: string;
 }
 
 interface ChatSummary {
@@ -613,14 +718,53 @@ function App() {
   const [libraryFilesModalOpen, setLibraryFilesModalOpen] = useState(false);
   const [stats, setStats] = useState<IndexStats | null>(null);
   const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [_ragIngestingPaths, setRagIngestingPaths] = useState<string[]>([]);
+  const [ragIngestedLocalFiles, setRagIngestedLocalFiles] = useState<LibraryFile[]>([]);
   const [systemSpecs, setSystemSpecs] = useState<SystemSpecs | null>(null);
   const [ollamaAvailable, setOllamaAvailable] = useState(false);
   const [ollamaNotRunningBannerDismissed, setOllamaNotRunningBannerDismissed] = useState(false);
   const [ollamaLaunching, setOllamaLaunching] = useState(false);
+  const [ollamaSidecarManaged, setOllamaSidecarManaged] = useState(false);
+  const [ollamaSetupStatus, setOllamaSetupStatus] = useState<OllamaSetupStatus | null>(null);
+  const [ollamaSetupProgress, setOllamaSetupProgress] = useState<string | null>(null);
+  const [ollamaSetupLastError, setOllamaSetupLastError] = useState<string | null>(null);
+  const [ollamaCopyPromptDismissed, setOllamaCopyPromptDismissed] = useState(false);
+  const [ollamaCopyBusy, setOllamaCopyBusy] = useState(false);
+  const [ollamaInstallBusy, setOllamaInstallBusy] = useState(false);
+  const [activeEngineModel, setActiveEngineModel] = useState("");
+  const [userDisplayName, setUserDisplayName] = useState("");
+  const [userBirthdateIso, setUserBirthdateIso] = useState("");
+  const [allowNsfwCatalog, setAllowNsfwCatalog] = useState(false);
+  const [userIs18, setUserIs18] = useState(false);
+  const [birthdayBannerVisible, setBirthdayBannerVisible] = useState(false);
+  const [inferenceBackendMode, setInferenceBackendMode] = useState<"ollama" | "openai_compatible">("ollama");
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState("http://127.0.0.1:1234/v1");
+  const [openaiModelId, setOpenaiModelId] = useState("");
+  const [openaiApiKeyLocal, setOpenaiApiKeyLocal] = useState("");
+  const [aiInferenceReady, setAiInferenceReady] = useState(false);
   const [quarantineAlert, setQuarantineAlert] = useState<{ path: string; reason: string } | null>(null);
   const [modelOverride, setModelOverride] = useState<ModelTier>("auto");
   const [memoryMessages, setMemoryMessages] = useState(20);
   const [memoryEstimate, setMemoryEstimate] = useState<MemoryEstimate | null>(null);
+  const [aiTemperature, setAiTemperature] = useState(() => {
+    try {
+      const v = localStorage.getItem("athena_ai_temperature");
+      const n = v != null ? Number.parseFloat(v) : Number.NaN;
+      return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.7;
+    } catch {
+      return 0.7;
+    }
+  });
+  const [aiNumCtx, setAiNumCtx] = useState(() => {
+    try {
+      const v = localStorage.getItem("athena_ai_num_ctx");
+      const n = v != null ? Number.parseInt(v, 10) : Number.NaN;
+      return Number.isFinite(n) && n >= 512 ? Math.min(131072, n) : 4096;
+    } catch {
+      return 4096;
+    }
+  });
+  const [maintenanceFeedback, setMaintenanceFeedback] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [discoveredZims, setDiscoveredZims] = useState<DiscoveredZim[]>([]);
   const [kiwixScanLoading, setKiwixScanLoading] = useState(false);
   const [kiwixScanError, setKiwixScanError] = useState<string | null>(null);
@@ -678,14 +822,11 @@ function App() {
       return false;
     }
   });
-  const [rebuildVectorIndexLoading, setRebuildVectorIndexLoading] = useState(false);
-  const [rebuildVectorIndexProgress, setRebuildVectorIndexProgress] = useState<{
+  const [_rebuildVectorIndexProgress, setRebuildVectorIndexProgress] = useState<{
     processed: number;
     total: number;
     failed: number;
   } | null>(null);
-  const [rebuildVectorIndexResult, setRebuildVectorIndexResult] = useState<string | null>(null);
-  const [rebuildVectorIndexFailedFiles, setRebuildVectorIndexFailedFiles] = useState<Array<{ path: string; name: string; error: string }>>([]);
   const [deviceOverlayEnabled, setDeviceOverlayEnabled] = useState(() => {
     try {
       return localStorage.getItem(STORAGE_KEY_DEVICE_OVERLAY) === "1";
@@ -697,16 +838,29 @@ function App() {
     cpu_usage_pct: number;
     ram_used_mb: number;
     ram_total_mb: number;
+    swap_used_mb: number;
+    swap_total_mb: number;
     disk_used_gb: number;
     disk_total_gb: number;
     net_rx_bytes: number;
     net_tx_bytes: number;
+    disk_read_bytes_total: number;
+    disk_write_bytes_total: number;
     cpu_temp_c?: number | null;
     gpu_usage_pct?: number | null;
+    battery_pct?: number | null;
+    battery_charging?: boolean | null;
+    battery_time_to_empty_minutes?: number | null;
   } | null>(null);
   const deviceStatsPrevNetRef = useRef<{ rx: number; tx: number; t: number } | null>(null);
+  const deviceStatsPrevDiskRef = useRef<{ read: number; write: number; t: number } | null>(null);
   const [netSpeedRxKbps, setNetSpeedRxKbps] = useState<number | null>(null);
   const [netSpeedTxKbps, setNetSpeedTxKbps] = useState<number | null>(null);
+  const [diskSpeedReadMbps, setDiskSpeedReadMbps] = useState<number | null>(null);
+  const [diskSpeedWriteMbps, setDiskSpeedWriteMbps] = useState<number | null>(null);
+  const [deviceOverlayExpanded, setDeviceOverlayExpanded] = useState(false);
+  /** When false (other tab / minimized), slow telemetry polling to save CPU & battery. */
+  const pageVisible = usePageVisible();
   const [selectedCustomThemeId, setSelectedCustomThemeId] = useState<string | null>(null);
   type ThemesSubView = "main" | "studio";
   const [themesSubView, setThemesSubView] = useState<ThemesSubView>("main");
@@ -722,7 +876,8 @@ function App() {
   const [satelliteApiKeyStatus, setSatelliteApiKeyStatus] = useState<string | null>(null);
   const [satelliteApiKeyFocused, setSatelliteApiKeyFocused] = useState(false);
   const [showSatelliteKeyTutorial, setShowSatelliteKeyTutorial] = useState(false);
-  const [mapOpen, setMapOpen] = useState(false);
+  const [currentView, setCurrentView] = useState<AppView>(() => readStartupView());
+  const [startupViewPreference, setStartupViewPreference] = useState<AppView>(() => readStartupView());
   const [mapCatalog, setMapCatalog] = useState<MapCatalogEntry[]>([]);
   const [downloadedMaps, setDownloadedMaps] = useState<DownloadedMap[]>([]);
   const [pois, setPois] = useState<Poi[]>([]);
@@ -760,12 +915,23 @@ function App() {
   const [mapBasemap, setMapBasemap] = useState<MapBasemap>("online_osm");
   const [mapViewCenter, setMapViewCenter] = useState<[number, number]>([39.5, -98.35]);
   const [mapViewZoom, setMapViewZoom] = useState(4);
+  const [tacticalMapLayerVisibility, setTacticalMapLayerVisibility] = useState<TacticalLayerVisibilityState>(
+    readTacticalMapLayerVisibilityFromStorage,
+  );
   const [tileRadiusMiles, setTileRadiusMiles] = useState(12);
   const [tileZoomMin, setTileZoomMin] = useState(10);
   const [tileZoomMax, setTileZoomMax] = useState(13);
   const [tileGeocodeQuery, setTileGeocodeQuery] = useState("");
   const [tilePackEstimate, setTilePackEstimate] = useState<TilePackEstimate | null>(null);
   const [tileEstimateBusy, setTileEstimateBusy] = useState(false);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ATHENA_TACTICAL_MAP_LAYER_VISIBILITY_KEY, JSON.stringify(tacticalMapLayerVisibility));
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, [tacticalMapLayerVisibility]);
 
   const resolveGpsForChatPayload = useCallback(async (): Promise<{ userLat: number | null; userLon: number | null }> => {
     if (typeof navigator !== "undefined" && navigator.geolocation) {
@@ -785,11 +951,11 @@ function App() {
     if (last) {
       return { userLat: last.lat, userLon: last.lon };
     }
-    if (featureMapEnabled && mapOpen) {
+    if (featureMapEnabled && currentView === "map") {
       return { userLat: mapViewCenter[0], userLon: mapViewCenter[1] };
     }
     return { userLat: null, userLon: null };
-  }, [featureMapEnabled, mapOpen, mapViewCenter]);
+  }, [featureMapEnabled, currentView, mapViewCenter]);
 
   const headerDownloadBar = useMemo(() => {
     const entries = Object.entries(downloadJobs);
@@ -837,6 +1003,13 @@ function App() {
       libraryFiles.filter((f) => !downloadedMapPaths.has(f.path) && !isLikelyKiwixMapZimFilename(f.name)),
     [libraryFiles, downloadedMapPaths],
   );
+
+  const ragDisplayFiles = useMemo(() => {
+    const byPath = new Map<string, LibraryFile>();
+    for (const f of ragIngestedLocalFiles) byPath.set(f.path, f);
+    for (const f of ragLibraryFiles) byPath.set(f.path, f);
+    return Array.from(byPath.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [ragLibraryFiles, ragIngestedLocalFiles]);
 
   const mapDownloadJobs = useMemo(
     () =>
@@ -1733,16 +1906,21 @@ function App() {
 
   async function loadModelSettings() {
     try {
-      const [specs, available, override, mem, estimate] = await Promise.all([
+      const [specs, available, sidecarManaged, override, mem, estimate, uis, inferReady] = await Promise.all([
         invoke<SystemSpecs>("get_system_specs"),
         invoke<boolean>("is_ollama_available"),
+        invoke<boolean>("get_sidecar_status"),
         invoke<string | null>("get_model_override"),
         invoke<number>("get_memory_messages"),
         invoke<MemoryEstimate>("get_memory_estimate"),
+        invoke<UserAndInferenceSettings>("get_user_and_inference_settings").catch(() => null),
+        invoke<boolean>("is_inference_ready").catch(() => false),
       ]);
       setSystemSpecs(specs);
       setOllamaAvailable(available);
+      setOllamaSidecarManaged(sidecarManaged);
       if (available) setOllamaNotRunningBannerDismissed(false);
+      setAiInferenceReady(inferReady);
       {
         const raw = (override ?? "auto").toLowerCase();
         setModelOverride(
@@ -1751,10 +1929,31 @@ function App() {
       }
       setMemoryMessages(mem);
       setMemoryEstimate(estimate);
+      if (uis) {
+        setUserDisplayName(uis.user_display_name ?? "");
+        setUserBirthdateIso(uis.user_birthdate_iso ?? "");
+        setAllowNsfwCatalog(uis.allow_nsfw_unrestricted_models);
+        setUserIs18(uis.is_at_least_18);
+        setInferenceBackendMode(uis.inference_backend === "openai_compatible" ? "openai_compatible" : "ollama");
+        setOpenaiBaseUrl(uis.openai_compatible_base_url?.trim() || "http://127.0.0.1:1234/v1");
+        setOpenaiModelId(uis.openai_compatible_model ?? "");
+        setActiveEngineModel(uis.explicit_ollama_model ?? "");
+        if (!uis.openai_compatible_api_key_set) {
+          setOpenaiApiKeyLocal("");
+        }
+        const todayKey = `athena_birthday_shown_${new Date().toISOString().slice(0, 10)}`;
+        if (uis.is_birthday_today && !sessionStorage.getItem(todayKey)) {
+          setBirthdayBannerVisible(true);
+        } else {
+          setBirthdayBannerVisible(false);
+        }
+      }
     } catch (_) {
       setSystemSpecs(null);
       setOllamaAvailable(false);
+      setOllamaSidecarManaged(false);
       setMemoryEstimate(null);
+      setAiInferenceReady(false);
     }
   }
 
@@ -1768,6 +1967,74 @@ function App() {
       setMemoryEstimate(estimate);
     } catch (e) {
       setLibraryError(String(e));
+    }
+  }
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("athena_ai_temperature", String(aiTemperature));
+    } catch {
+      /* ignore */
+    }
+  }, [aiTemperature]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("athena_ai_num_ctx", String(aiNumCtx));
+    } catch {
+      /* ignore */
+    }
+  }, [aiNumCtx]);
+
+  async function handleBackupDatabase() {
+    setMaintenanceFeedback(null);
+    try {
+      const destPath = await save({
+        title: "Backup database",
+        defaultPath: "athena_backup.db",
+        filters: [{ name: "SQLite database", extensions: ["db"] }],
+      });
+      if (destPath == null) return;
+      await invoke("backup_database", { destPath });
+      setMaintenanceFeedback({ kind: "ok", text: "Database backup saved." });
+    } catch (e) {
+      setMaintenanceFeedback({ kind: "err", text: e != null ? String(e) : "Backup failed." });
+    }
+  }
+
+  async function handleRestoreDatabase() {
+    setMaintenanceFeedback(null);
+    try {
+      const selectedResult = await open({
+        title: "Restore database",
+        multiple: false,
+        filters: [{ name: "SQLite database", extensions: ["db"] }],
+      });
+      if (selectedResult == null) return;
+      const sourcePath = Array.isArray(selectedResult) ? selectedResult[0] : selectedResult;
+      await invoke("restore_database", { sourcePath });
+      setMaintenanceFeedback({
+        kind: "ok",
+        text: "Database restored from file. If anything looks stale, restart Athena.",
+      });
+    } catch (e) {
+      setMaintenanceFeedback({ kind: "err", text: e != null ? String(e) : "Restore failed." });
+    }
+  }
+
+  async function handleExportCommsLogs() {
+    setMaintenanceFeedback(null);
+    try {
+      const destPath = await save({
+        title: "Export comms logs",
+        defaultPath: "athena_comms_export.csv",
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (destPath == null) return;
+      await invoke("export_radio_logs", { destPath });
+      setMaintenanceFeedback({ kind: "ok", text: "Comms log export saved." });
+    } catch (e) {
+      setMaintenanceFeedback({ kind: "err", text: e != null ? String(e) : "Export failed." });
     }
   }
 
@@ -2122,7 +2389,7 @@ function App() {
     try {
       await invoke("remove_downloaded_map", { path });
       setDownloadedMaps((prev) => prev.filter((m) => m.path !== path));
-      if (mapOpen) invoke<DownloadedMap[]>("get_downloaded_maps").then(setDownloadedMaps).catch(() => {});
+      if (currentView === "map") invoke<DownloadedMap[]>("get_downloaded_maps").then(setDownloadedMaps).catch(() => {});
     } catch (e) {
       setLibraryError(String(e));
     }
@@ -2244,12 +2511,50 @@ function App() {
 
   /* Check Ollama on app load so the banner reflects real state (not just initial false) */
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void invoke<boolean>("get_sidecar_status")
+      .then(setOllamaSidecarManaged)
+      .catch(() => setOllamaSidecarManaged(false));
     invoke<boolean>("is_ollama_available")
       .then((available) => {
         setOllamaAvailable(available);
         if (available) setOllamaNotRunningBannerDismissed(false);
       })
       .catch(() => setOllamaAvailable(false));
+    invoke<boolean>("is_inference_ready")
+      .then((ok) => setAiInferenceReady(ok))
+      .catch(() => setAiInferenceReady(false));
+    void invoke<OllamaSetupStatus>("get_ollama_setup_status")
+      .then(setOllamaSetupStatus)
+      .catch(() => setOllamaSetupStatus(null));
+    void listen<Record<string, unknown>>("ollama-setup-progress", (event) => {
+      const phase = event.payload.phase;
+      if (phase === "downloading") {
+        setOllamaSetupLastError(null);
+        setOllamaSetupProgress("Downloading the Ollama CLI for Athena (first launch can take a minute)…");
+      } else if (phase === "installed") {
+        setOllamaSetupProgress(null);
+        void invoke<boolean>("is_ollama_available")
+          .then((ok) => {
+            setOllamaAvailable(ok);
+            if (ok) setOllamaNotRunningBannerDismissed(false);
+          })
+          .catch(() => {});
+        void invoke<OllamaSetupStatus>("get_ollama_setup_status")
+          .then(setOllamaSetupStatus)
+          .catch(() => setOllamaSetupStatus(null));
+      } else if (phase === "error") {
+        setOllamaSetupProgress(null);
+        const msg =
+          typeof event.payload.message === "string" ? event.payload.message : "Unknown error";
+        setOllamaSetupLastError(msg);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   /* Hydrate persisted map/location toggles on app launch so header icons render immediately. */
@@ -2291,19 +2596,25 @@ function App() {
     }).catch(() => {});
   }, [enabledArchiveRasterFileNames]);
 
-  /* When "Ollama not running" banner is visible, re-check every 10s so we update if user starts Ollama */
+  /* When AI backend banner is visible, re-check inference (slower when window in background). */
   useEffect(() => {
-    if (ollamaAvailable || ollamaNotRunningBannerDismissed) return;
+    if (aiInferenceReady || ollamaNotRunningBannerDismissed) return;
+    const pollMs = pageVisible ? 10_000 : 60_000;
     const id = window.setInterval(() => {
-      invoke<boolean>("is_ollama_available")
-        .then((available) => {
-          setOllamaAvailable(available);
-          if (available) setOllamaNotRunningBannerDismissed(false);
+      void invoke<boolean>("is_inference_ready")
+        .then((ok) => {
+          setAiInferenceReady(ok);
+          if (ok) setOllamaNotRunningBannerDismissed(false);
         })
         .catch(() => {});
-    }, 10_000);
+      void invoke<boolean>("is_ollama_available")
+        .then((available) => {
+          setOllamaAvailable(available);
+        })
+        .catch(() => {});
+    }, pollMs);
     return () => window.clearInterval(id);
-  }, [ollamaAvailable, ollamaNotRunningBannerDismissed]);
+  }, [aiInferenceReady, ollamaNotRunningBannerDismissed, pageVisible]);
 
   useEffect(() => {
     if (settingsOpen) {
@@ -2393,8 +2704,11 @@ function App() {
     if (!deviceOverlayEnabled) {
       setDeviceStats(null);
       deviceStatsPrevNetRef.current = null;
+      deviceStatsPrevDiskRef.current = null;
       setNetSpeedRxKbps(null);
       setNetSpeedTxKbps(null);
+      setDiskSpeedReadMbps(null);
+      setDiskSpeedWriteMbps(null);
       return;
     }
     const fetchStats = () => {
@@ -2402,12 +2716,19 @@ function App() {
         cpu_usage_pct: number;
         ram_used_mb: number;
         ram_total_mb: number;
+        swap_used_mb: number;
+        swap_total_mb: number;
         disk_used_gb: number;
         disk_total_gb: number;
         net_rx_bytes: number;
         net_tx_bytes: number;
+        disk_read_bytes_total: number;
+        disk_write_bytes_total: number;
         cpu_temp_c?: number | null;
         gpu_usage_pct?: number | null;
+        battery_pct?: number | null;
+        battery_charging?: boolean | null;
+        battery_time_to_empty_minutes?: number | null;
       }>("get_device_stats")
         .then((s) => {
           const now = Date.now();
@@ -2420,14 +2741,34 @@ function App() {
             }
           }
           deviceStatsPrevNetRef.current = { rx: s.net_rx_bytes, tx: s.net_tx_bytes, t: now };
+
+          const prevDisk = deviceStatsPrevDiskRef.current;
+          if (prevDisk !== null && now > prevDisk.t) {
+            const dtSec = (now - prevDisk.t) / 1000;
+            if (dtSec > 0) {
+              const dr = s.disk_read_bytes_total - prevDisk.read;
+              const dw = s.disk_write_bytes_total - prevDisk.write;
+              if (dr >= 0 && dw >= 0) {
+                setDiskSpeedReadMbps(dr / (1024 * 1024) / dtSec);
+                setDiskSpeedWriteMbps(dw / (1024 * 1024) / dtSec);
+              }
+            }
+          }
+          deviceStatsPrevDiskRef.current = {
+            read: s.disk_read_bytes_total,
+            write: s.disk_write_bytes_total,
+            t: now,
+          };
+
           setDeviceStats(s);
         })
         .catch(() => setDeviceStats(null));
     };
     fetchStats();
-    const interval = setInterval(fetchStats, 1500);
+    const pollMs = pageVisible ? 2000 : 20000;
+    const interval = setInterval(fetchStats, pollMs);
     return () => clearInterval(interval);
-  }, [deviceOverlayEnabled]);
+  }, [deviceOverlayEnabled, pageVisible]);
 
   useEffect(() => {
     loadChatList();
@@ -2439,6 +2780,34 @@ function App() {
     });
     return () => {
       unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<RagIngestionProgressPayload>("rag-ingestion-progress", (event) => {
+      const p = event.payload;
+      if (!p || !p.file_path) return;
+      if (!p.completed) {
+        setRagIngestingPaths((prev) => (prev.includes(p.file_path) ? prev : [...prev, p.file_path]));
+        return;
+      }
+      setRagIngestingPaths((prev) => prev.filter((path) => path !== p.file_path));
+      if (p.error) {
+        setLibraryError(`Ingest failed for ${p.filename}: ${p.error}`);
+        return;
+      }
+      setRagIngestedLocalFiles((prev) => {
+        const next = prev.filter((f) => f.path !== p.file_path);
+        next.unshift({ path: p.file_path, name: p.filename, size_bytes: 0 });
+        return next;
+      });
+      void invoke<LibraryFile[]>("list_library_contents")
+        .then((list) => setLibraryFiles(Array.isArray(list) ? list : []))
+        .catch(() => {});
+      void loadStats();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
     };
   }, []);
 
@@ -2525,6 +2894,9 @@ function App() {
     const unlisten = listen<{ sender_id: number; text: string }>("athena:mesh-text", (event) => {
       const p = event.payload;
       if (p && typeof p.sender_id === "number" && typeof p.text === "string") {
+        if (p.text.trimStart().startsWith("ATHLB1:")) {
+          return;
+        }
         const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
         setMeshMessages((prev) =>
           appendMeshMessageCapped(prev, { id, senderId: p.sender_id, text: p.text, at: Date.now() }),
@@ -2724,7 +3096,8 @@ function App() {
       const el = e.target as Node;
       const inHeader = triageMenuRef.current?.contains(el);
       const inPortal = document.body.querySelector(".triage-portal-root")?.contains(el);
-      if (!inHeader && !inPortal) {
+      const inTriageTrigger = (e.target as HTMLElement | null)?.closest?.("[data-triage-trigger]");
+      if (!inHeader && !inPortal && !inTriageTrigger) {
         setTriageMenuOpen(false);
       }
     };
@@ -2925,10 +3298,18 @@ function App() {
   }, [applyOfflineBasemapPaths]);
 
   useEffect(() => {
-    if (!featureMapEnabled) {
-      setMapOpen(false);
+    if (settingsOpen && settingsPanel === "general") {
+      setStartupViewPreference(readStartupView());
     }
-  }, [featureMapEnabled]);
+  }, [settingsOpen, settingsPanel]);
+
+  useEffect(() => {
+    if (currentView !== "map") {
+      mapStreamActiveRef.current = false;
+      mapStreamContentRef.current = "";
+      setMapChatSending(false);
+    }
+  }, [currentView]);
 
   useEffect(() => {
     if (mapBasemap === "offline_osm" && !offlineOsmRoot) setMapBasemap("online_osm");
@@ -3048,8 +3429,30 @@ function App() {
       });
   }, []);
 
+  const handleAddTacticalPoiPin = useCallback(
+    async (payload: {
+      name: string;
+      description: string;
+      lucideIconName: string;
+      pinLayer: "resource" | "network";
+      lat: number;
+      lng: number;
+    }) => {
+      await invoke<TacticalMapPointOfInterest>("add_tactical_poi", {
+        name: payload.name,
+        lat: payload.lat,
+        lon: payload.lng,
+        lucideIconName: payload.lucideIconName.trim().length > 0 ? payload.lucideIconName : null,
+        description: payload.description.trim().length > 0 ? payload.description : null,
+        pinLayer: payload.pinLayer,
+      });
+      reloadTacticalMapLayers();
+    },
+    [reloadTacticalMapLayers],
+  );
+
   useEffect(() => {
-    if (!mapOpen) return;
+    if (currentView !== "map") return;
     let cancelled = false;
     void invoke<Poi[]>("get_pois")
       .then((list) => {
@@ -3073,12 +3476,12 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [mapOpen, applyOfflineBasemapPaths]);
+  }, [currentView, applyOfflineBasemapPaths]);
 
   useEffect(() => {
-    if (!mapOpen) return;
+    if (currentView !== "map") return;
     reloadTacticalMapLayers();
-  }, [mapOpen, reloadTacticalMapLayers]);
+  }, [currentView, reloadTacticalMapLayers]);
 
   useEffect(() => {
     setTilePackEstimate(null);
@@ -3147,8 +3550,9 @@ function App() {
       previewThemeStudio &&
       studioDraft &&
       (studioDraft.base === "fieldguide" || studioDraft.base === "survival-manual");
-    const isSurvivalManualTheme =
-      activeThemeId === "survival-manual" || activeThemeId === "fieldguide" || previewSurvivalManual;
+    // Only the explicit "survival manual" book preset uses paper/vellum chrome. Do not tie `fieldguide`
+    // here — that left `body.theme-survival-manual` stuck when switching back to the default guide look.
+    const isSurvivalManualTheme = activeThemeId === "survival-manual" || previewSurvivalManual;
 
     const root = document.documentElement;
     let bgRgb =
@@ -3198,7 +3602,88 @@ function App() {
             .map((a) => a.name)
             .join(", ")}. Use them if helpful.]`
         : "";
-    const userMessage: ChatMessage = { role: "user", content: text + attachNote, timestamp: Date.now() };
+    let ragContextString = "";
+    let ragSources: string[] = [];
+    try {
+      let ragFilters: RagSearchFilters | undefined;
+      try {
+        const raw = window.localStorage.getItem("athena-rag-search-filters-v1");
+        if (raw) {
+          ragFilters = JSON.parse(raw) as RagSearchFilters;
+        }
+      } catch {
+        ragFilters = undefined;
+      }
+      const ragResults = await invoke<RagSearchChunk[]>("search_rag_chunks", {
+        query: text,
+        limit: 3,
+        filters: ragFilters,
+      });
+      if (Array.isArray(ragResults) && ragResults.length > 0) {
+        ragContextString = ragResults
+          .map((r) => (typeof r.content === "string" ? r.content.trim() : ""))
+          .filter((s) => s.length > 0)
+          .join("\n\n");
+        ragSources = Array.from(
+          new Set(
+            ragResults
+              .map((r) =>
+                typeof r.source === "string" && r.source.trim().length > 0
+                  ? r.source.trim()
+                  : typeof r.document_id === "string"
+                    ? r.document_id.trim()
+                    : "",
+              )
+              .filter((s) => s.length > 0),
+          ),
+        );
+      }
+    } catch (_) {
+      // Graceful fallback: continue without RAG context.
+    }
+
+    let spatialContextString = "";
+    try {
+      const spatial = await invoke<string>("get_spatial_context");
+      spatialContextString = typeof spatial === "string" ? spatial.trim() : "";
+    } catch (_) {
+      // Graceful fallback: continue without spatial context.
+    }
+
+    let radioTrafficContextString = "";
+    try {
+      const recentRadio = await invoke<RadioLogEntry[]>("get_recent_radio_logs");
+      if (Array.isArray(recentRadio) && recentRadio.length > 0) {
+        radioTrafficContextString = recentRadio
+          .map((r) => {
+            const ts = typeof r.timestamp === "string" ? r.timestamp : "";
+            const dir = typeof r.direction === "string" ? r.direction : "";
+            const msg = typeof r.message === "string" ? r.message : "";
+            return `Radio Log [${ts}] [${dir}]: ${msg}`;
+          })
+          .join("\n");
+      }
+    } catch (_) {
+      // Graceful fallback: continue without radio traffic context.
+    }
+
+    const promptForModel =
+      ragContextString || spatialContextString || radioTrafficContextString
+        ? `Use the following document context, spatial map context, and recent radio traffic context to answer the user's question.\n\nDocument Context: ${ragContextString || "(none)"}\n\nSpatial Map Context: ${spatialContextString || "(none)"}\n\nRecent Radio Traffic Context: ${radioTrafficContextString || "(none)"}\n\nQuestion: ${text}`
+        : text;
+
+    const localSourcesLabel =
+      ragSources.length > 0
+        ? ragSources
+        : ragContextString || spatialContextString || radioTrafficContextString
+          ? ["Local Library"]
+          : [];
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: text + attachNote,
+      timestamp: Date.now(),
+      ...(localSourcesLabel.length > 0 ? { sources: localSourcesLabel } : {}),
+    };
     const currentMessages = messages;
     if (text.toLowerCase() === "/rag-count") {
       setInput("");
@@ -3255,7 +3740,16 @@ function App() {
 
     setInput("");
     streamAssistantContentRef.current = "";
-    setMessages((prev) => [...prev, userMessage, { role: "assistant", content: "", timestamp: Date.now() }]);
+    setMessages((prev) => [
+      ...prev,
+      userMessage,
+      {
+        role: "assistant",
+        content: "",
+        timestamp: Date.now(),
+        ...(localSourcesLabel.length > 0 ? { sources: localSourcesLabel } : {}),
+      },
+    ]);
     setAttachments([]);
     streamSendStartRef.current = Date.now();
     streamLastChunkAtRef.current = null;
@@ -3264,11 +3758,12 @@ function App() {
     setSending(true);
     const { userLat, userLon } = await resolveGpsForChatPayload();
     invoke("send_message_stream", {
-      message: text,
+      message: promptForModel,
       history: currentMessages.map((m) => ({ role: m.role, content: m.content })),
       userLat,
       userLon,
       chatId: chatIdToUse,
+      modelOptions: { temperature: aiTemperature, num_ctx: aiNumCtx },
     }).catch((e) => {
       const errMsg = e != null ? String(e) : "Send failed";
       logError(errMsg);
@@ -3291,36 +3786,6 @@ function App() {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
-    }
-  }
-
-  async function handleChooseFolder() {
-    setLibraryError(null);
-    const selectedResult = await open({
-      directory: true,
-      multiple: false,
-    });
-    if (selectedResult === null) return;
-    const selected = Array.isArray(selectedResult) ? selectedResult[0] : selectedResult;
-    try {
-      await invoke("set_watch_folder", { path: selected });
-      setWatchFolder(selected);
-      await loadStats();
-      await loadLibraryFiles();
-    } catch (e) {
-      setLibraryError(String(e));
-    }
-  }
-
-  async function handleClearFolder() {
-    setLibraryError(null);
-    try {
-      await invoke("set_watch_folder", { path: null });
-      setWatchFolder(null);
-      await loadStats();
-      await loadLibraryFiles();
-    } catch (e) {
-      setLibraryError(String(e));
     }
   }
 
@@ -3406,9 +3871,10 @@ function App() {
         /* ignore; send without coords */
       }
     } else if (typeof navigator !== "undefined" && navigator.geolocation) {
+      // Short timeout so Enter/send is not blocked for seconds on every message (Leaflet map is usable without GPS).
       try {
         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000, maximumAge: 120000 });
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 1200, maximumAge: 120000 });
         });
         userLat = pos.coords.latitude;
         userLon = pos.coords.longitude;
@@ -3422,7 +3888,7 @@ function App() {
       userLat = lastKnownGpsRef.current.lat;
       userLon = lastKnownGpsRef.current.lon;
     }
-    if (userLat === null && featureMapEnabled && mapOpen) {
+    if (userLat === null && featureMapEnabled && currentView === "map") {
       userLat = mapViewCenter[0];
       userLon = mapViewCenter[1];
     }
@@ -3435,6 +3901,7 @@ function App() {
         userLat,
         userLon,
         chatId: null,
+        modelOptions: { temperature: aiTemperature, num_ctx: aiNumCtx },
       });
     } catch (e) {
       const errMsg = e != null ? String(e) : "Send failed";
@@ -3620,7 +4087,120 @@ function App() {
       data-fx-sharp={customThemeForFx?.sharp_corners ? "1" : undefined}
       style={Object.keys(appStyle).length ? appStyle : undefined}
     >
-      <>
+      <div className="app-shell">
+        <UniversalHeader
+          currentView={currentView}
+          setCurrentView={setCurrentView}
+          featureMapEnabled={featureMapEnabled}
+          meshRadioConnected={meshRadioConnected === true}
+          onOpenLibrary={() => setLibraryOpen(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenHelp={() => setHelpOpen(true)}
+          onOpenMesh={() => setMeshOpen(true)}
+          batteryState={batteryState}
+          headerDownloadBar={headerDownloadBar}
+        />
+        {(triageMenuOpen || activeTriageId) &&
+          createPortal(
+            <div
+              className="app triage-portal-root"
+              data-theme={displayTheme}
+              data-persona={displayPersona}
+              style={appStyle}
+            >
+              {activeTriageId ? (() => {
+                const item = getTriageItem(activeTriageId);
+                if (!item) return null;
+                return (
+                  <div className="triage-overlay" role="dialog" aria-modal="true" aria-label={`Triage checklist: ${item.title}`}>
+                    <div className="triage-overlay-backdrop" aria-hidden onClick={() => setActiveTriageId(null)} />
+                    <div className="triage-overlay-panel">
+                      {displayPersona === "fieldguide" && (
+                        <div className="fieldguide-hole-punches fieldguide-hole-punches-triage" aria-hidden>
+                          <span /><span /><span />
+                        </div>
+                      )}
+                      <header className="triage-panel-header triage-panel-header-sticky">
+                        <div>
+                          <div className="triage-panel-tag">Emergency checklist</div>
+                          <h2 className="triage-panel-title">{item.title}</h2>
+                          <p className="triage-panel-summary">{item.summary}</p>
+                        </div>
+                        <button type="button" className="triage-panel-close" onClick={() => setActiveTriageId(null)} aria-label="Close triage checklist and return to chat">×</button>
+                      </header>
+                      <div className="triage-panel-body">
+                        <section className="triage-panel" aria-label={`Triage checklist: ${item.title}`}>
+                          <div className="triage-column">
+                            <h3>Do this first</h3>
+                            <ol className="triage-steps">{item.steps.map((step, idx) => <li key={idx}>{step}</li>)}</ol>
+                          </div>
+                          <div className="triage-column">
+                            <div className="triage-do-dont">
+                              <h3>Do</h3>
+                              <ul>{item.do.map((d, idx) => <li key={idx}>{d}</li>)}</ul>
+                            </div>
+                            <div className="triage-do-dont triage-do-not">
+                              <h3>Do NOT</h3>
+                              <ul>{item.doNot.map((d, idx) => <li key={idx}>{d}</li>)}</ul>
+                            </div>
+                            {item.notes && <p className="triage-notes"><strong>Notes:</strong> {item.notes}</p>}
+                          </div>
+                        </section>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })() : (
+                <>
+                  <div className="triage-menu-backdrop" aria-hidden onClick={() => setTriageMenuOpen(false)} />
+                  <div className="triage-menu triage-menu-portal" role="menu" aria-label="Emergency triage shortcuts">
+                    {TRIAGE_ITEMS.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="triage-menu-item"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setActiveTriageId(item.id);
+                          setTriageMenuOpen(false);
+                        }}
+                        role="menuitem"
+                      >
+                        <span className="triage-menu-icon" aria-hidden>{renderTriageIcon(item.id)}</span>
+                        <span className="triage-menu-text">
+                          <span className="triage-menu-title">{item.title}</span>
+                          <span className="triage-menu-summary">{item.summary}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>,
+            document.body
+          )}
+        <div className="app-content-stage">
+          {currentView === "home" ? (
+            <div className="home-view-scroll">
+              <DashboardView
+                onOpenTriage={() => setTriageMenuOpen(true)}
+                onNavigate={(destination: DashboardDestination) => {
+                  if (destination === "library") {
+                    setLibraryOpen(true);
+                    return;
+                  }
+                  if (destination === "settings") {
+                    setSettingsOpen(true);
+                    return;
+                  }
+                  setCurrentView(destination);
+                }}
+              />
+            </div>
+          ) : null}
+          {currentView === "chat" ? (
+            <div className="app-chat-workspace">
       <aside className={`chat-sidebar ${chatsOpen ? "" : "chat-sidebar-collapsed"}`}>
         <div className="sidebar-head">
           <button
@@ -3770,7 +4350,7 @@ function App() {
             </svg>
           </button>
           <div className="main-header-spacer" />
-          <div className="main-header-triage" ref={triageMenuRef}>
+          <div className="main-header-triage" ref={triageMenuRef} data-triage-trigger>
             <button
               type="button"
               className="main-header-icon-btn"
@@ -3785,217 +4365,70 @@ function App() {
                 <path d="M9 14h6" />
               </svg>
             </button>
-            {(triageMenuOpen || activeTriageId) &&
-              createPortal(
-                <div
-                  className="app triage-portal-root"
-                  data-theme={theme}
-                  data-persona={activePersonalityId}
-                  style={appStyle}
-                >
-                  {activeTriageId ? (() => {
-                    const item = getTriageItem(activeTriageId);
-                    if (!item) return null;
-                    return (
-                      <div className="triage-overlay" role="dialog" aria-modal="true" aria-label={`Triage checklist: ${item.title}`}>
-                        <div className="triage-overlay-backdrop" aria-hidden onClick={() => setActiveTriageId(null)} />
-                        <div className="triage-overlay-panel">
-                          {activePersonalityId === "fieldguide" && (
-                            <div className="fieldguide-hole-punches fieldguide-hole-punches-triage" aria-hidden>
-                              <span /><span /><span />
-                            </div>
-                          )}
-                          <header className="triage-panel-header triage-panel-header-sticky">
-                            <div>
-                              <div className="triage-panel-tag">Emergency checklist</div>
-                              <h2 className="triage-panel-title">{item.title}</h2>
-                              <p className="triage-panel-summary">{item.summary}</p>
-                            </div>
-                            <button type="button" className="triage-panel-close" onClick={() => setActiveTriageId(null)} aria-label="Close triage checklist and return to chat">×</button>
-                          </header>
-                          <div className="triage-panel-body">
-                            <section className="triage-panel" aria-label={`Triage checklist: ${item.title}`}>
-                              <div className="triage-column">
-                                <h3>Do this first</h3>
-                                <ol className="triage-steps">{item.steps.map((step, idx) => <li key={idx}>{step}</li>)}</ol>
-                              </div>
-                              <div className="triage-column">
-                                <div className="triage-do-dont">
-                                  <h3>Do</h3>
-                                  <ul>{item.do.map((d, idx) => <li key={idx}>{d}</li>)}</ul>
-                                </div>
-                                <div className="triage-do-dont triage-do-not">
-                                  <h3>Do NOT</h3>
-                                  <ul>{item.doNot.map((d, idx) => <li key={idx}>{d}</li>)}</ul>
-                                </div>
-                                {item.notes && <p className="triage-notes"><strong>Notes:</strong> {item.notes}</p>}
-                              </div>
-                            </section>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })() : (
-                    <>
-                      <div className="triage-menu-backdrop" aria-hidden onClick={() => setTriageMenuOpen(false)} />
-                      <div className="triage-menu triage-menu-portal" role="menu" aria-label="Emergency triage shortcuts">
-                        {TRIAGE_ITEMS.map((item) => (
-                          <button
-                            key={item.id}
-                            type="button"
-                            className="triage-menu-item"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setActiveTriageId(item.id);
-                              setTriageMenuOpen(false);
-                            }}
-                            role="menuitem"
-                          >
-                            <span className="triage-menu-icon" aria-hidden>{renderTriageIcon(item.id)}</span>
-                            <span className="triage-menu-text">
-                              <span className="triage-menu-title">{item.title}</span>
-                              <span className="triage-menu-summary">{item.summary}</span>
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>,
-                document.body
-              )}
           </div>
-          {featureMapEnabled && (
-            <button
-              type="button"
-              className="main-header-icon-btn"
-              onClick={() => setMapOpen(true)}
-              title="Map — open map viewer (offline archives: Map archives in the viewer, or Library → Maps)"
-              aria-label="Open map"
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden>
-                <path
-                  d="M1 6v16l7-4V2L1 6zM8 2v16l8 4V6L8 2zM16 6v16l7-4V2l-7 4z"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="M10.25 8.5c.9 1.35 1.35 2.85 1.5 4.35M10 13.25c1.1.45 2.35.75 3.65.75M11.5 6.75l1.25 1.1M13.5 16.25l2 1.1"
-                  strokeWidth="1.35"
-                  strokeLinecap="round"
-                  strokeOpacity={0.88}
-                />
-              </svg>
-            </button>
-          )}
-          <button
-            type="button"
-            className="main-header-icon-btn"
-            onClick={() => setLibraryOpen(true)}
-            title="Library"
-            aria-label="Library"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M2 6h6v14H2z" />
-              <path d="M9 4h6v16H9z" />
-              <path d="M16 8h6v12h-6z" />
-            </svg>
-          </button>
-          {meshRadioConnected === true && (
-            <button
-              type="button"
-              className="main-header-icon-btn"
-              onClick={() => setMeshOpen(true)}
-              title="Meshtastic (USB mesh radio)"
-              aria-label="Meshtastic mesh radio"
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M3 7.5Q12 0.5 21 7.5" />
-                <path d="M6 7.5Q12 2 18 7.5" />
-                <path d="M8.5 21L12 8.1L15.5 21" />
-                <path d="M9.75 16.5h4.5" />
-                <circle cx="12" cy="6.75" r="1.35" fill="none" />
-              </svg>
-            </button>
-          )}
-          <button
-            type="button"
-            className="main-header-icon-btn"
-            onClick={() => setSettingsOpen(true)}
-            title="Settings"
-            aria-label="Settings"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="main-header-icon-btn"
-            onClick={() => setHelpOpen(true)}
-            title="Help & features guide"
-            aria-label="Help and learn how to use the app"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <circle cx="12" cy="12" r="10" />
-              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-              <path d="M12 17h.01" />
-            </svg>
-          </button>
-          {batteryState && batteryState.percentage !== null && (
-            <div
-              className={`battery-pill${
-                batteryState.percentage < 20 && batteryState.is_charging === false
-                  ? " battery-pill-low"
-                  : ""
-              }`}
-              aria-label={
-                batteryState.is_charging
-                  ? `Battery ${Math.round(batteryState.percentage)}%, charging`
-                  : `Battery ${Math.round(batteryState.percentage)}%, on battery`
-              }
-            >
-              <span className="battery-icon" aria-hidden>
-                🔋
-              </span>
-              <span className="battery-text">
-                {Math.round(batteryState.percentage)}%
-                {batteryState.is_charging ? " • Charging" : ""}
-              </span>
-            </div>
-          )}
           </div>
-          {headerDownloadBar && (
-            <div className="main-header-download-wrap" role="status" aria-live="polite">
-              <div
-                className={
-                  headerDownloadBar.mode === "determinate"
-                    ? "main-header-download-fill"
-                    : "main-header-download-fill main-header-download-fill-indeterminate"
-                }
-                style={
-                  headerDownloadBar.mode === "determinate" ? { width: `${headerDownloadBar.pct}%` } : undefined
-                }
-              />
-              <span className="main-header-download-label">
-                {headerDownloadBar.mode === "determinate"
-                  ? `Downloading local data — ${headerDownloadBar.pct}% · ${headerDownloadBar.subtitle}${
-                      headerDownloadBar.progressDetail != null ? ` · ${headerDownloadBar.progressDetail}` : ""
-                    }`
-                  : `Downloading local data — ${headerDownloadBar.subtitle}${
-                      headerDownloadBar.progressDetail != null ? ` · ${headerDownloadBar.progressDetail}` : ""
-                    }`}
-              </span>
-            </div>
-          )}
         </header>
-        {!ollamaAvailable && !ollamaNotRunningBannerDismissed && (
+        {!aiInferenceReady && !ollamaNotRunningBannerDismissed && (
           <div className="ollama-not-running-banner" role="status" aria-live="polite">
+            {inferenceBackendMode === "openai_compatible" ? (
+              <>
+                <span className="ollama-not-running-message">
+                  Local OpenAI-compatible inference isn&apos;t reachable on <code>127.0.0.1</code> / <code>localhost</code>.
+                  Start LM Studio, llama.cpp server, or similar, then set the base URL under <strong>Settings → AI</strong>.
+                </span>
+                <div className="ollama-not-running-actions">
+                  <button
+                    type="button"
+                    className="ollama-not-running-dismiss"
+                    onClick={() => setOllamaNotRunningBannerDismissed(true)}
+                    aria-label="Dismiss"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+            {ollamaSetupProgress ? (
+              <span className="ollama-not-running-message ollama-setup-progress-line">{ollamaSetupProgress}</span>
+            ) : null}
+            {ollamaSetupLastError ? (
+              <div className="ollama-setup-error-block" role="alert">
+                <span className="ollama-not-running-message ollama-setup-error-line">
+                  Could not download Ollama automatically: {ollamaSetupLastError}
+                </span>
+                {!ollamaSidecarManaged ? (
+                  <button
+                    type="button"
+                    className="ollama-retry-download"
+                    disabled={ollamaInstallBusy || ollamaSetupProgress != null}
+                    onClick={async () => {
+                      setOllamaInstallBusy(true);
+                      setOllamaSetupLastError(null);
+                      try {
+                        await invoke<string>("install_ollama_cli_for_athena");
+                        await invoke("try_launch_ollama");
+                        await new Promise((r) => setTimeout(r, 2000));
+                        const ok = await invoke<boolean>("is_ollama_available");
+                        setOllamaAvailable(ok);
+                        if (ok) setOllamaNotRunningBannerDismissed(false);
+                        const st = await invoke<OllamaSetupStatus>("get_ollama_setup_status");
+                        setOllamaSetupStatus(st);
+                      } catch (e) {
+                        setOllamaSetupLastError(String(e));
+                      } finally {
+                        setOllamaInstallBusy(false);
+                      }
+                    }}
+                  >
+                    {ollamaInstallBusy ? "Retrying…" : "Retry download"}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <span className="ollama-not-running-message">
-              Ollama is not running. Start Ollama to chat with Athena (e.g. <code>ollama run llama3.2:3b</code>).
+              Ollama is not running. Athena can install the Ollama CLI into its app data folder automatically if nothing
+              is listening on port 11434, or you can start it yourself (e.g. <code>ollama run llama3.2:3b</code>).
               {" "}
               <a
                 href="https://ollama.com/download"
@@ -4003,32 +4436,87 @@ function App() {
                 rel="noopener noreferrer"
                 className="ollama-not-running-install-link"
               >
-                Install Ollama
+                Install from ollama.com
               </a>
             </span>
+            {ollamaSetupStatus?.unconventional_ollama_path &&
+            !ollamaCopyPromptDismissed &&
+            !ollamaSidecarManaged ? (
+              <div className="ollama-unconventional-prompt" role="region" aria-label="Ollama location">
+                <p className="ollama-unconventional-text">
+                  Ollama was found at <code>{ollamaSetupStatus.unconventional_ollama_path}</code>, which is outside a
+                  typical install location. Copy it into Athena&apos;s managed folder so the app can run{" "}
+                  <code>ollama serve</code> reliably? Your original file stays untouched.
+                </p>
+                <div className="ollama-unconventional-actions">
+                  <button
+                    type="button"
+                    className="ollama-unconventional-copy"
+                    disabled={ollamaCopyBusy}
+                    onClick={async () => {
+                      const src = ollamaSetupStatus.unconventional_ollama_path;
+                      if (!src) return;
+                      setOllamaCopyBusy(true);
+                      try {
+                        await invoke<string>("copy_ollama_into_athena_managed", { sourcePath: src });
+                        await invoke("try_launch_ollama");
+                        await new Promise((r) => setTimeout(r, 2000));
+                        const ok = await invoke<boolean>("is_ollama_available");
+                        setOllamaAvailable(ok);
+                        if (ok) setOllamaNotRunningBannerDismissed(false);
+                        const st = await invoke<OllamaSetupStatus>("get_ollama_setup_status");
+                        setOllamaSetupStatus(st);
+                      } catch (e) {
+                        setLibraryError(String(e));
+                      } finally {
+                        setOllamaCopyBusy(false);
+                      }
+                    }}
+                  >
+                    {ollamaCopyBusy ? "Copying…" : "Copy into Athena folder"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ollama-unconventional-dismiss"
+                    disabled={ollamaCopyBusy}
+                    onClick={() => setOllamaCopyPromptDismissed(true)}
+                  >
+                    Not now
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="ollama-not-running-actions">
-              <button
-                type="button"
-                className="ollama-not-running-try-launch"
-                disabled={ollamaLaunching}
-                onClick={async () => {
-                  setOllamaLaunching(true);
-                  try {
-                    await invoke("try_launch_ollama");
-                    await new Promise((r) => setTimeout(r, 3000));
-                    const available = await invoke<boolean>("is_ollama_available");
-                    setOllamaAvailable(available);
-                    if (available) setOllamaNotRunningBannerDismissed(false);
-                  } catch {
-                    // ignore
-                  } finally {
-                    setOllamaLaunching(false);
-                  }
-                }}
-                aria-label="Try to start Ollama"
-              >
-                {ollamaLaunching ? "Starting…" : "Try to start Ollama"}
-              </button>
+              {ollamaSidecarManaged ? (
+                <span className="ollama-system-managed-badge" role="status">
+                  System managed
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="ollama-not-running-try-launch"
+                  disabled={ollamaLaunching}
+                  onClick={async () => {
+                    setOllamaLaunching(true);
+                    try {
+                      await invoke("try_launch_ollama");
+                      await new Promise((r) => setTimeout(r, 3000));
+                      const available = await invoke<boolean>("is_ollama_available");
+                      setOllamaAvailable(available);
+                      if (available) setOllamaNotRunningBannerDismissed(false);
+                      const st = await invoke<OllamaSetupStatus>("get_ollama_setup_status").catch(() => null);
+                      if (st) setOllamaSetupStatus(st);
+                    } catch {
+                      // ignore
+                    } finally {
+                      setOllamaLaunching(false);
+                    }
+                  }}
+                  aria-label="Try to start Ollama"
+                >
+                  {ollamaLaunching ? "Starting…" : "Try to start Ollama"}
+                </button>
+              )}
               <button
                 type="button"
                 className="ollama-not-running-dismiss"
@@ -4036,6 +4524,33 @@ function App() {
                 aria-label="Dismiss"
               >
                 Dismiss
+              </button>
+            </div>
+              </>
+            )}
+          </div>
+        )}
+        {birthdayBannerVisible && (
+          <div className="ollama-not-running-banner" role="status" style={{ background: "var(--surface-solid)" }}>
+            <span className="ollama-not-running-message">
+              Happy birthday{userDisplayName.trim() ? `, ${userDisplayName.trim()}` : ""} — glad you&apos;re here.
+            </span>
+            <div className="ollama-not-running-actions">
+              <button
+                type="button"
+                className="ollama-not-running-dismiss"
+                onClick={() => {
+                  const todayKey = `athena_birthday_shown_${new Date().toISOString().slice(0, 10)}`;
+                  try {
+                    sessionStorage.setItem(todayKey, "1");
+                  } catch {
+                    /* ignore */
+                  }
+                  setBirthdayBannerVisible(false);
+                }}
+                aria-label="Dismiss birthday message"
+              >
+                Thanks
               </button>
             </div>
           </div>
@@ -4166,7 +4681,7 @@ function App() {
               )}
               {msg.role === "assistant" && showSourcesInChat && msg.sources && msg.sources.length > 0 && (
                 <p className="message-sources" aria-label="Sources from your library">
-                  From your library: {msg.sources.map((s, idx) => (
+                  Sources: {msg.sources.map((s, idx) => (
                     <React.Fragment key={s}>
                       {idx ? ", " : null}
                       <strong>{s}</strong>
@@ -4408,17 +4923,89 @@ function App() {
           </div>
         </div>
       </main>
+            </div>
+          ) : null}
+          {currentView === "map" && featureMapEnabled ? (
+            <ErrorBoundary sectionLabel="map viewer">
+              <MapView
+                embedded
+                pois={pois}
+                onAddPoi={handleAddPoi}
+                onRemovePoi={handleRemovePoi}
+                mapChatInput={mapChatInput}
+                setMapChatInput={setMapChatInput}
+                onMapChatSend={() => void handleMapChatSend()}
+                mapChatSending={mapChatSending}
+                mapChatMessage={mapChatLastMessage}
+                layerFilters={_layerFilters}
+                setLayerFilters={setLayerFilters}
+                convertFileSrcFn={convertFileSrcFn}
+                basemap={mapBasemap}
+                onBasemapChange={setMapBasemap}
+                offlineOsmRoot={offlineOsmRoot}
+                offlineTopoRoot={offlineTopoRoot}
+                offlineImportedRoot={offlineImportedRoot}
+                archiveRasterFileNames={enabledArchiveRasterFileNames}
+                archiveRasterNativeZoomRangesByFile={archiveRasterNativeZoomRangesByFile}
+                archiveRasterBoundsByFile={archiveRasterBoundsByFile}
+                savedUserLocationAddress={userLocationAddress}
+                onSatelliteRegionDownloaded={handleMapSatelliteDownloaded}
+                mapCenter={mapViewCenter}
+                mapZoom={mapViewZoom}
+                onOpenOfflineMapManager={() => setOfflineMapManagerOpen(true)}
+                tacticalPointsOfInterest={tacticalMapPoints}
+                tacticalMeshNodeLocations={tacticalMapNodes}
+                onReloadTacticalMapLayers={reloadTacticalMapLayers}
+                onAddTacticalPoiPin={handleAddTacticalPoiPin}
+                tacticalLayerVisibility={tacticalMapLayerVisibility}
+                onTacticalLayerVisibilityChange={setTacticalMapLayerVisibility}
+              />
+            </ErrorBoundary>
+          ) : null}
+          {currentView === "map" && !featureMapEnabled ? (
+            <div className="glass-panel app-view-placeholder">
+              <h2 className="app-view-placeholder-title">Maps are off</h2>
+              <p className="text-muted app-view-placeholder-body">
+                Enable Maps under <strong>Location</strong> in Settings to open the map viewer.
+              </p>
+              <div className="app-view-placeholder-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSettingsOpen(true);
+                    goToSettingsSubpanel("location");
+                  }}
+                >
+                  Open Location settings
+                </button>
+                <button type="button" className="secondary" onClick={() => setCurrentView("home")}>
+                  Back to Home
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {currentView === "radio" ? (
+            <RadioView />
+          ) : null}
+          {currentView === "logbook" ? <LogbookView meshConnected={meshRadioConnected === true} /> : null}
+        </div>
+      </div>
 
       {deviceOverlayEnabled && (
         <div className="device-details-overlay" aria-live="polite" aria-label="Device stats">
-          <div className="device-details-overlay-inner">
+          <button
+            type="button"
+            className={`device-details-overlay-inner${deviceOverlayExpanded ? " device-details-overlay-expanded" : ""}`}
+            onClick={() => setDeviceOverlayExpanded((e) => !e)}
+            title={deviceOverlayExpanded ? "Collapse device stats" : "Expand for more metrics"}
+          >
             {deviceStats !== null ? (
               <>
-                <div className="device-details-row">
+                <div className="device-details-row device-details-row-compact">
                   <span>CPU</span>
                   <span>{Math.round(deviceStats.cpu_usage_pct)}%</span>
                 </div>
-                <div className="device-details-row">
+                <div className="device-details-row device-details-row-compact">
                   <span>RAM</span>
                   <span>
                     {deviceStats.ram_total_mb >= 1024
@@ -4426,31 +5013,107 @@ function App() {
                       : `${deviceStats.ram_used_mb}/${deviceStats.ram_total_mb} MB`}
                   </span>
                 </div>
-                <div className="device-details-row">
-                  <span>SSD</span>
-                  <span>{deviceStats.disk_total_gb > 0 ? `${deviceStats.disk_used_gb.toFixed(1)}/${deviceStats.disk_total_gb.toFixed(1)} GB` : "—"}</span>
-                </div>
-                <div className="device-details-row">
-                  <span>Net ↓</span>
-                  <span>{netSpeedRxKbps != null ? `${netSpeedRxKbps.toFixed(0)} kB/s` : "—"}</span>
-                </div>
-                <div className="device-details-row">
-                  <span>Net ↑</span>
-                  <span>{netSpeedTxKbps != null ? `${netSpeedTxKbps.toFixed(0)} kB/s` : "—"}</span>
-                </div>
-                <div className="device-details-row">
-                  <span>GPU</span>
-                  <span>{deviceStats.gpu_usage_pct != null ? `${Math.round(deviceStats.gpu_usage_pct)}%` : "—"}</span>
-                </div>
-                <div className="device-details-row">
-                  <span>Temp</span>
-                  <span>{deviceStats.cpu_temp_c != null ? `${Math.round(deviceStats.cpu_temp_c)}°C` : "—"}</span>
-                </div>
+                {deviceOverlayExpanded ? (
+                  <>
+                    <div className="device-details-row">
+                      <span>Swap</span>
+                      <span>
+                        {deviceStats.swap_total_mb > 0
+                          ? `${(deviceStats.swap_used_mb / 1024).toFixed(2)}/${(deviceStats.swap_total_mb / 1024).toFixed(2)} GB`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Storage</span>
+                      <span>
+                        {deviceStats.disk_total_gb > 0
+                          ? `${deviceStats.disk_used_gb.toFixed(1)} / ${deviceStats.disk_total_gb.toFixed(1)} GB`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Disk R</span>
+                      <span>
+                        {diskSpeedReadMbps != null && diskSpeedReadMbps > 0
+                          ? `${diskSpeedReadMbps.toFixed(2)} MB/s`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Disk W</span>
+                      <span>
+                        {diskSpeedWriteMbps != null && diskSpeedWriteMbps > 0
+                          ? `${diskSpeedWriteMbps.toFixed(2)} MB/s`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Net ↓</span>
+                      <span>{netSpeedRxKbps != null ? `${netSpeedRxKbps.toFixed(0)} kB/s` : "—"}</span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Net ↑</span>
+                      <span>{netSpeedTxKbps != null ? `${netSpeedTxKbps.toFixed(0)} kB/s` : "—"}</span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Battery</span>
+                      <span>
+                        {deviceStats.battery_pct != null && deviceStats.battery_pct !== undefined
+                          ? `${Math.round(deviceStats.battery_pct)}%${
+                              deviceStats.battery_charging ? " (AC)" : ""
+                            }${
+                              deviceStats.battery_time_to_empty_minutes != null &&
+                              deviceStats.battery_time_to_empty_minutes !== undefined &&
+                              deviceStats.battery_charging !== true
+                                ? ` · ~${deviceStats.battery_time_to_empty_minutes}m to 0%`
+                                : ""
+                            }`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>GPU</span>
+                      <span>{deviceStats.gpu_usage_pct != null ? `${Math.round(deviceStats.gpu_usage_pct)}%` : "—"}</span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>CPU °C</span>
+                      <span>{deviceStats.cpu_temp_c != null ? `${Math.round(deviceStats.cpu_temp_c)}°C` : "—"}</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="device-details-row device-details-row-compact">
+                      <span>SSD</span>
+                      <span>
+                        {deviceStats.disk_total_gb > 0
+                          ? `${deviceStats.disk_used_gb.toFixed(1)}/${deviceStats.disk_total_gb.toFixed(1)} GB`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="device-details-row device-details-row-compact">
+                      <span>Net ↓</span>
+                      <span>{netSpeedRxKbps != null ? `${netSpeedRxKbps.toFixed(0)} kB/s` : "—"}</span>
+                    </div>
+                    <div className="device-details-row device-details-row-compact">
+                      <span>Net ↑</span>
+                      <span>{netSpeedTxKbps != null ? `${netSpeedTxKbps.toFixed(0)} kB/s` : "—"}</span>
+                    </div>
+                    <div className="device-details-row device-details-row-compact">
+                      <span>GPU</span>
+                      <span>{deviceStats.gpu_usage_pct != null ? `${Math.round(deviceStats.gpu_usage_pct)}%` : "—"}</span>
+                    </div>
+                    <div className="device-details-row device-details-row-compact">
+                      <span>Temp</span>
+                      <span>{deviceStats.cpu_temp_c != null ? `${Math.round(deviceStats.cpu_temp_c)}°C` : "—"}</span>
+                    </div>
+                  </>
+                )}
+                <div className="device-details-hint">{deviceOverlayExpanded ? "Tap to collapse" : "Tap for more"}</div>
               </>
             ) : (
               <span className="device-details-loading">…</span>
             )}
-          </div>
+          </button>
         </div>
       )}
 
@@ -4557,7 +5220,7 @@ function App() {
                     <span className="text-muted">
                       Kiwix regional maps, tile basemaps, and imports
                       {featureMapEnabled ? (
-                        <span className="settings-build-note"> · Header map opens the map viewer when Maps is enabled</span>
+                        <span className="settings-build-note"> · Use the Map icon in the top bar when Maps is enabled</span>
                       ) : (
                         <span className="settings-build-note"> · Turn on Maps under Location to show the map button</span>
                       )}
@@ -4616,6 +5279,67 @@ function App() {
             )}
             {settingsPanel === "general" && (
               <>
+                <section className="library-section">
+                  <h3>User profile</h3>
+                  <p className="text-muted small">
+                    Optional. Your name is added to AI context; birthdate stays on this device and unlocks 18+ options when
+                    applicable.
+                  </p>
+                  <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "0.65rem" }}>
+                    <label htmlFor="user-display-name" className="text-muted small">
+                      Preferred name
+                    </label>
+                    <input
+                      id="user-display-name"
+                      className="theme-select"
+                      value={userDisplayName}
+                      onChange={(e) => setUserDisplayName(e.target.value)}
+                      onBlur={() => {
+                        void invoke("set_user_display_name", {
+                          value: userDisplayName.trim() || null,
+                        }).then(() => loadModelSettings());
+                      }}
+                      placeholder="How Athena should address you"
+                    />
+                    <label htmlFor="user-birthdate" className="text-muted small">
+                      Birthdate (YYYY-MM-DD)
+                    </label>
+                    <input
+                      id="user-birthdate"
+                      type="date"
+                      className="theme-select"
+                      value={userBirthdateIso}
+                      onChange={(e) => setUserBirthdateIso(e.target.value)}
+                      onBlur={() => {
+                        void invoke("set_user_birthdate_iso", {
+                          value: userBirthdateIso.trim() || null,
+                        }).then(() => loadModelSettings());
+                      }}
+                    />
+                    {userIs18 ? (
+                      <label style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+                        <input
+                          type="checkbox"
+                          checked={allowNsfwCatalog}
+                          onChange={(e) => {
+                            const v = e.target.checked;
+                            setAllowNsfwCatalog(v);
+                            void invoke("set_allow_nsfw_unrestricted_models", { value: v }).then(() => loadModelSettings());
+                          }}
+                        />
+                        <span className="text-muted small">
+                          Show <strong>unrestricted / NSFW</strong> model catalog entries (local runtimes only; you are
+                          responsible for compliance). Uncensored models run only on your machine—useful for detailed
+                          survival/medical/engineering topics when ordinary guardrails block necessary detail.
+                        </span>
+                      </label>
+                    ) : (
+                      <p className="text-muted small" style={{ margin: 0 }}>
+                        Set a valid birthdate to verify age 18+ to unlock the unrestricted catalog toggle.
+                      </p>
+                    )}
+                  </div>
+                </section>
                 <section className="library-section">
                   <h3>Help &amp; shortcuts</h3>
                   <p className="text-muted">
@@ -4679,26 +5403,247 @@ function App() {
                     </label>
                   </div>
                 </section>
+                <section className="library-section">
+                  <h3>Default startup page</h3>
+                  <p className="text-muted small">Choose which screen appears when you open Athena. The setting is saved on this device.</p>
+                  <div className="settings-startup-view-row">
+                    <label htmlFor="settings-startup-view" className="settings-startup-view-label">
+                      Open to
+                    </label>
+                    <select
+                      id="settings-startup-view"
+                      className="settings-startup-view-select"
+                      value={startupViewPreference}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        const next = APP_VIEWS.find((x) => x === v);
+                        if (!next) return;
+                        saveStartupView(next);
+                        setStartupViewPreference(next);
+                      }}
+                      aria-label="Default startup page"
+                    >
+                      {APP_VIEWS.map((v) => (
+                        <option key={v} value={v}>
+                          {APP_VIEW_LABELS[v]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </section>
+                <section className="library-section">
+                  <h3>System maintenance</h3>
+                  <p className="text-muted small">
+                    Backup or restore the local Athena index database, or export radio serial logs as CSV. Paths are chosen with the system file dialog.
+                  </p>
+                  <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "0.65rem" }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+                      <button type="button" onClick={() => void handleBackupDatabase()}>
+                        Backup database
+                      </button>
+                      <button type="button" className="secondary" onClick={() => void handleRestoreDatabase()}>
+                        Restore database
+                      </button>
+                      <button type="button" className="secondary" onClick={() => void handleExportCommsLogs()}>
+                        Export comms logs
+                      </button>
+                    </div>
+                    {maintenanceFeedback ? (
+                      <p
+                        className={maintenanceFeedback.kind === "err" ? "error" : "text-muted small"}
+                        role={maintenanceFeedback.kind === "err" ? "alert" : "status"}
+                        style={{ margin: 0 }}
+                      >
+                        {maintenanceFeedback.text}
+                      </p>
+                    ) : null}
+                  </div>
+                </section>
               </>
             )}
             {settingsPanel === "ai" && (
               <>
                 <section className="library-section">
+                  <h3>Inference backend</h3>
+                  <p className="text-muted small">
+                    Choose <strong>Ollama</strong> (default) or a local <strong>OpenAI-compatible</strong> HTTP API (LM Studio,
+                    llama.cpp server, text-generation-webui, etc.). OpenAI-compatible URLs are restricted to localhost for
+                    safety.
+                  </p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "1.25rem", marginTop: "0.5rem" }}>
+                    <label style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                      <input
+                        type="radio"
+                        name="athena-inference-backend"
+                        checked={inferenceBackendMode === "ollama"}
+                        onChange={() => {
+                          void invoke("set_inference_backend", { value: null }).then(() => {
+                            setInferenceBackendMode("ollama");
+                            void loadModelSettings();
+                          });
+                        }}
+                      />
+                      Ollama
+                    </label>
+                    <label style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                      <input
+                        type="radio"
+                        name="athena-inference-backend"
+                        checked={inferenceBackendMode === "openai_compatible"}
+                        onChange={() => {
+                          void invoke("set_inference_backend", { value: "openai_compatible" }).then(() => {
+                            setInferenceBackendMode("openai_compatible");
+                            void loadModelSettings();
+                          });
+                        }}
+                      />
+                      OpenAI-compatible (local)
+                    </label>
+                  </div>
+                  {inferenceBackendMode === "openai_compatible" ? (
+                    <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", marginTop: "0.75rem", display: "grid", gap: "0.65rem" }}>
+                      <label className="text-muted small" htmlFor="openai-base-url">
+                        Base URL (must be localhost)
+                      </label>
+                      <input
+                        id="openai-base-url"
+                        className="theme-select"
+                        style={{ maxWidth: "100%" }}
+                        value={openaiBaseUrl}
+                        onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                        onBlur={() => {
+                          void invoke("set_openai_compatible_base_url", {
+                            value: openaiBaseUrl.trim() || null,
+                          }).then(() => loadModelSettings());
+                        }}
+                        placeholder="http://127.0.0.1:1234/v1"
+                      />
+                      <label className="text-muted small" htmlFor="openai-model-id">
+                        Model id
+                      </label>
+                      <input
+                        id="openai-model-id"
+                        className="theme-select"
+                        value={openaiModelId}
+                        onChange={(e) => setOpenaiModelId(e.target.value)}
+                        onBlur={() => {
+                          void invoke("set_openai_compatible_model", {
+                            value: openaiModelId.trim() || null,
+                          }).then(() => loadModelSettings());
+                        }}
+                        placeholder="e.g. local-model"
+                      />
+                      <label className="text-muted small" htmlFor="openai-api-key">
+                        API key (optional; stored locally)
+                      </label>
+                      <input
+                        id="openai-api-key"
+                        type="password"
+                        autoComplete="off"
+                        className="theme-select"
+                        value={openaiApiKeyLocal}
+                        onChange={(e) => setOpenaiApiKeyLocal(e.target.value)}
+                        onBlur={() => {
+                          void invoke("set_openai_compatible_api_key", {
+                            value: openaiApiKeyLocal.trim() || null,
+                          }).then(() => loadModelSettings());
+                        }}
+                        placeholder={openaiApiKeyLocal ? "••••" : "Often empty for localhost"}
+                      />
+                      <div className="settings-inline-actions">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void invoke<boolean>("probe_openai_compatible_connection", { baseUrl: openaiBaseUrl }).then((ok) => {
+                              setLibraryError(ok ? null : "Could not reach OpenAI-compatible server.");
+                            });
+                          }}
+                        >
+                          Test connection
+                        </button>
+                      </div>
+                      <p className="text-muted small" style={{ margin: 0 }}>
+                        AI status: {aiInferenceReady ? "ready" : "not ready"} · See Help for LM Studio / llama.cpp tips.
+                      </p>
+                    </div>
+                  ) : null}
+                </section>
+                <section className="library-section">
                   <h3>Ollama &amp; AI Model</h3>
+                  {inferenceBackendMode === "openai_compatible" ? (
+                    <p className="text-muted small">
+                      Ollama is not used while OpenAI-compatible mode is active. Switch back to Ollama to manage local
+                      models here.
+                    </p>
+                  ) : (
+                    <>
                   <p className="model-status">
                     {ollamaAvailable ? "Ollama is running" : "Ollama is not running. Start Ollama and install a model (e.g. ollama run llama3.2:3b)."}
+                    {ollamaSidecarManaged ? (
+                      <>
+                        {" "}
+                        <span className="ollama-system-managed-badge" role="status">
+                          System managed
+                        </span>
+                      </>
+                    ) : null}
                   </p>
                   {!ollamaAvailable && (
                     <div className="settings-inline-actions" style={{ marginTop: "0.75rem" }}>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await invoke("try_launch_ollama");
-                          invoke<boolean>("is_ollama_available").then(setOllamaAvailable).catch(() => {});
-                        }}
-                      >
-                        Try to start Ollama
-                      </button>
+                      {ollamaSidecarManaged ? (
+                        <span className="ollama-system-managed-settings-hint text-muted small">
+                          Athena is running the bundled Ollama server; manual start is disabled.
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await invoke("try_launch_ollama");
+                            invoke<boolean>("is_ollama_available").then(setOllamaAvailable).catch(() => {});
+                            invoke<OllamaSetupStatus>("get_ollama_setup_status")
+                              .then(setOllamaSetupStatus)
+                              .catch(() => {});
+                          }}
+                        >
+                          Try to start Ollama
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {!ollamaSidecarManaged && ollamaSetupStatus != null && (
+                    <div className="ollama-managed-path-block text-muted small" style={{ marginTop: "1rem" }}>
+                      <p>
+                        <strong>Athena-managed Ollama binary</strong>
+                        {ollamaSetupStatus.managed_binary_exists ? " (present)" : " (not installed yet)"}
+                      </p>
+                      <code className="ollama-managed-path-code">{ollamaSetupStatus.managed_binary_path}</code>
+                      <div className="settings-inline-actions" style={{ marginTop: "0.5rem" }}>
+                        <button
+                          type="button"
+                          disabled={ollamaInstallBusy}
+                          onClick={async () => {
+                            setOllamaInstallBusy(true);
+                            try {
+                              await invoke<string>("install_ollama_cli_for_athena");
+                              await invoke("try_launch_ollama");
+                              const ok = await invoke<boolean>("is_ollama_available");
+                              setOllamaAvailable(ok);
+                              const st = await invoke<OllamaSetupStatus>("get_ollama_setup_status");
+                              setOllamaSetupStatus(st);
+                            } catch (e) {
+                              setLibraryError(String(e));
+                            } finally {
+                              setOllamaInstallBusy(false);
+                            }
+                          }}
+                        >
+                          {ollamaInstallBusy ? "Working…" : "Download / refresh Ollama CLI here"}
+                        </button>
+                      </div>
+                      <p className="small" style={{ marginTop: "0.5rem" }}>
+                        On first launch, Athena may download the official CLI from GitHub if nothing responds on port
+                        11434. Set <code>ollama_disable_auto_cli_download</code> in config JSON to skip that behavior.
+                      </p>
                     </div>
                   )}
                   {systemSpecs !== null && (
@@ -4734,6 +5679,14 @@ function App() {
                           )}
                         </p>
                       )}
+                    </>
+                  )}
+                  <AiModelManager
+                    initialActiveModel={activeEngineModel}
+                    onActiveModelChange={(model) => setActiveEngineModel(model)}
+                    showUnrestrictedCatalog={allowNsfwCatalog}
+                    isAdult={userIs18}
+                  />
                     </>
                   )}
                 </section>
@@ -4802,6 +5755,56 @@ function App() {
                       </ul>
                     </div>
                   )}
+                </section>
+                <section className="library-section">
+                  <h3>Advanced inference</h3>
+                  <p className="text-muted small">
+                    Controls passed to the local Ollama API for each chat request (<code>options.temperature</code>,{" "}
+                    <code>options.num_ctx</code>).
+                  </p>
+                  <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "0.75rem" }}>
+                    <label style={{ display: "grid", gap: "0.35rem" }}>
+                      <span className="text-muted small">
+                        Temperature: <strong>{aiTemperature.toFixed(2)}</strong>
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={aiTemperature}
+                        onChange={(e) => setAiTemperature(Number(e.target.value))}
+                        className="memory-slider"
+                        aria-label="Model temperature"
+                      />
+                    </label>
+                    <label style={{ display: "grid", gap: "0.35rem" }}>
+                      <span className="text-muted small">Context window (tokens)</span>
+                      <input
+                        type="number"
+                        min={512}
+                        max={131072}
+                        step={256}
+                        value={aiNumCtx}
+                        onChange={(e) => {
+                          const n = Number.parseInt(e.target.value, 10);
+                          if (!Number.isFinite(n)) return;
+                          setAiNumCtx(Math.min(131072, Math.max(512, n)));
+                        }}
+                        style={{
+                          minHeight: "38px",
+                          borderRadius: "10px",
+                          border: "1px solid var(--border)",
+                          background: "var(--surface-solid)",
+                          color: "var(--text)",
+                          padding: "0 0.75rem",
+                          fontFamily: "var(--font)",
+                          maxWidth: "12rem",
+                        }}
+                        aria-label="Ollama context window num_ctx"
+                      />
+                    </label>
+                  </div>
                 </section>
                 <section className="library-section">
                   <h3>Answers &amp; citations</h3>
@@ -5033,18 +6036,15 @@ function App() {
                     </p>
                   )}
                   <p className="text-muted small">
-                    Regional OpenStreetMap-based ZIM files from Kiwix. The app picks the <strong>smallest</strong> pack that matches your saved location text; you can download others here. Large files—use Wi‑Fi when possible.
+                    <strong>Kiwix</strong> regional map files for the built-in map. The app can suggest a small pack for your saved location; pick others from the list. Use Wi‑Fi for large downloads.
                   </p>
                   {mapCatalog.length === 0 && (
                     <p className="text-muted small settings-map-catalog-empty-note" role="status">
-                      <strong>No regional map ZIMs are listed right now.</strong> The official Kiwix mirror&apos;s{" "}
-                      <code>zim/maps/</code> folder is currently empty, so previous direct download links would fail with 404. For the{" "}
-                      <strong>in-app Leaflet map</strong>, use <strong>Offline raster basemaps</strong> below (download tiles or import MBTiles/PMTiles). To add other Kiwix content, use{" "}
-                      <strong>Library → Download more data</strong> to open{" "}
+                      <strong>No Kiwix map packs listed right now.</strong> Use <strong>Offline raster basemaps</strong> below to add MBTiles/PMTiles, or get <code>.zim</code> files from{" "}
                       <a href="https://library.kiwix.org" target="_blank" rel="noopener noreferrer">
                         library.kiwix.org
                       </a>{" "}
-                      and place <code>.zim</code> files where the app can scan them.
+                      and put them where the app can scan them (see Library).
                     </p>
                   )}
                   {mapsSuggestion !== null && (
@@ -5364,6 +6364,7 @@ function App() {
                         Auto-reply to mesh (Primary broadcast → DM; private chat per sender)
                       </label>
                     </div>
+                    <RadioSettingsView />
                   </section>
                 )}
               </>
@@ -5500,7 +6501,15 @@ function App() {
                     onChange={(e) => {
                       const checked = e.target.checked;
                       setFullscreen(checked);
-                      invoke("set_fullscreen", { fullscreen: checked }).catch(() => {});
+                      void (async () => {
+                        try {
+                          await invoke("set_fullscreen", { fullscreen: checked });
+                        } catch {
+                          /* Native transition may fail; resync from window below */
+                        }
+                        const actual = await invoke<boolean>("is_fullscreen").catch(() => false);
+                        setFullscreen(actual);
+                      })();
                     }}
                     aria-label="Fullscreen (macOS: native fullscreen)"
                   />
@@ -6151,41 +7160,6 @@ function App() {
         onMainMapArchiveRasterLayersChange={handleMainMapArchiveRasterLayersChange}
       />
 
-      {mapOpen && featureMapEnabled && (
-        <ErrorBoundary sectionLabel="map viewer">
-          <MapView
-            pois={pois}
-            onClose={() => setMapOpen(false)}
-            onAddPoi={handleAddPoi}
-            onRemovePoi={handleRemovePoi}
-            mapChatInput={mapChatInput}
-            setMapChatInput={setMapChatInput}
-            onMapChatSend={() => void handleMapChatSend()}
-            mapChatSending={mapChatSending}
-            mapChatMessage={mapChatLastMessage}
-            layerFilters={_layerFilters}
-            setLayerFilters={setLayerFilters}
-            convertFileSrcFn={convertFileSrcFn}
-            basemap={mapBasemap}
-            onBasemapChange={setMapBasemap}
-            offlineOsmRoot={offlineOsmRoot}
-            offlineTopoRoot={offlineTopoRoot}
-            offlineImportedRoot={offlineImportedRoot}
-            archiveRasterFileNames={enabledArchiveRasterFileNames}
-            archiveRasterNativeZoomRangesByFile={archiveRasterNativeZoomRangesByFile}
-            archiveRasterBoundsByFile={archiveRasterBoundsByFile}
-            savedUserLocationAddress={userLocationAddress}
-            onSatelliteRegionDownloaded={handleMapSatelliteDownloaded}
-            mapCenter={mapViewCenter}
-            mapZoom={mapViewZoom}
-            onOpenOfflineMapManager={() => setOfflineMapManagerOpen(true)}
-            tacticalPointsOfInterest={tacticalMapPoints}
-            tacticalMeshNodeLocations={tacticalMapNodes}
-            onReloadTacticalMapLayers={reloadTacticalMapLayers}
-          />
-        </ErrorBoundary>
-      )}
-
       {meshOpen && (
         <MeshRadioModal open={meshOpen} onClose={() => setMeshOpen(false)} messages={meshMessages} />
       )}
@@ -6236,157 +7210,7 @@ function App() {
                   role="tabpanel"
                   aria-labelledby="library-tab-documents"
                 >
-                  <section className="library-section">
-                    <h3>Library folder</h3>
-                    <p className="path-display">{watchFolder ?? "No folder selected"}</p>
-                    <div className="row">
-                      <button type="button" onClick={handleChooseFolder}>
-                        Choose folder
-                      </button>
-                      {watchFolder !== null && (
-                        <button type="button" onClick={handleClearFolder} className="secondary">
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  </section>
-                  <section className="library-section library-section-rag">
-                    <div className="library-section-head">
-                      <div>
-                        <h3>Documents for AI search</h3>
-                        <p className="text-muted small library-section-lead">
-                          PDFs, notes, and Kiwix ZIMs in your library folder are indexed for chat answers (RAG). Map viewer packs are listed in the <strong>Maps</strong> tab.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        className="kiwix-open-btn"
-                        onClick={() => {
-                          setKiwixSearchOpen(true);
-                          setKiwixScanError(null);
-                        }}
-                      >
-                        Download more data
-                      </button>
-                    </div>
-                    {ragLibraryFiles.length === 0 ? (
-                      <p className="text-muted">
-                        No document files yet. Choose a folder above, add files, or use <strong>Download more data</strong> for Kiwix content (Wikipedia, manuals, etc.).
-                      </p>
-                    ) : (
-                      <>
-                        <ul className="library-file-list">
-                          {ragLibraryFiles.slice(0, 3).map((file) => (
-                            <li key={file.path} className="library-file-item">
-                              <span className="library-file-name" title={file.path}>
-                                {file.name}
-                              </span>
-                              <span className="library-file-size">{formatLibraryFileSizeBytes(file.size_bytes)}</span>
-                              <button
-                                type="button"
-                                className="library-file-remove"
-                                onClick={() => handleRemoveLibraryFile(file.path)}
-                                title="Remove from library"
-                                aria-label={"Remove " + file.name}
-                              >
-                                Remove
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                        {ragLibraryFiles.length > 3 && (
-                          <button
-                            type="button"
-                            className="library-view-more-btn"
-                            onClick={() => setLibraryFilesModalOpen(true)}
-                          >
-                            View all documents ({ragLibraryFiles.length})
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </section>
-                  <section className="library-section">
-                    <h3>Vector index</h3>
-                    <p className="text-muted small">
-                      Rebuild embeddings for all indexed documents with text. Use after adding many files or if RAG count is 0.
-                    </p>
-                    {rebuildVectorIndexLoading && (
-                      <div className="dev-rebuild-progress-panel" role="status" aria-live="polite">
-                        <div className="dev-rebuild-progress-text">
-                          <span className="dev-rebuild-spinner" aria-hidden />
-                          <strong>Rebuilding vector index…</strong>
-                          {rebuildVectorIndexProgress !== null ? (
-                            <span className="dev-rebuild-progress-count">
-                              {" "}
-                              Indexed {rebuildVectorIndexProgress.processed} of {rebuildVectorIndexProgress.total} documents
-                              {rebuildVectorIndexProgress.failed > 0
-                                ? ` (${rebuildVectorIndexProgress.failed} failed)`
-                                : ""}
-                              .
-                            </span>
-                          ) : (
-                            " Starting…"
-                          )}
-                        </div>
-                        <p className="text-muted small">This may take a while. The app will stay responsive.</p>
-                      </div>
-                    )}
-                    <div className="dev-rebuild-row">
-                      <button
-                        type="button"
-                        className="secondary"
-                        disabled={rebuildVectorIndexLoading}
-                        onClick={async () => {
-                          setRebuildVectorIndexResult(null);
-                          setRebuildVectorIndexFailedFiles([]);
-                          setRebuildVectorIndexProgress(null);
-                          setRebuildVectorIndexLoading(true);
-                          try {
-                            const r = await invoke<{
-                              processed: number;
-                              failed: number;
-                              failed_files: Array<{ path: string; name: string; error: string }>;
-                            }>("rebuild_vector_index");
-                            setRebuildVectorIndexResult(`Processed ${r.processed} documents, ${r.failed} failed.`);
-                            setRebuildVectorIndexFailedFiles(r.failed_files ?? []);
-                          } catch (e) {
-                            setRebuildVectorIndexResult(`Error: ${e}`);
-                          } finally {
-                            setRebuildVectorIndexLoading(false);
-                            setRebuildVectorIndexProgress(null);
-                          }
-                        }}
-                      >
-                        {rebuildVectorIndexLoading ? "Rebuilding…" : "Rebuild vector index"}
-                      </button>
-                      {rebuildVectorIndexResult !== null && (
-                        <span className="dev-rebuild-result">{rebuildVectorIndexResult}</span>
-                      )}
-                    </div>
-                    {rebuildVectorIndexFailedFiles.length > 0 && (
-                      <div className="dev-rebuild-failed-list">
-                        <p className="text-muted small">Files that failed to embed (with reason):</p>
-                        <ul className="dev-rebuild-failed-ul">
-                          {rebuildVectorIndexFailedFiles.map((f, i) => (
-                            <li key={i}>
-                              <strong>{f.name}</strong>: {f.error}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </section>
-                  {stats !== null && (
-                    <section className="library-section library-stats">
-                      <div className="stats">
-                        <span className="stat">Document files: {ragLibraryFiles.length}</span>
-                        <span className="stat">Map ZIM files: {mapLibraryFiles.length}</span>
-                        <span className="stat">ZIM articles indexed: {stats.zim_count}</span>
-                        <span className="stat">Total indexed: {stats.total_files} items</span>
-                      </div>
-                    </section>
-                  )}
+                  <KnowledgeCatalogView />
                 </div>
               )}
               {libraryActiveTab === "maps" && (
@@ -6397,9 +7221,9 @@ function App() {
                   aria-labelledby="library-tab-maps"
                 >
                   <section className="library-section library-section-map-archives">
-                    <h3>Map archive manager</h3>
+                    <h3>Map files (PMTiles / MBTiles)</h3>
                     <p className="text-muted small library-section-lead">
-                      Open the same catalog and preview tool that used to live on its own header button: download regional PMTiles or MBTiles archives, run a Protomaps regional extract, and preview layers. You can also reach this from the map viewer via <strong>Map archives…</strong>
+                      <strong>Download or import</strong> map tile archives for the viewer. Same tool as <strong>Map archives…</strong> on the map.
                     </p>
                     <div className="library-maps-action-row">
                       <button
@@ -6409,14 +7233,14 @@ function App() {
                           setOfflineMapManagerOpen(true);
                         }}
                       >
-                        Open map archive manager…
+                        Open map file manager…
                       </button>
                     </div>
                   </section>
                   <section className="library-section library-section-maps">
-                    <h3>Offline maps</h3>
+                    <h3>Offline map packs (Kiwix)</h3>
                     <p className="text-muted small library-section-lead">
-                      Kiwix <strong>map ZIMs</strong> for the in-app map, regional packs from the catalog when available, and any <code>maps_*</code> archives on disk. Active HTTP(S) downloads started here or in Settings appear below.
+                      <strong>Regional map ZIMs</strong> for the map viewer. Downloads also show in Settings → Offline maps.
                     </p>
                     <div className="library-maps-action-row">
                       <button
@@ -6645,13 +7469,13 @@ function App() {
                   <p className="text-muted small" style={{ padding: "0 1.25rem" }}>
                     Map ZIMs are not listed here — open Library and use the <strong>Maps</strong> tab.
                   </p>
-                  {ragLibraryFiles.length === 0 ? (
+                  {ragDisplayFiles.length === 0 ? (
                     <p className="text-muted" style={{ padding: "0 1.25rem 1rem" }}>
                       No document files in your library folder.
                     </p>
                   ) : (
                     <ul className="library-file-list library-file-list-full">
-                      {ragLibraryFiles.map((file) => (
+                      {ragDisplayFiles.map((file) => (
                         <li key={file.path} className="library-file-item">
                           <span className="library-file-name" title={file.path}>
                             {file.name}
@@ -6662,7 +7486,7 @@ function App() {
                             className="library-file-remove"
                             onClick={() => {
                               handleRemoveLibraryFile(file.path);
-                              if (ragLibraryFiles.length <= 1) setLibraryFilesModalOpen(false);
+                              if (ragDisplayFiles.length <= 1) setLibraryFilesModalOpen(false);
                             }}
                             title="Remove from library"
                             aria-label={"Remove " + file.name}
@@ -6777,7 +7601,6 @@ function App() {
           </div>
         </div>
       )}
-        </>
     </div>
   );
 }

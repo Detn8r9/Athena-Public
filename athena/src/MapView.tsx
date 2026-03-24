@@ -1,14 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { listen } from "@tauri-apps/api/event";
-import { MapContainer, TileLayer, Marker, Popup, Rectangle, Circle, Polyline, useMap, useMapEvents } from "react-leaflet";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  Rectangle,
+  Circle,
+  Polyline,
+  GeoJSON,
+  useMap,
+  useMapEvents,
+} from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import "leaflet-draw/dist/leaflet.draw.css";
+import "leaflet-draw";
+import type { Geometry } from "geojson";
 import { buildMbTilesRasterTilesTemplate } from "./offlineMapArchiveUrls";
-import {
-  TacticalSidebar,
-  defaultTacticalLayerVisibilityState,
-  type TacticalLayerVisibilityState,
-} from "./TacticalSidebar";
+import { TacticalSidebar, type TacticalLayerVisibilityState } from "./TacticalSidebar";
 import {
   startSatelliteRegionDownload,
   type SatelliteRegionDownloadCompleteEventPayload,
@@ -16,6 +28,8 @@ import {
   type SatelliteRegionDownloadProgressEventPayload,
 } from "./offlineMapManagerCatalog";
 import { MapSettingsPopover } from "./MapSettingsPopover";
+import { PoiDetailsModal } from "./PoiDetailsModal";
+import { getPoiLucideIcon } from "./tacticalLucideIconRegistry";
 import type { MapBasemap } from "./mapViewTypes";
 
 export type { MapBasemap };
@@ -26,6 +40,92 @@ export interface Poi {
   lat: number;
   lon: number;
   notes: string;
+}
+
+export type MapMarkerCategory = "hazard" | "water" | "cache" | "med";
+
+export interface MapMarker {
+  id: string;
+  lat: number;
+  lng: number;
+  title: string;
+  description: string;
+  created_at: string;
+  category: string;
+}
+
+export interface CoordinateConversionResult {
+  decimal_degrees: string;
+  decimal_degrees_lat: string;
+  decimal_degrees_lng: string;
+  utm: string;
+  mgrs: string;
+}
+
+export interface MapDrawingRecord {
+  id: string;
+  feature_type: string;
+  geometry_json: string;
+  style_json: string;
+  created_at: string;
+}
+
+const MAP_MARKER_CATEGORIES: Array<{ id: MapMarkerCategory; label: string }> = [
+  { id: "hazard", label: "Hazard" },
+  { id: "water", label: "Water" },
+  { id: "cache", label: "Cache" },
+  { id: "med", label: "Med" },
+];
+
+/** CSS filters applied to the default Leaflet marker image for category distinction. */
+const MAP_MARKER_CATEGORY_FILTERS: Record<MapMarkerCategory, string> = {
+  hazard: "hue-rotate(0deg) saturate(1.35) brightness(1.05)",
+  water: "hue-rotate(175deg) saturate(1.45) brightness(1.02)",
+  cache: "hue-rotate(42deg) saturate(1.2) brightness(1.08)",
+  med: "hue-rotate(285deg) saturate(1.25) brightness(1.05)",
+};
+
+function normalizeMapMarkerCategory(raw: string | undefined): MapMarkerCategory {
+  const t = (raw ?? "hazard").trim().toLowerCase();
+  if (t === "hazard" || t === "water" || t === "cache" || t === "med") {
+    return t;
+  }
+  return "hazard";
+}
+
+const mapMarkerCategoryIconCache = new Map<string, L.DivIcon>();
+
+function getMapMarkerCategoryIcon(category: string): L.DivIcon {
+  const cat = normalizeMapMarkerCategory(category);
+  const cached = mapMarkerCategoryIconCache.get(cat);
+  if (cached) {
+    return cached;
+  }
+  const filter = MAP_MARKER_CATEGORY_FILTERS[cat];
+  const html = `<div class="map-marker-category-pin" style="width:25px;height:41px;filter:${filter}"><img src="https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png" alt="" width="25" height="41" style="display:block" /></div>`;
+  const icon = L.divIcon({
+    className: "map-marker-category-wrapper",
+    html,
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+  });
+  mapMarkerCategoryIconCache.set(cat, icon);
+  return icon;
+}
+
+interface PeerNode {
+  node_id: string;
+  latitude: number;
+  longitude: number;
+  last_seen_at: string;
+}
+
+interface PeerPositionEventPayload {
+  node_id: string;
+  latitude: number;
+  longitude: number;
+  timestamp: string;
 }
 
 // Fix default marker icons in Leaflet with bundlers
@@ -60,7 +160,23 @@ export type TacticalMapMeshNodeLocation = {
 
 type TacticalResourceKind = "power" | "water" | "food" | "equipment";
 
-function parseTacticalResourceKind(notes: string): TacticalResourceKind {
+/** Preset Lucide names from the tactical POI modal; these map to resource sub-layers, not Custom Pins. */
+function lucidePresetIconToResourceKind(lucideIconName: string): TacticalResourceKind | undefined {
+  switch (lucideIconName) {
+    case "Zap":
+      return "power";
+    case "Droplets":
+      return "water";
+    case "Apple":
+      return "food";
+    case "Home":
+      return "equipment";
+    default:
+      return undefined;
+  }
+}
+
+function parseTacticalResourceKindLegacy(notes: string): TacticalResourceKind {
   const match = notes.trim().match(/^@(power|water|food|equipment)\b/i);
   if (match) {
     const token = match[1].toLowerCase();
@@ -71,8 +187,48 @@ function parseTacticalResourceKind(notes: string): TacticalResourceKind {
   return "equipment";
 }
 
-function stripResourceDirectiveFromNotes(notes: string): string {
-  return notes.replace(/^\s*@(power|water|food|equipment)\s*/i, "").trim();
+/** Lucide export name from notes `@icon:MapPin` (matches `add_tactical_poi` storage). */
+function parseTacticalLucideIconName(notes: string): string | null {
+  const m = notes.trim().match(/@icon:([A-Za-z0-9]+)/);
+  return m ? m[1] : null;
+}
+
+function stripTacticalNotesBody(notes: string): string {
+  return notes
+    .replace(/@network\b/gi, "")
+    .replace(/@icon:[A-Za-z0-9]+/gi, "")
+    .replace(/@(power|water|food|equipment)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+type TacticalPointClassification =
+  | { bucket: "network_pin" }
+  | { bucket: "custom_pin" }
+  | { bucket: "resource"; kind: TacticalResourceKind };
+
+function classifyTacticalPoint(notes: string): TacticalPointClassification {
+  if (/@network\b/i.test(notes)) {
+    return { bucket: "network_pin" };
+  }
+  const lucide = parseTacticalLucideIconName(notes);
+  if (lucide) {
+    const presetKind = lucidePresetIconToResourceKind(lucide);
+    if (presetKind !== undefined) {
+      return { bucket: "resource", kind: presetKind };
+    }
+    return { bucket: "custom_pin" };
+  }
+  return { bucket: "resource", kind: parseTacticalResourceKindLegacy(notes) };
+}
+
+/** Resource kind for styling fallbacks; custom `@icon:` pins use equipment-colored fallback when Lucide is missing. */
+function parseTacticalResourceKind(notes: string): TacticalResourceKind {
+  const c = classifyTacticalPoint(notes);
+  if (c.bucket === "custom_pin" || c.bucket === "network_pin") {
+    return "equipment";
+  }
+  return c.kind;
 }
 
 function tacticalResourceColor(kind: TacticalResourceKind): string {
@@ -100,10 +256,50 @@ function buildTacticalResourceIcon(kind: TacticalResourceKind): L.DivIcon {
   });
 }
 
+const tacticalLucideMarkerCache = new Map<string, L.DivIcon>();
+
+function getTacticalLucideMarkerIcon(lucideIconName: string): L.DivIcon | null {
+  const Icon = getPoiLucideIcon(lucideIconName);
+  if (!Icon) {
+    return null;
+  }
+  const cached = tacticalLucideMarkerCache.get(lucideIconName);
+  if (cached) {
+    return cached;
+  }
+  const svg = renderToStaticMarkup(
+    createElement(Icon, {
+      size: 15,
+      color: "#0f172a",
+      strokeWidth: 2.25,
+      absoluteStrokeWidth: true,
+    }),
+  );
+  const html = `<div class="tactical-lucide-marker-chip" style="display:flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:#c4b5fd;border:2px solid #0f172a;box-shadow:0 1px 3px rgba(0,0,0,0.35);">${svg}</div>`;
+  const icon = L.divIcon({
+    className: "tactical-lucide-marker",
+    html,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    popupAnchor: [0, -11],
+  });
+  tacticalLucideMarkerCache.set(lucideIconName, icon);
+  return icon;
+}
+
 const meshNodeMarkerIcon = L.divIcon({
   className: "tactical-mesh-node-marker",
   html:
     '<div style="width:16px;height:16px;border-radius:50%;background:#38bdf8;border:2px solid #0f172a;box-shadow:0 1px 3px rgba(0,0,0,0.35);"></div>',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+  popupAnchor: [0, -8],
+});
+
+const livePeerMarkerIcon = L.divIcon({
+  className: "tactical-live-peer-marker",
+  html:
+    '<div style="width:16px;height:16px;border-radius:50%;background:#f472b6;border:2px solid #0f172a;box-shadow:0 1px 3px rgba(0,0,0,0.35);"></div>',
   iconSize: [16, 16],
   iconAnchor: [8, 8],
   popupAnchor: [0, -8],
@@ -205,7 +401,10 @@ function SatelliteDownloadBoxTool({
 
 interface MapViewProps {
   pois: Poi[];
-  onClose: () => void;
+  /** When omitted and `embedded` is true, no back control is shown. */
+  onClose?: () => void;
+  /** When true, map fills the app stage instead of a fixed fullscreen overlay. */
+  embedded?: boolean;
   onAddPoi: (name: string, lat: number, lon: number, notes: string) => Promise<void>;
   onRemovePoi: (id: string) => Promise<void>;
   mapChatInput: string;
@@ -242,27 +441,324 @@ interface MapViewProps {
   tacticalMeshNodeLocations: TacticalMapMeshNodeLocation[];
   /** Refresh tactical points and nodes from the database (for example after import). */
   onReloadTacticalMapLayers: () => void;
+  /** Persist a tactical POI from the right-click pin modal (`add_tactical_poi`). */
+  onAddTacticalPoiPin: (payload: {
+    name: string;
+    description: string;
+    lucideIconName: string;
+    pinLayer: "resource" | "network";
+    lat: number;
+    lng: number;
+  }) => Promise<void>;
+  tacticalLayerVisibility: TacticalLayerVisibilityState;
+  onTacticalLayerVisibilityChange: (next: TacticalLayerVisibilityState) => void;
 }
 
-function AddMarkerOnClick({ onAdd }: { onAdd: (lat: number, lon: number) => void }) {
-  const [pending, setPending] = useState<{ lat: number; lon: number } | null>(null);
+/** Double-click places a persisted map marker (SQLite); right-click opens the tactical POI modal. */
+function MapDoubleClickMapMarkerPlacement({
+  satelliteDrawModeEnabled,
+  onDoubleClickLatLng,
+}: {
+  satelliteDrawModeEnabled: boolean;
+  onDoubleClickLatLng: (lat: number, lng: number) => void;
+}) {
   useMapEvents({
-    click(e) {
-      setPending({ lat: e.latlng.lat, lon: e.latlng.lng });
+    dblclick(e) {
+      if (satelliteDrawModeEnabled) {
+        return;
+      }
+      onDoubleClickLatLng(e.latlng.lat, e.latlng.lng);
     },
   });
-  useEffect(() => {
-    if (!pending) return;
-    onAdd(pending.lat, pending.lon);
-    setPending(null);
-  }, [pending, onAdd]);
   return null;
+}
+
+/** Step 1: capture map right-click position for tactical POI placement (modal wiring in later steps). */
+function MapRightClickPinPlacementEvents({
+  satelliteDrawModeEnabled,
+  onContextMenuLatLng,
+}: {
+  satelliteDrawModeEnabled: boolean;
+  onContextMenuLatLng: (lat: number, lng: number) => void;
+}) {
+  useMapEvents({
+    contextmenu(e) {
+      const native = e.originalEvent;
+      if (native) {
+        native.preventDefault();
+      }
+      if (satelliteDrawModeEnabled) {
+        return;
+      }
+      onContextMenuLatLng(e.latlng.lat, e.latlng.lng);
+    },
+  });
+  return null;
+}
+
+function MapCursorProbe({
+  onCursorLatLng,
+}: {
+  onCursorLatLng: (value: { lat: number; lng: number } | null) => void;
+}) {
+  useMapEvents({
+    mousemove(e) {
+      onCursorLatLng({ lat: e.latlng.lat, lng: e.latlng.lng });
+    },
+    mouseout() {
+      onCursorLatLng(null);
+    },
+  });
+  return null;
+}
+
+function MapLeafletDrawToolbar({ onDrawingSaved }: { onDrawingSaved: () => void }) {
+  const map = useMap();
+  useEffect(() => {
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+    const drawControl = new L.Control.Draw({
+      position: "topleft",
+      draw: {
+        polyline: {
+          shapeOptions: {
+            color: "#38bdf8",
+            weight: 3,
+            opacity: 0.92,
+          },
+        },
+        polygon: {
+          showArea: true,
+          metric: true,
+          shapeOptions: {
+            color: "#38bdf8",
+            weight: 2,
+            opacity: 0.92,
+            fillColor: "#38bdf8",
+            fillOpacity: 0.14,
+          },
+        },
+        marker: false,
+        circle: false,
+        rectangle: false,
+        circlemarker: false,
+      },
+      edit: {
+        featureGroup: drawnItems,
+        remove: true,
+      },
+    });
+    map.addControl(drawControl);
+
+    const onCreated = (event: L.LeafletEvent) => {
+      const e = event as L.DrawEvents.Created;
+      const layer = e.layer;
+      const layerType = e.layerType;
+      if (layerType !== "polyline" && layerType !== "polygon") {
+        map.removeLayer(layer);
+        return;
+      }
+      const gj = layer.toGeoJSON();
+      if (gj.type !== "Feature" || gj.geometry == null) {
+        map.removeLayer(layer);
+        return;
+      }
+      const opts = (layer as L.Path).options ?? {};
+      const stylePayload = {
+        color: opts.color ?? "#38bdf8",
+        weight: opts.weight ?? (layerType === "polyline" ? 3 : 2),
+        opacity: opts.opacity ?? 0.92,
+        fillOpacity: opts.fillOpacity ?? (layerType === "polygon" ? 0.14 : undefined),
+      };
+      void invoke<MapDrawingRecord>("save_drawing", {
+        featureType: layerType === "polyline" ? "polyline" : "polygon",
+        geometryJson: JSON.stringify(gj.geometry),
+        styleJson: JSON.stringify(stylePayload),
+        id: null,
+      })
+        .then(() => {
+          map.removeLayer(layer);
+          onDrawingSaved();
+        })
+        .catch(() => {
+          map.removeLayer(layer);
+        });
+    };
+
+    map.on(L.Draw.Event.CREATED, onCreated);
+    return () => {
+      map.off(L.Draw.Event.CREATED, onCreated);
+      map.removeControl(drawControl);
+      map.removeLayer(drawnItems);
+    };
+  }, [map, onDrawingSaved]);
+  return null;
+}
+
+function PersistedDrawingGeoJsonLayerReadOnly({ drawing }: { drawing: MapDrawingRecord }) {
+  let geometry: Geometry;
+  try {
+    geometry = JSON.parse(drawing.geometry_json) as Geometry;
+  } catch {
+    return null;
+  }
+  let pathStyle: L.PathOptions;
+  try {
+    pathStyle = JSON.parse(drawing.style_json) as L.PathOptions;
+  } catch {
+    pathStyle = { color: "#38bdf8", weight: 3 };
+  }
+  const feature = {
+    type: "Feature" as const,
+    geometry,
+    properties: { id: drawing.id },
+  };
+  return <GeoJSON key={drawing.id} data={feature} style={() => pathStyle} interactive={false} />;
+}
+
+function MapMarkerPlacementModal({
+  open,
+  latLng,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  latLng: { lat: number; lng: number } | null;
+  onClose: () => void;
+  onSave: (payload: { title: string; description: string; category: MapMarkerCategory }) => void | Promise<void>;
+}) {
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState<MapMarkerCategory>("hazard");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setTitle("");
+      setDescription("");
+      setCategory("hazard");
+      setSaving(false);
+      setError(null);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (open && latLng) {
+      setTitle("");
+      setDescription("");
+      setCategory("hazard");
+      setError(null);
+    }
+  }, [open, latLng?.lat, latLng?.lng]);
+
+  if (!open || latLng === null) {
+    return null;
+  }
+
+  return (
+    <div className="modal-backdrop map-marker-modal-backdrop" onClick={onClose}>
+      <div
+        className="library-modal glass-panel map-marker-placement-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="map-marker-modal-title"
+      >
+        <div className="library-header">
+          <h2 id="map-marker-modal-title">Add map marker</h2>
+          <button type="button" className="close-btn" onClick={onClose} aria-label="Close">
+            ×
+          </button>
+        </div>
+        <div className="map-marker-modal-body">
+          <label className="map-marker-modal-label">
+            Title
+            <input
+              type="text"
+              className="map-marker-modal-input"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Rally point"
+              autoFocus
+            />
+          </label>
+          <label className="map-marker-modal-label">
+            Category
+            <select
+              className="map-marker-modal-input"
+              value={category}
+              onChange={(e) => setCategory(normalizeMapMarkerCategory(e.target.value))}
+            >
+              {MAP_MARKER_CATEGORIES.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="map-marker-modal-label">
+            Description (optional)
+            <textarea
+              className="map-marker-modal-textarea"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              placeholder="Notes…"
+            />
+          </label>
+          {error ? (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <div className="map-marker-modal-actions">
+            <button type="button" className="secondary" onClick={onClose} disabled={saving}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const t = title.trim();
+                if (!t) {
+                  setError("Title is required.");
+                  return;
+                }
+                setError(null);
+                setSaving(true);
+                void Promise.resolve(
+                  onSave({
+                    title: t,
+                    description: description.trim(),
+                    category,
+                  }),
+                )
+                  .then(() => {
+                    onClose();
+                  })
+                  .catch((err: unknown) => {
+                    setError(err != null ? String(err) : "Could not save marker.");
+                  })
+                  .finally(() => {
+                    setSaving(false);
+                  });
+              }}
+              disabled={saving || !title.trim()}
+            >
+              {saving ? "Saving…" : "Save marker"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function MapView({
   pois,
   onClose,
-  onAddPoi,
+  embedded = false,
+  onAddPoi: _onAddPoi,
   onRemovePoi,
   mapChatInput,
   setMapChatInput,
@@ -288,10 +784,104 @@ export function MapView({
   tacticalPointsOfInterest,
   tacticalMeshNodeLocations,
   onReloadTacticalMapLayers,
+  onAddTacticalPoiPin,
+  tacticalLayerVisibility,
+  onTacticalLayerVisibilityChange,
 }: MapViewProps) {
-  const [tacticalLayerVisibility, setTacticalLayerVisibility] = useState<TacticalLayerVisibilityState>(
-    defaultTacticalLayerVisibilityState,
-  );
+  const [mapMarkers, setMapMarkers] = useState<MapMarker[]>([]);
+  const [mapDrawings, setMapDrawings] = useState<MapDrawingRecord[]>([]);
+  const [activePeers, setActivePeers] = useState<PeerNode[]>([]);
+  const [cursorLatLng, setCursorLatLng] = useState<{ lat: number; lng: number } | null>(null);
+  const [coordHud, setCoordHud] = useState<CoordinateConversionResult | null>(null);
+  const [hudShowDd, setHudShowDd] = useState(true);
+  const [pendingMapMarkerPlacement, setPendingMapMarkerPlacement] = useState<{ lat: number; lng: number } | null>(null);
+
+  const loadMapMarkers = useCallback(async () => {
+    try {
+      const list = await invoke<MapMarker[]>("get_map_markers");
+      setMapMarkers(Array.isArray(list) ? list : []);
+    } catch (_) {
+      setMapMarkers([]);
+    }
+  }, []);
+
+  const loadMapDrawings = useCallback(async () => {
+    try {
+      const list = await invoke<MapDrawingRecord[]>("get_drawings");
+      setMapDrawings(Array.isArray(list) ? list : []);
+    } catch (_) {
+      setMapDrawings([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadMapMarkers();
+    void loadMapDrawings();
+  }, [loadMapMarkers, loadMapDrawings]);
+
+  useEffect(() => {
+    if (!cursorLatLng) {
+      setCoordHud(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void invoke<CoordinateConversionResult>("convert_coordinates", {
+        lat: cursorLatLng.lat,
+        lng: cursorLatLng.lng,
+      })
+        .then(setCoordHud)
+        .catch(() => setCoordHud(null));
+    }, 110);
+    return () => clearTimeout(timer);
+  }, [cursorLatLng]);
+
+  useEffect(() => {
+    const unlisten = listen<MapMarker>("peer-marker-rx", (event) => {
+      const marker = event.payload;
+      if (!marker || typeof marker.id !== "string") return;
+      const normalized: MapMarker = {
+        ...marker,
+        category:
+          typeof marker.category === "string" && marker.category.trim().length > 0 ? marker.category : "hazard",
+      };
+      setMapMarkers((prev) => [normalized, ...prev.filter((m) => m.id !== normalized.id)]);
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<PeerPositionEventPayload>("peer-position-rx", (event) => {
+      const payload = event.payload;
+      if (
+        !payload ||
+        typeof payload.node_id !== "string" ||
+        typeof payload.latitude !== "number" ||
+        typeof payload.longitude !== "number"
+      ) {
+        return;
+      }
+      const nextPeer: PeerNode = {
+        node_id: payload.node_id,
+        latitude: payload.latitude,
+        longitude: payload.longitude,
+        last_seen_at: typeof payload.timestamp === "string" ? payload.timestamp : new Date().toISOString(),
+      };
+      setActivePeers((prev) => {
+        const existingIndex = prev.findIndex((peer) => peer.node_id === nextPeer.node_id);
+        if (existingIndex === -1) {
+          return [nextPeer, ...prev];
+        }
+        const updated = [...prev];
+        updated[existingIndex] = nextPeer;
+        return updated;
+      });
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
 
   const meshNodeLinkPositions = useMemo(() => {
     const sorted = [...tacticalMeshNodeLocations].sort((a, b) => a.node_id.localeCompare(b.node_id));
@@ -308,14 +898,71 @@ export function MapView({
     [],
   );
 
-  const handleAddAt = useCallback(
-    (lat: number, lon: number) => {
-      const name = window.prompt("Name this location (e.g. Homebase):")?.trim();
-      const notes = (window.prompt("Notes (optional):") ?? "").trim();
-      if (name) void onAddPoi(name, lat, lon, notes);
+  const handleRequestMapMarkerPlacement = useCallback((lat: number, lng: number) => {
+    setPendingMapMarkerPlacement({ lat, lng });
+  }, []);
+
+  const handleSaveMapMarkerFromModal = useCallback(
+    async (payload: { title: string; description: string; category: MapMarkerCategory }) => {
+      if (!pendingMapMarkerPlacement) return;
+      const marker = await invoke<MapMarker>("add_map_marker", {
+        lat: pendingMapMarkerPlacement.lat,
+        lng: pendingMapMarkerPlacement.lng,
+        title: payload.title,
+        description: payload.description,
+        category: payload.category,
+      });
+      setMapMarkers((prev) => [marker, ...prev.filter((m) => m.id !== marker.id)]);
+      setPendingMapMarkerPlacement(null);
     },
-    [onAddPoi],
+    [pendingMapMarkerPlacement],
   );
+
+  const handleDrawingSaved = useCallback(() => {
+    void loadMapDrawings();
+  }, [loadMapDrawings]);
+
+  const handleDeleteDrawing = useCallback(
+    (id: string) => {
+      void invoke("delete_drawing", { id })
+        .then(() => {
+          setMapDrawings((prev) => prev.filter((d) => d.id !== id));
+        })
+        .catch(() => {});
+    },
+    [],
+  );
+
+  const handleDeleteMapMarker = useCallback((id: string) => {
+    if (!id) return;
+    void invoke("delete_map_marker", { id })
+      .then(() => {
+        setMapMarkers((prev) => prev.filter((m) => m.id !== id));
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleBroadcastMapMarker = useCallback((id: string) => {
+    if (!id) return;
+    void invoke("broadcast_map_marker", { id }).catch(() => {});
+  }, []);
+
+  const handleDeleteTacticalPoi = useCallback(
+    (id: string) => {
+      if (!id) return;
+      void invoke("delete_tactical_poi", { id })
+        .then(() => {
+          onReloadTacticalMapLayers();
+        })
+        .catch(() => {});
+    },
+    [onReloadTacticalMapLayers],
+  );
+
+  const handleBroadcastTacticalPoi = useCallback((id: string) => {
+    if (!id) return;
+    void invoke("broadcast_tactical_poi", { id }).catch(() => {});
+  }, []);
 
   const canOfflineOsm = Boolean(offlineOsmRoot);
   const canOfflineTopo = Boolean(offlineTopoRoot);
@@ -349,6 +996,13 @@ export function MapView({
   const [satelliteDownloadStatus, setSatelliteDownloadStatus] = useState<string>("");
   const [satelliteDownloadJobId, setSatelliteDownloadJobId] = useState<string | null>(null);
   const activeSatelliteJobIdRef = useRef<string | null>(null);
+
+  /** Last map right-click position for pin placement (consumed by POI modal in Step 2+). */
+  const [rightClickPinLatLng, setRightClickPinLatLng] = useState<{ lat: number; lng: number } | null>(null);
+
+  const handleMapContextMenuLatLng = useCallback((lat: number, lng: number) => {
+    setRightClickPinLatLng({ lat, lng });
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -466,8 +1120,12 @@ export function MapView({
   }, []);
 
   return (
-    <div className="map-view-wrap">
-      <div className="map-view-container">
+    <div className={`map-view-wrap${embedded ? " map-view-wrap--embedded" : ""}`}>
+      <div
+        className="map-view-container"
+        data-map-contextmenu-lat={rightClickPinLatLng != null ? String(rightClickPinLatLng.lat) : undefined}
+        data-map-contextmenu-lng={rightClickPinLatLng != null ? String(rightClickPinLatLng.lng) : undefined}
+      >
         <MapContainer
           key={`${mapCenter[0]}-${mapCenter[1]}-${mapZoom}`}
           center={mapCenter}
@@ -581,7 +1239,18 @@ export function MapView({
             onPreviewChange={setSatellitePreviewBounds}
             onSelectionChange={setSatelliteSelectionBounds}
           />
-          {tacticalLayerVisibility.network.coverageCircles &&
+          <MapDoubleClickMapMarkerPlacement
+            satelliteDrawModeEnabled={satelliteDrawModeEnabled}
+            onDoubleClickLatLng={(lat, lng) => handleRequestMapMarkerPlacement(lat, lng)}
+          />
+          <MapRightClickPinPlacementEvents
+            satelliteDrawModeEnabled={satelliteDrawModeEnabled}
+            onContextMenuLatLng={handleMapContextMenuLatLng}
+          />
+          <MapCursorProbe onCursorLatLng={setCursorLatLng} />
+          <MapLeafletDrawToolbar onDrawingSaved={handleDrawingSaved} />
+          {tacticalLayerVisibility.activeFamily === "network" &&
+            tacticalLayerVisibility.network.coverageCircles &&
             tacticalMeshNodeLocations.map((node) => (
               <Circle
                 key={`tactical-coverage-${node.node_id}`}
@@ -596,7 +1265,9 @@ export function MapView({
                 }}
               />
             ))}
-          {tacticalLayerVisibility.network.links && meshNodeLinkPositions.length >= 2 && (
+          {tacticalLayerVisibility.activeFamily === "network" &&
+            tacticalLayerVisibility.network.links &&
+            meshNodeLinkPositions.length >= 2 && (
             <Polyline
               positions={meshNodeLinkPositions}
               pathOptions={{
@@ -607,7 +1278,8 @@ export function MapView({
               }}
             />
           )}
-          {tacticalLayerVisibility.network.nodes &&
+          {tacticalLayerVisibility.activeFamily === "network" &&
+            tacticalLayerVisibility.network.nodes &&
             tacticalMeshNodeLocations.map((node) => (
               <Marker key={`tactical-mesh-node-${node.node_id}`} position={[node.lat, node.lon]} icon={meshNodeMarkerIcon}>
                 <Popup>
@@ -618,21 +1290,49 @@ export function MapView({
             ))}
           {tacticalPointsOfInterest
             .filter((point) => {
-              const kind = parseTacticalResourceKind(point.notes);
-              return tacticalLayerVisibility.resources[kind];
+              const classification = classifyTacticalPoint(point.notes);
+              if (tacticalLayerVisibility.activeFamily === "network") {
+                return classification.bucket === "network_pin";
+              }
+              if (classification.bucket === "network_pin") {
+                return false;
+              }
+              if (classification.bucket === "custom_pin") {
+                return tacticalLayerVisibility.customPins;
+              }
+              return tacticalLayerVisibility.resources[classification.kind];
             })
             .map((point) => {
               const kind = parseTacticalResourceKind(point.notes);
-              const notesBody = stripResourceDirectiveFromNotes(point.notes);
+              const notesBody = stripTacticalNotesBody(point.notes);
+              const lucideName = parseTacticalLucideIconName(point.notes);
+              const lucideIcon = lucideName != null ? getTacticalLucideMarkerIcon(lucideName) : null;
+              const markerIcon = lucideIcon ?? tacticalResourceIcons[kind];
               return (
                 <Marker
                   key={`tactical-resource-${point.id}`}
                   position={[point.lat, point.lon]}
-                  icon={tacticalResourceIcons[kind]}
+                  icon={markerIcon}
                 >
                   <Popup>
                     <strong>{point.name}</strong>
                     {notesBody.length > 0 ? <p>{notesBody}</p> : null}
+                    <div className="map-popup-actions">
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => handleBroadcastTacticalPoi(point.id)}
+                      >
+                        Broadcast to Mesh
+                      </button>{" "}
+                      <button
+                        type="button"
+                        className="map-popup-remove"
+                        onClick={() => handleDeleteTacticalPoi(point.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </Popup>
                 </Marker>
               );
@@ -649,10 +1349,115 @@ export function MapView({
                 </Popup>
               </Marker>
             ))}
-          <AddMarkerOnClick onAdd={(lat, lon) => handleAddAt(lat, lon)} />
+          {mapDrawings.map((drawing) => (
+            <PersistedDrawingGeoJsonLayerReadOnly key={`persisted-drawing-${drawing.id}`} drawing={drawing} />
+          ))}
+          {mapMarkers.map((marker) => (
+            <Marker
+              key={`map-marker-${marker.id}`}
+              position={[marker.lat, marker.lng]}
+              icon={getMapMarkerCategoryIcon(marker.category)}
+            >
+              <Popup>
+                <strong>{marker.title}</strong>
+                <p className="map-marker-popup-category">Category: {normalizeMapMarkerCategory(marker.category)}</p>
+                {marker.description.trim().length > 0 ? <p>{marker.description}</p> : null}
+                <div className="map-popup-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => handleBroadcastMapMarker(marker.id)}
+                  >
+                    Broadcast to Mesh
+                  </button>{" "}
+                  <button
+                    type="button"
+                    className="map-popup-remove"
+                    onClick={() => handleDeleteMapMarker(marker.id)}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </Popup>
+            </Marker>
+          ))}
+          {activePeers.map((peer) => (
+            <Marker
+              key={`active-peer-${peer.node_id}`}
+              position={[peer.latitude, peer.longitude]}
+              icon={livePeerMarkerIcon}
+            >
+              <Popup>
+                <strong>Peer {peer.node_id}</strong>
+                <p>
+                  Last seen:{" "}
+                  {Number.isNaN(new Date(peer.last_seen_at).getTime())
+                    ? peer.last_seen_at
+                    : new Date(peer.last_seen_at).toLocaleString()}
+                </p>
+              </Popup>
+            </Marker>
+          ))}
         </MapContainer>
+        <div className="map-view-floating-stack">
+          <div className="glass-panel map-coordinate-hud">
+            <div className="map-coordinate-hud-header">
+              <span className="map-coordinate-hud-title">Position</span>
+              <button
+                type="button"
+                className="map-coordinate-hud-toggle"
+                onClick={() => setHudShowDd((v) => !v)}
+                title={hudShowDd ? "Show MGRS" : "Show decimal / UTM"}
+              >
+                {hudShowDd ? "DD / UTM" : "MGRS"}
+              </button>
+            </div>
+            {!cursorLatLng ? (
+              <p className="map-coordinate-hud-muted">Move the cursor over the map…</p>
+            ) : !coordHud ? (
+              <p className="map-coordinate-hud-muted">Resolving…</p>
+            ) : hudShowDd ? (
+              <div className="map-coordinate-hud-body">
+                <div className="map-coordinate-hud-line">{coordHud.decimal_degrees}</div>
+                <div className="map-coordinate-hud-sub">{coordHud.utm}</div>
+              </div>
+            ) : (
+              <div className="map-coordinate-hud-body map-coordinate-hud-mgrs">{coordHud.mgrs}</div>
+            )}
+          </div>
+          {mapDrawings.length > 0 ? (
+            <div className="glass-panel map-drawings-list">
+              <div className="map-drawings-list-title">Saved drawings</div>
+              <ul className="map-drawings-list-ul">
+                {mapDrawings.map((d) => (
+                  <li key={d.id} className="map-drawings-list-item">
+                    <span className="map-drawings-list-label">
+                      {d.feature_type} · {new Date(d.created_at).toLocaleString()}
+                    </span>
+                    <button type="button" className="map-drawings-list-delete" onClick={() => handleDeleteDrawing(d.id)}>
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+        <MapMarkerPlacementModal
+          open={pendingMapMarkerPlacement !== null}
+          latLng={pendingMapMarkerPlacement}
+          onClose={() => setPendingMapMarkerPlacement(null)}
+          onSave={handleSaveMapMarkerFromModal}
+        />
+        <PoiDetailsModal
+          open={rightClickPinLatLng !== null}
+          latLng={rightClickPinLatLng}
+          onClose={() => setRightClickPinLatLng(null)}
+          onSave={onAddTacticalPoiPin}
+        />
         <TacticalSidebar
-          onVisibilityStateChange={setTacticalLayerVisibility}
+          initialVisibilityState={tacticalLayerVisibility}
+          onVisibilityStateChange={onTacticalLayerVisibilityChange}
           onTacticalDataImported={onReloadTacticalMapLayers}
         />
         <MapSettingsPopover
@@ -677,47 +1482,90 @@ export function MapView({
         />
       </div>
 
-      <header className="map-view-header">
-        <button type="button" className="map-view-back" onClick={onClose} aria-label="Back to chat">
-          ← Back
-        </button>
-        <h2 className="map-view-title">Map</h2>
-        {onOpenOfflineMapManager !== undefined && (
-          <div className="map-view-header-actions">
-            <button
-              type="button"
-              className="map-view-archives-btn"
-              onClick={onOpenOfflineMapManager}
-              title="Catalog, downloads, and regional Protomaps extracts"
-              aria-label="Open map archive manager"
-            >
-              Map archives…
+      {!embedded ? (
+        <header className="map-view-header">
+          {onClose !== undefined ? (
+            <button type="button" className="map-view-back" onClick={onClose} aria-label="Back to chat">
+              ← Back
             </button>
-          </div>
-        )}
-      </header>
+          ) : null}
+          <h2 className="map-view-title">Map</h2>
+          {onOpenOfflineMapManager !== undefined ? (
+            <div className="map-view-header-actions">
+              <button
+                type="button"
+                className="map-view-archives-btn"
+                onClick={onOpenOfflineMapManager}
+                title="Catalog, downloads, and regional Protomaps extracts"
+                aria-label="Open map archive manager"
+              >
+                Map archives…
+              </button>
+            </div>
+          ) : null}
+        </header>
+      ) : null}
+      {embedded && onOpenOfflineMapManager !== undefined ? (
+        <div className="map-view-floating-archives">
+          <button
+            type="button"
+            className="map-view-archives-btn"
+            onClick={onOpenOfflineMapManager}
+            title="Catalog, downloads, and regional Protomaps extracts"
+            aria-label="Open map archive manager"
+          >
+            Map archives…
+          </button>
+        </div>
+      ) : null}
 
-      <div className={`map-view-chat-zone ${mapChatMessage ? "map-view-chat-zone-with-response" : ""}`}>
+      <div
+        className={[
+          "map-view-chat-zone",
+          embedded ? "map-view-chat-zone--embedded" : "",
+          mapChatMessage ? "map-view-chat-zone-with-response" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
         {mapChatMessage && (
           <div className="map-view-response-box">
             <p className="map-view-response-text">{mapChatMessage}</p>
           </div>
         )}
-        <div className="map-view-chat-bar">
+        <form
+          className="map-view-chat-bar"
+          onSubmit={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onMapChatSend();
+          }}
+        >
           <input
             type="text"
             className="map-chat-input"
             placeholder="Ask about the map, e.g. “mark my location”…"
             value={mapChatInput}
             onChange={(e) => setMapChatInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), onMapChatSend())}
+            onKeyDown={(e) => {
+              // Leaflet enables keyboard panning on the map; stop Enter/Escape from bubbling so submit works here.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.stopPropagation();
+                if ((e.nativeEvent as KeyboardEvent).isComposing) return;
+              }
+            }}
             disabled={mapChatSending}
             aria-label="Map chat input"
           />
-          <button type="button" className="map-chat-send" onClick={onMapChatSend} disabled={mapChatSending || !mapChatInput.trim()} aria-label="Send">
+          <button
+            type="submit"
+            className="map-chat-send"
+            disabled={mapChatSending || !mapChatInput.trim()}
+            aria-label="Send"
+          >
             →
           </button>
-        </div>
+        </form>
       </div>
     </div>
   );

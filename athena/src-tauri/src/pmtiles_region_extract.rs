@@ -14,7 +14,8 @@ pub const PMTILES_REGION_EXTRACT_COMPLETE_EVENT: &str = "pmtiles_region_extract_
 pub const PMTILES_REGION_EXTRACT_ERROR_EVENT: &str = "pmtiles_region_extract_error";
 
 /// Remote clustered PMTiles archive passed to `pmtiles extract` (Source Cooperative / Protomaps OpenStreetMap v3).
-const PROTOMAPS_SOURCE_URL: &str = "https://data.source.coop/protomaps/openstreetmap/tiles/v3.pmtiles";
+const PROTOMAPS_SOURCE_URL: &str =
+    "https://data.source.coop/protomaps/openstreetmap/tiles/v3.pmtiles";
 
 /// WGS84 mean Earth radius in statute miles (aligned with `geographicBoundingBox.ts`).
 const EARTH_MEAN_RADIUS_MILES: f64 = 3958.7613;
@@ -47,8 +48,14 @@ pub struct PmtilesRegionExtractErrorPayload {
     pub message: String,
 }
 
-fn validate_bounding_box(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> Result<(), String> {
-    if !min_lon.is_finite() || !min_lat.is_finite() || !max_lon.is_finite() || !max_lat.is_finite() {
+fn validate_bounding_box(
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+) -> Result<(), String> {
+    if !min_lon.is_finite() || !min_lat.is_finite() || !max_lon.is_finite() || !max_lat.is_finite()
+    {
         return Err("Bounding box coordinates must be finite numbers.".to_string());
     }
     if min_lon < -180.0 || max_lon > 180.0 {
@@ -67,7 +74,12 @@ fn validate_bounding_box(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64)
 }
 
 /// Ensures the bbox does not exceed the same ~100 mi effective radius enforced in the frontend.
-fn validate_bounding_box_extent_miles(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> Result<(), String> {
+fn validate_bounding_box_extent_miles(
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+) -> Result<(), String> {
     let center_lat = (min_lat + max_lat) / 2.0;
     let center_lat_rad = center_lat.to_radians();
     let half_lat_deg = (max_lat - min_lat) / 2.0;
@@ -140,9 +152,7 @@ pub async fn extract_pmtiles_region(
         .ok_or("Output path contains characters that cannot be passed to the pmtiles process.")?
         .to_string();
 
-    let bbox_argument = format!(
-        "--bbox={min_lon:.8},{min_lat:.8},{max_lon:.8},{max_lat:.8}"
-    );
+    let bbox_argument = format!("--bbox={min_lon:.8},{min_lat:.8},{max_lon:.8},{max_lat:.8}");
 
     let app_handle = app.clone();
     let job_id_task = job_id.clone();

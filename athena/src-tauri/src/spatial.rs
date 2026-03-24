@@ -69,7 +69,17 @@ struct SpatialNearbyRow {
 
 fn tactical_point_category_label(notes: &str) -> String {
     let trimmed = notes.trim();
-    if let Some(at) = trimmed.find('@') {
+    if let Some(rest) = trimmed.strip_prefix("@icon:") {
+        let icon: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if icon.is_empty() {
+            "Custom pin".to_string()
+        } else {
+            format!("Pin ({icon})")
+        }
+    } else if let Some(at) = trimmed.find('@') {
         let after = &trimmed[at + 1..];
         let token: String = after
             .chars()
@@ -226,10 +236,20 @@ mod tests {
 
     #[test]
     fn spatial_keywords_detect_common_phrases() {
-        assert!(super::user_query_suggests_spatial_context("Where is the nearest water?"));
-        assert!(super::user_query_suggests_spatial_context("How far to the map marker?"));
-        assert!(super::user_query_suggests_spatial_context("Distance to base"));
-        assert!(super::user_query_suggests_spatial_context("Show tactical overview"));
-        assert!(!super::user_query_suggests_spatial_context("Summarize yesterday's notes."));
+        assert!(super::user_query_suggests_spatial_context(
+            "Where is the nearest water?"
+        ));
+        assert!(super::user_query_suggests_spatial_context(
+            "How far to the map marker?"
+        ));
+        assert!(super::user_query_suggests_spatial_context(
+            "Distance to base"
+        ));
+        assert!(super::user_query_suggests_spatial_context(
+            "Show tactical overview"
+        ));
+        assert!(!super::user_query_suggests_spatial_context(
+            "Summarize yesterday's notes."
+        ));
     }
 }

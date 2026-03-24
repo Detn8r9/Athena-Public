@@ -13,6 +13,7 @@ Run all npm/cargo commands from **this directory** (`athena/`).
 | **`scripts/`** | Icon tooling (`squircle-mask.mjs`, `make-icon-source.mjs`) |
 | **`public/`** | Static assets served by Vite |
 | **`ATHENA_PROJECT_REFERENCE.md`** | Full app reference; **compiled into Rust** for the **`/athena`** chat prefix — keep in sync with real behavior |
+| **`docs/THEMES.md`** | **Master theme guide** — palettes (`data-theme`), personas, Fallout CRT, survival manual vellum, night vision, Theme Studio FX, CSS variables |
 
 ## Repo-wide docs
 

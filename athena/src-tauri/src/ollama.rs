@@ -1,5 +1,6 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::SyncSender;
 use std::time::{Duration, Instant};
@@ -78,11 +79,20 @@ pub struct ModelInfo {
     pub size_estimate: u32,
 }
 
+/// Inference options forwarded to Ollama's JSON `options` object (`/api/chat`, `/api/generate`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct ModelOptions {
+    pub temperature: f32,
+    pub num_ctx: u32,
+}
+
 #[derive(Debug, Serialize)]
 pub struct OllamaChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<ModelOptions>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -221,6 +231,39 @@ pub fn is_ollama_running() -> bool {
     false
 }
 
+/// Polls the configured Ollama HTTP endpoint after the bundled sidecar starts.
+/// Performs up to `max_attempts` GET requests to `/` with `delay_ms` between retries (no delay before the first try).
+/// Returns `true` when any request completes (including non-2xx responses that still mean the server accepted TCP/HTTP).
+pub async fn ollama_http_ready_after_sidecar(max_attempts: u32, delay_ms: u64) -> bool {
+    let root_url = format!("{}/", ollama_base_url().trim_end_matches('/'));
+    let Ok(client) = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return false;
+    };
+    for attempt in 0..max_attempts {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        if client.get(&root_url).send().await.is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
+fn try_spawn_ollama_serve(program: impl AsRef<std::ffi::OsStr>) -> bool {
+    Command::new(program.as_ref())
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
 fn ollama_binary_paths() -> Vec<&'static str> {
     #[cfg(target_os = "macos")]
     return [
@@ -235,18 +278,21 @@ fn ollama_binary_paths() -> Vec<&'static str> {
     return ["/usr/bin/ollama", "/usr/local/bin/ollama", "ollama"].to_vec();
 }
 
-pub fn try_launch_ollama_server() {
+/// Prefer `extra_paths_first` (configured or managed CLI), then well-known locations / PATH, then macOS app bundle.
+pub fn try_launch_ollama_server_with_preferences(extra_paths_first: &[std::path::PathBuf]) {
     if is_ollama_running() {
         return;
     }
+    for p in extra_paths_first {
+        if p.as_os_str().is_empty() {
+            continue;
+        }
+        if try_spawn_ollama_serve(p) {
+            return;
+        }
+    }
     for bin in ollama_binary_paths() {
-        let result = Command::new(bin)
-            .arg("serve")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        if result.is_ok() {
+        if try_spawn_ollama_serve(bin) {
             return;
         }
     }
@@ -259,6 +305,16 @@ pub fn try_launch_ollama_server() {
             .stderr(Stdio::null())
             .spawn();
     }
+}
+
+/// Used by setup helpers to validate a path before persisting it in config.
+pub fn path_looks_like_ollama_cli(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.eq_ignore_ascii_case("ollama") || n.eq_ignore_ascii_case("ollama.exe"))
+            .unwrap_or(false)
 }
 
 pub fn select_model_for_tier(available: &[ModelInfo], tier: &str) -> Option<String> {
@@ -294,13 +350,18 @@ pub fn select_model_for_tier(available: &[ModelInfo], tier: &str) -> Option<Stri
     }
 }
 
-pub fn chat(model: &str, messages: Vec<ChatMessage>) -> Result<String, String> {
+pub fn chat(
+    model: &str,
+    messages: Vec<ChatMessage>,
+    options: Option<ModelOptions>,
+) -> Result<String, String> {
     let client = blocking_client_chat()?;
     let url = format!("{}/api/chat", ollama_base_url());
     let body = OllamaChatRequest {
         model: model.to_string(),
         messages,
         stream: false,
+        options,
     };
     let resp = client
         .post(&url)
@@ -316,6 +377,7 @@ pub fn chat(model: &str, messages: Vec<ChatMessage>) -> Result<String, String> {
 async fn ollama_stream_read_lines(
     model: String,
     messages: Vec<ChatMessage>,
+    options: Option<ModelOptions>,
     tx: SyncSender<Result<Option<String>, String>>,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
@@ -327,6 +389,7 @@ async fn ollama_stream_read_lines(
         model,
         messages,
         stream: true,
+        options,
     };
 
     let response = client
@@ -379,9 +442,8 @@ async fn ollama_stream_read_lines(
                         if let Some(ref msg) = chunk.message {
                             if let Some(ref content) = msg.content {
                                 if !content.is_empty() {
-                                    tx.send(Ok(Some(content.clone()))).map_err(|_| {
-                                        "Stream channel closed.".to_string()
-                                    })?;
+                                    tx.send(Ok(Some(content.clone())))
+                                        .map_err(|_| "Stream channel closed.".to_string())?;
                                 }
                             }
                         }
@@ -430,7 +492,13 @@ async fn ollama_stream_read_lines(
     Ok(())
 }
 
-pub fn chat_stream<F, G>(model: &str, messages: Vec<ChatMessage>, on_chunk: &mut F, on_done: G) -> Result<(), String>
+pub fn chat_stream<F, G>(
+    model: &str,
+    messages: Vec<ChatMessage>,
+    on_chunk: &mut F,
+    on_done: G,
+    options: Option<ModelOptions>,
+) -> Result<(), String>
 where
     F: FnMut(&str),
     G: FnOnce(),
@@ -448,7 +516,7 @@ where
                 return;
             }
         };
-        let result = rt.block_on(ollama_stream_read_lines(model, messages, tx.clone()));
+        let result = rt.block_on(ollama_stream_read_lines(model, messages, options, tx.clone()));
         if let Err(e) = result {
             let _ = tx.send(Err(e));
         }
@@ -489,12 +557,26 @@ pub fn generate_chat_title(model: &str, first_message: &str) -> Result<String, S
         },
         ChatMessage {
             role: "user".to_string(),
-            content: format!("Generate a short title for this question or topic:\n\n{}", prompt),
+            content: format!(
+                "Generate a short title for this question or topic:\n\n{}",
+                prompt
+            ),
         },
     ];
-    let out = chat(model, messages)?;
-    let title = out.trim().trim_matches('"').chars().take(80).collect::<String>().trim().to_string();
-    Ok(if title.is_empty() { "New chat".to_string() } else { title })
+    let out = chat(model, messages, None)?;
+    let title = out
+        .trim()
+        .trim_matches('"')
+        .chars()
+        .take(80)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    Ok(if title.is_empty() {
+        "New chat".to_string()
+    } else {
+        title
+    })
 }
 
 /// Generate a one-line description of what the conversation is about. Uses non-streaming chat.
@@ -504,7 +586,13 @@ pub fn generate_chat_description(model: &str, messages: &[ChatMessage]) -> Resul
     }
     let summary: String = messages
         .iter()
-        .map(|m| format!("{}: {}", m.role, m.content.chars().take(300).collect::<String>()))
+        .map(|m| {
+            format!(
+                "{}: {}",
+                m.role,
+                m.content.chars().take(300).collect::<String>()
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
     let combined = if summary.len() > 1500 {
@@ -520,10 +608,20 @@ pub fn generate_chat_description(model: &str, messages: &[ChatMessage]) -> Resul
         },
         ChatMessage {
             role: "user".to_string(),
-            content: format!("Summarize this conversation in one short sentence:\n\n{}", combined),
+            content: format!(
+                "Summarize this conversation in one short sentence:\n\n{}",
+                combined
+            ),
         },
     ];
-    let out = chat(model, msgs)?;
-    let desc = out.trim().trim_matches('"').chars().take(200).collect::<String>().trim().to_string();
+    let out = chat(model, msgs, None)?;
+    let desc = out
+        .trim()
+        .trim_matches('"')
+        .chars()
+        .take(200)
+        .collect::<String>()
+        .trim()
+        .to_string();
     Ok(desc)
 }

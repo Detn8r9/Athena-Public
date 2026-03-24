@@ -36,7 +36,10 @@ pub fn get_sun_times(lat: f64, lon: f64) -> Result<SunTimes, String> {
     let sunrise = sunrise_utc.with_timezone(&Local).to_rfc3339();
     let sunset = sunset_utc.with_timezone(&Local).to_rfc3339();
 
-    Ok(SunTimes { sunrise_iso: sunrise, sunset_iso: sunset })
+    Ok(SunTimes {
+        sunrise_iso: sunrise,
+        sunset_iso: sunset,
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -45,6 +48,41 @@ pub struct BatteryState {
     pub percentage: Option<f32>,
     /// Whether the system is currently charging (or on AC power), if detectable.
     pub is_charging: Option<bool>,
+    /// Estimated minutes until empty when discharging, if the OS reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_empty_minutes: Option<u32>,
+}
+
+/// Parses `pmset -g batt` lines for `2:30 remaining` / `(no estimate)`.
+fn parse_mac_time_to_empty_minutes(line: &str) -> Option<u32> {
+    let lower = line.to_lowercase();
+    if lower.contains("(no estimate)")
+        || lower.contains("not charging")
+        || lower.contains("charged;")
+        || lower.contains("ac attached")
+    {
+        return None;
+    }
+    if !lower.contains("remaining") {
+        return None;
+    }
+    let before_remaining = line.split("remaining").next().unwrap_or("");
+    for token in before_remaining.split_whitespace().rev() {
+        let t = token.trim_matches(|c| c == '(' || c == ')' || c == ';');
+        if t.contains(':') {
+            let parts: Vec<&str> = t.split(':').collect();
+            if parts.len() == 2 {
+                if let (Ok(h), Ok(m)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                    return Some(h.saturating_mul(60).saturating_add(m));
+                }
+            } else if parts.len() == 3 {
+                if let (Ok(h), Ok(m)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                    return Some(h.saturating_mul(60).saturating_add(m));
+                }
+            }
+        }
+    }
+    None
 }
 
 fn parse_mac_battery_output(output: &str) -> BatteryState {
@@ -57,6 +95,7 @@ fn parse_mac_battery_output(output: &str) -> BatteryState {
     //  -InternalBattery-0 (id=1234567)   100%; charged; AC attached; not charging present: true
     let mut percentage: Option<f32> = None;
     let mut is_charging: Option<bool> = None;
+    let mut time_to_empty_minutes: Option<u32> = None;
 
     for line in output.lines() {
         let trimmed = line.trim();
@@ -76,10 +115,16 @@ fn parse_mac_battery_output(output: &str) -> BatteryState {
             }
 
             let lower = trimmed.to_lowercase();
-            if lower.contains("charging") || lower.contains("ac attached") || lower.contains("ac power") {
+            if lower.contains("charging")
+                || lower.contains("ac attached")
+                || lower.contains("ac power")
+            {
                 is_charging = Some(true);
             } else if lower.contains("discharging") {
                 is_charging = Some(false);
+            }
+            if time_to_empty_minutes.is_none() {
+                time_to_empty_minutes = parse_mac_time_to_empty_minutes(trimmed);
             }
         } else if trimmed.to_lowercase().contains("ac power") {
             // Header line saying "Now drawing from 'AC Power'"
@@ -87,11 +132,15 @@ fn parse_mac_battery_output(output: &str) -> BatteryState {
                 is_charging = Some(true);
             }
         }
+        if time_to_empty_minutes.is_none() {
+            time_to_empty_minutes = parse_mac_time_to_empty_minutes(trimmed);
+        }
     }
 
     BatteryState {
         percentage,
         is_charging,
+        time_to_empty_minutes,
     }
 }
 
@@ -127,11 +176,14 @@ fn read_linux_battery() -> BatteryState {
 
     let mut percentage: Option<f32> = None;
     let mut is_charging: Option<bool> = None;
+    let mut time_to_empty_minutes: Option<u32> = None;
+    let mut bat_name: Option<String> = None;
 
     for name in ["BAT0", "BAT1"] {
         if let Some((pct, ch)) = read_linux_battery_sysfs(name) {
             percentage = Some(pct);
             is_charging = ch;
+            bat_name = Some(name.to_string());
             break;
         }
     }
@@ -158,6 +210,7 @@ fn read_linux_battery() -> BatteryState {
                                 is_charging = Some(false);
                             }
                         }
+                        bat_name = Some(name.to_string());
                         break;
                     }
                 }
@@ -165,10 +218,32 @@ fn read_linux_battery() -> BatteryState {
         }
     }
 
+    if time_to_empty_minutes.is_none() {
+        if let Some(ref n) = bat_name {
+            time_to_empty_minutes = read_linux_time_to_empty_minutes(n);
+        }
+    }
+
     BatteryState {
         percentage,
         is_charging,
+        time_to_empty_minutes,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_time_to_empty_minutes(bat_name: &str) -> Option<u32> {
+    use std::fs;
+    use std::path::Path;
+    let path = Path::new("/sys/class/power_supply")
+        .join(bat_name)
+        .join("time_to_empty");
+    let s = fs::read_to_string(&path).ok()?;
+    let sec: u32 = s.trim().parse().ok()?;
+    if sec == 0 || sec == u32::MAX {
+        return None;
+    }
+    Some((sec / 60).max(1))
 }
 
 pub fn get_battery_state() -> Result<BatteryState, String> {
@@ -199,7 +274,7 @@ pub fn get_battery_state() -> Result<BatteryState, String> {
         Ok(BatteryState {
             percentage: None,
             is_charging: None,
+            time_to_empty_minutes: None,
         })
     }
 }
-

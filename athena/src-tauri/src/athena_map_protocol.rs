@@ -21,19 +21,29 @@ const MAX_SINGLE_RANGE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Chains [`tauri::Builder::register_asynchronous_uri_scheme_protocol`] for [`ATHENA_MAP_SCHEME`].
 pub fn register_with_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
-    builder.register_asynchronous_uri_scheme_protocol(ATHENA_MAP_SCHEME, |context, request, responder| {
-        let application_handle = context.app_handle().clone();
-        tauri::async_runtime::spawn(async move {
-            let response = match tauri::async_runtime::spawn_blocking(move || process_request(&application_handle, request)).await {
-                Ok(resp) => resp,
-                Err(_) => fallback_error_response(),
-            };
-            responder.respond(response);
-        });
-    })
+    builder.register_asynchronous_uri_scheme_protocol(
+        ATHENA_MAP_SCHEME,
+        |context, request, responder| {
+            let application_handle = context.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let response = match tauri::async_runtime::spawn_blocking(move || {
+                    process_request(&application_handle, request)
+                })
+                .await
+                {
+                    Ok(resp) => resp,
+                    Err(_) => fallback_error_response(),
+                };
+                responder.respond(response);
+            });
+        },
+    )
 }
 
-fn process_request<R: Runtime>(application_handle: &AppHandle<R>, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+fn process_request<R: Runtime>(
+    application_handle: &AppHandle<R>,
+    request: Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
     match request.method() {
         m if m == Method::OPTIONS => options_response(),
         m if m == Method::HEAD => serve_head(application_handle, &request),
@@ -48,7 +58,10 @@ fn process_request<R: Runtime>(application_handle: &AppHandle<R>, request: Reque
 fn options_response() -> Response<Vec<u8>> {
     Response::builder()
         .status(StatusCode::NO_CONTENT)
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
+        .header(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        )
         .header(
             header::ACCESS_CONTROL_ALLOW_METHODS,
             HeaderValue::from_static("GET, HEAD, OPTIONS"),
@@ -65,7 +78,10 @@ fn options_response() -> Response<Vec<u8>> {
         .unwrap_or_else(|_| fallback_error_response())
 }
 
-fn serve_head<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+fn serve_head<R: Runtime>(
+    application_handle: &AppHandle<R>,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
     let resolved_path = match resolve_local_archive_path(application_handle, request.uri().path()) {
         Ok(path) => path,
         Err(response) => return response,
@@ -90,21 +106,21 @@ fn serve_head<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<V
 
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
+        .header(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        )
         .header(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"))
-        .header(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(content_type),
-        )
-        .header(
-            header::CONTENT_LENGTH,
-            header_value_from_u64(file_length),
-        )
+        .header(header::CONTENT_TYPE, HeaderValue::from_static(content_type))
+        .header(header::CONTENT_LENGTH, header_value_from_u64(file_length))
         .body(Vec::new())
         .unwrap_or_else(|_| fallback_error_response())
 }
 
-fn serve_get<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+fn serve_get<R: Runtime>(
+    application_handle: &AppHandle<R>,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
     let resolved_path = match resolve_local_archive_path(application_handle, request.uri().path()) {
         Ok(path) => path,
         Err(response) => return response,
@@ -151,10 +167,7 @@ fn serve_get<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<Ve
                     .saturating_sub(range_start)
                     .saturating_add(1);
 
-                if file
-                    .seek(SeekFrom::Start(range_start))
-                    .is_err()
-                {
+                if file.seek(SeekFrom::Start(range_start)).is_err() {
                     return plain_text_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "Could not seek to the requested byte range in the archive file.",
@@ -169,23 +182,18 @@ fn serve_get<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<Ve
                     );
                 }
 
-                let content_range_value = format!(
-                    "bytes {range_start}-{range_end_inclusive}/{}",
-                    file_length
-                );
+                let content_range_value =
+                    format!("bytes {range_start}-{range_end_inclusive}/{}", file_length);
 
                 Response::builder()
                     .status(StatusCode::PARTIAL_CONTENT)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
+                    .header(
+                        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                        HeaderValue::from_static("*"),
+                    )
                     .header(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"))
-                    .header(
-                        header::CONTENT_TYPE,
-                        HeaderValue::from_static(content_type),
-                    )
-                    .header(
-                        header::CONTENT_LENGTH,
-                        header_value_from_u64(byte_count),
-                    )
+                    .header(header::CONTENT_TYPE, HeaderValue::from_static(content_type))
+                    .header(header::CONTENT_LENGTH, header_value_from_u64(byte_count))
                     .header(
                         header::CONTENT_RANGE,
                         HeaderValue::from_str(&content_range_value)
@@ -202,18 +210,15 @@ fn serve_get<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<Ve
             "This archive is too large to download without a Range header. Clients must issue ranged GET requests.",
         );
         let (mut parts, body) = response.into_parts();
-        parts.headers.insert(
-            header::ACCEPT_RANGES,
-            HeaderValue::from_static("bytes"),
-        );
-        parts.headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(content_type),
-        );
-        parts.headers.insert(
-            header::CONTENT_LENGTH,
-            header_value_from_u64(file_length),
-        );
+        parts
+            .headers
+            .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+        parts
+            .headers
+            .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+        parts
+            .headers
+            .insert(header::CONTENT_LENGTH, header_value_from_u64(file_length));
         Response::from_parts(parts, body)
     } else {
         let mut buffer = vec![0u8; file_length as usize];
@@ -226,16 +231,13 @@ fn serve_get<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<Ve
 
         Response::builder()
             .status(StatusCode::OK)
-            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
+            .header(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            )
             .header(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"))
-            .header(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(content_type),
-            )
-            .header(
-                header::CONTENT_LENGTH,
-                header_value_from_u64(file_length),
-            )
+            .header(header::CONTENT_TYPE, HeaderValue::from_static(content_type))
+            .header(header::CONTENT_LENGTH, header_value_from_u64(file_length))
             .body(buffer)
             .unwrap_or_else(|_| fallback_error_response())
     }
@@ -245,7 +247,10 @@ fn range_not_satisfiable_response(file_length: u64) -> Response<Vec<u8>> {
     let content_range_value = format!("bytes */{file_length}");
     Response::builder()
         .status(StatusCode::RANGE_NOT_SATISFIABLE)
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
+        .header(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        )
         .header(
             header::CONTENT_RANGE,
             HeaderValue::from_str(&content_range_value)
@@ -311,7 +316,9 @@ fn parse_single_byte_range(header_text: &str, file_length: u64) -> Result<(u64, 
 
     let span = end_inclusive.saturating_sub(start).saturating_add(1);
     if span > MAX_SINGLE_RANGE_BYTES {
-        end_inclusive = start.saturating_add(MAX_SINGLE_RANGE_BYTES).saturating_sub(1);
+        end_inclusive = start
+            .saturating_add(MAX_SINGLE_RANGE_BYTES)
+            .saturating_sub(1);
     }
 
     if start >= file_length {
@@ -417,7 +424,10 @@ fn plain_text_response(status: StatusCode, message: &str) -> Response<Vec<u8>> {
     let body = message.as_bytes().to_vec();
     Response::builder()
         .status(status)
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
+        .header(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        )
         .header(
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/plain; charset=utf-8"),
@@ -456,13 +466,13 @@ mod tests {
         let (start, end_inclusive) =
             parse_single_byte_range(&header, file_length).expect("valid range");
         assert_eq!(start, 0);
-        let span = end_inclusive
-            .saturating_sub(start)
-            .saturating_add(1);
+        let span = end_inclusive.saturating_sub(start).saturating_add(1);
         assert_eq!(span, MAX_SINGLE_RANGE_BYTES);
         assert_eq!(
             end_inclusive,
-            start.saturating_add(MAX_SINGLE_RANGE_BYTES).saturating_sub(1)
+            start
+                .saturating_add(MAX_SINGLE_RANGE_BYTES)
+                .saturating_sub(1)
         );
     }
 }

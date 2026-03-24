@@ -7,6 +7,25 @@
     "core:default",
     "opener:default",
     "dialog:default",
-    "macos-permissions:default"
+    "macos-permissions:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "ollama",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-kill",
+      "allow": [
+        {
+          "name": "ollama",
+          "sidecar": true
+        }
+      ]
+    }
   ]
 }

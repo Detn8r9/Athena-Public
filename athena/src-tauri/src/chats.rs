@@ -151,7 +151,11 @@ pub fn save_chat(
 
     let chat = SavedChat {
         id: id.clone(),
-        title: if title.is_empty() { "New chat".to_string() } else { title },
+        title: if title.is_empty() {
+            "New chat".to_string()
+        } else {
+            title
+        },
         description,
         messages,
         context_summary: existing_summary,
@@ -199,7 +203,10 @@ pub fn update_chat_context_summary(
     };
     // Keep last ~600 chars so follow-up retrieval has enough context (e.g. address, doc names).
     chat.context_summary = Some(if updated.len() > 600 {
-        updated.chars().skip(updated.len() - 600).collect::<String>()
+        updated
+            .chars()
+            .skip(updated.len() - 600)
+            .collect::<String>()
     } else {
         updated
     });

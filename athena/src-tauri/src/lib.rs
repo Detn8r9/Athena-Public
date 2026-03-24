@@ -1,65 +1,108 @@
+mod athena_map_protocol;
+mod athena_mbtiles_tile_protocol;
 mod chats;
 mod chunking;
 mod config;
 mod db;
-mod spatial;
 mod embeddings;
+mod inference;
 mod indexer;
 mod kiwix;
+mod kiwix_tools;
 mod learner;
-mod maps;
-mod athena_map_protocol;
-mod athena_mbtiles_tile_protocol;
+#[cfg(target_os = "macos")]
+mod macos_window;
 mod map_manager_catalog;
 mod map_manager_download;
-mod pmtiles_region_extract;
-mod satellite_region_download;
+mod map_manager;
+mod maps;
 mod mbtiles_io;
-mod pmtiles_io;
-mod tile_pack;
-mod mesh_radio;
-mod mesh_listener;
 mod mesh_ai;
+mod mesh_listener;
+mod mesh_logbook;
+mod mesh_radio;
+mod moondream;
 mod ocr;
+mod offline_routing;
 mod ollama;
+mod ollama_setup;
+mod openai_chat;
+mod pmtiles_io;
+mod pmtiles_region_extract;
 mod quarantine;
-mod theme;
+mod rag_indexer;
+mod radio_manager;
+mod satellite_region_download;
+mod spatial;
 mod system;
-mod vector_index;
-mod watcher;
+mod telemetry;
+mod theme;
+mod tile_pack;
+mod user_profile;
 #[cfg(feature = "piper-tts")]
 mod tts;
+mod vector_index;
+mod watcher;
 
 /// Re-exported for integration tests (`tests/`) and external callers embedding `athena_lib`.
 pub use db::Database;
-pub use ollama::{chat_stream, ChatMessage};
+pub use ollama::{chat_stream, ChatMessage, ModelOptions};
 
 use crossbeam_channel::Sender;
 use std::collections::HashSet;
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, RunEvent};
+use tauri_plugin_shell::process::CommandChild;
+use tauri_plugin_shell::ShellExt;
 
+use chats::{
+    delete_chat as delete_saved_chat, get_chat as get_saved_chat, list_chats as list_saved_chats,
+    save_chat as save_saved_chat, update_chat_context_summary as update_saved_chat_context_summary,
+    update_chat_metadata as update_saved_chat_metadata, ChatSummary, SavedChat, SavedMessage,
+};
 use config::{load_config, save_config, AppConfig, CustomTheme};
 use db::{
-    extract_keywords, ChunkEmbedding, IndexedFile, IndexStats, RagCounts,
+    extract_keywords, ChunkEmbedding, IndexStats, IndexedFile, LogbookEntry, RagCounts,
     TacticalMeshNodeLocation, TacticalPointOfInterest,
 };
-use chats::{get_chat as get_saved_chat, list_chats as list_saved_chats, save_chat as save_saved_chat, update_chat_context_summary as update_saved_chat_context_summary, update_chat_metadata as update_saved_chat_metadata, delete_chat as delete_saved_chat, ChatSummary, SavedChat, SavedMessage};
-use kiwix::{scan_kiwix_zim_files as kiwix_scan_zim_files, DiscoveredZim};
-use ollama::{
-    get_system_specs as get_specs, get_available_models, is_ollama_running, max_memory_messages_for_ram,
-    select_model_for_tier, try_launch_ollama_server, chat,
-    generate_chat_title as ollama_generate_chat_title, generate_chat_description as ollama_generate_chat_description,
-    ModelInfo, SystemSpecs,
+use inference::{
+    chat_stream_unified, chat_unified, ensure_inference_ready, generate_chat_description_unified,
+    generate_chat_title_unified, load_models_for_inference,
 };
-use watcher::{run_watcher_loop, WatchCommand};
+use kiwix::{scan_kiwix_zim_files as kiwix_scan_zim_files, DiscoveredZim};
 use learner::build_learned_notes_for_all_text;
+use ollama::{
+    get_available_models, get_system_specs as get_specs, is_ollama_running,
+    max_memory_messages_for_ram, path_looks_like_ollama_cli, select_model_for_tier,
+    try_launch_ollama_server_with_preferences, ModelInfo, SystemSpecs,
+};
+use radio_manager::RadioState;
+use watcher::{run_watcher_loop, WatchCommand};
 
 pub struct AppState {
-    pub db: Arc<Database>,
+    /// Shared SQLite handle; must be exclusive during restore/replace of `athena_index.db`.
+    pub db: Arc<Mutex<Database>>,
     pub watcher_tx: Sender<WatchCommand>,
     pub active_offline_map_downloads: Arc<Mutex<HashSet<String>>>,
+}
+
+/// Bundled `ollama serve` sidecar process; stdout/stderr are drained asynchronously; killed on [`RunEvent::Exit`].
+struct OllamaState(Mutex<Option<CommandChild>>);
+
+fn kill_ollama_sidecar_if_running(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<OllamaState>() else {
+        return;
+    };
+    let Ok(mut guard) = state.0.lock() else {
+        return;
+    };
+    if let Some(child) = guard.take() {
+        if let Err(e) = child.kill() {
+            eprintln!("[athena] failed to stop Ollama sidecar: {e}");
+        }
+    }
 }
 
 #[tauri::command]
@@ -94,10 +137,112 @@ async fn send_mesh_message(
         .await
 }
 
+static LOGBOOK_ENTRY_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[tauri::command]
+fn logbook_list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<LogbookEntry>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_logbook_entries()
+}
+
+#[tauri::command]
+async fn logbook_add_entry(
+    body: String,
+    state: tauri::State<'_, AppState>,
+    control: tauri::State<'_, mesh_listener::MeshRadioControl>,
+) -> Result<LogbookEntry, String> {
+    let body = body.trim().to_string();
+    if body.is_empty() {
+        return Err("Note is empty.".to_string());
+    }
+    if body.len() > 32_000 {
+        return Err("Note is too long (32k character limit).".to_string());
+    }
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let id = format!(
+        "lb-{}-{}",
+        created_at,
+        LOGBOOK_ENTRY_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert_logbook_local(&id, &body, created_at)?;
+    let entry = LogbookEntry {
+        id,
+        body,
+        created_at,
+        from_node_id: None,
+    };
+    if mesh_listener::mesh_radio_is_connected() {
+        let wire =
+            mesh_logbook::wire_from_logbook_entry(&entry, mesh_listener::mesh_local_node_id());
+        if let Ok(packet) = mesh_logbook::encode_logbook_packet(&wire) {
+            let _ = control
+                .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+                .await;
+        }
+    }
+    Ok(entry)
+}
+
+#[tauri::command]
+fn logbook_delete_entry(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .delete_logbook_entry(&id.trim())
+}
+
+#[tauri::command]
+async fn logbook_broadcast_entry(
+    id: String,
+    control: tauri::State<'_, mesh_listener::MeshRadioControl>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let id = id.trim().to_string();
+    let entry = state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get_logbook_entry(&id)?
+        .ok_or_else(|| "Log entry not found.".to_string())?;
+    let wire = mesh_logbook::wire_from_logbook_entry(&entry, mesh_listener::mesh_local_node_id());
+    let packet = mesh_logbook::encode_logbook_packet(&wire)?;
+    control
+        .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+        .await
+}
+
+#[tauri::command]
+fn logbook_mesh_max_body_bytes() -> usize {
+    mesh_logbook::max_body_utf8_bytes_for_mesh()
+}
+
+#[tauri::command]
+async fn logbook_request_mesh_sync(
+    control: tauri::State<'_, mesh_listener::MeshRadioControl>,
+) -> Result<(), String> {
+    let packet = mesh_logbook::encode_logbook_sync_request()?;
+    control
+        .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+        .await
+}
+
 #[tauri::command]
 fn get_mesh_ai_auto_reply(app: tauri::AppHandle) -> Result<bool, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(load_config(&app_data_dir).mesh_ai_auto_reply.unwrap_or(true))
+    Ok(load_config(&app_data_dir)
+        .mesh_ai_auto_reply
+        .unwrap_or(true))
 }
 
 #[tauri::command]
@@ -120,7 +265,9 @@ fn get_watch_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn get_theme_config(app: tauri::AppHandle) -> Result<(Option<String>, Option<String>, Vec<CustomTheme>), String> {
+fn get_theme_config(
+    app: tauri::AppHandle,
+) -> Result<(Option<String>, Option<String>, Vec<CustomTheme>), String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let cfg = load_config(&app_data_dir);
     Ok((cfg.theme_id, cfg.personality_id, cfg.custom_themes))
@@ -141,15 +288,50 @@ fn set_theme_config(
     save_config(&app_data_dir, &cfg)
 }
 
+/// Toggle fullscreen. On macOS we use **simple fullscreen** (not native Spaces fullscreen) so it
+/// stays compatible with stripping `FullScreenPrimary` (which avoids a green-button AppKit crash).
 #[tauri::command]
-fn set_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> Result<(), String> {
-    let window = app.get_webview_window("main").ok_or("Main window not found")?;
-    window.set_fullscreen(fullscreen).map_err(|e| e.to_string())
+async fn set_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
+    let _ = window.set_title("Athena");
+
+    #[cfg(target_os = "macos")]
+    {
+        window
+            .set_simple_fullscreen(fullscreen)
+            .map_err(|e| e.to_string())?;
+        if let Some(state) = app.try_state::<macos_window::MacosSimpleFullscreenState>() {
+            state.0.store(fullscreen, Ordering::SeqCst);
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.set_fullscreen(fullscreen).map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]
 fn is_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
-    let window = app.get_webview_window("main").ok_or("Main window not found")?;
+    #[cfg(target_os = "macos")]
+    if let Some(state) = app.try_state::<macos_window::MacosSimpleFullscreenState>() {
+        return Ok(state.0.load(Ordering::SeqCst));
+    }
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
     window.is_fullscreen().map_err(|e| e.to_string())
 }
 
@@ -163,39 +345,36 @@ fn set_watch_folder(app: tauri::AppHandle, path: Option<String>) -> Result<(), S
     let mut config = load_config(&app_data_dir);
     config.watch_folder = path.clone();
     save_config(&app_data_dir, &config)?;
-    let kiwix_dir = kiwix_downloads_dir(&app_data_dir).to_string_lossy().to_string();
+    let kiwix_dir = kiwix_downloads_dir(&app_data_dir)
+        .to_string_lossy()
+        .to_string();
     std::fs::create_dir_all(&kiwix_dir).map_err(|e| e.to_string())?;
     let folders: Vec<String> = match path {
         Some(p) => vec![p, kiwix_dir],
         None => vec![kiwix_dir],
     };
     let state = app.state::<AppState>();
-    state.watcher_tx.send(WatchCommand::SetFolders(folders)).map_err(|e| e.to_string())?;
+    state
+        .watcher_tx
+        .send(WatchCommand::SetFolders(folders))
+        .map_err(|e| e.to_string())?;
 
     // Kick off "learned notes" generation in the background so the assistant can retrieve distilled facts.
     let db = Arc::clone(&state.db);
     std::thread::spawn(move || {
-        if !is_ollama_running() {
-            return;
-        }
         let app_data_dir = match app.path().app_data_dir() {
             Ok(d) => d,
             Err(_) => return,
         };
         let config = load_config(&app_data_dir);
-        let models = match get_available_models() {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        if models.is_empty() {
+        let models = load_models_for_inference(&config);
+        if ensure_inference_ready(&config, &models).is_err() {
             return;
         }
-        let tier: String = config.model_override.clone().unwrap_or_else(|| get_specs().recommended_tier);
-        let model_name = match select_model_for_tier(&models, &tier) {
-            Some(m) => m,
-            None => return,
+        let _ = match db.lock() {
+            Ok(guard) => build_learned_notes_for_all_text(&*guard, &config, &models, 50),
+            Err(_) => return,
         };
-        let _ = build_learned_notes_for_all_text(db.as_ref(), &model_name, 50);
     });
 
     Ok(())
@@ -203,26 +382,25 @@ fn set_watch_folder(app: tauri::AppHandle, path: Option<String>) -> Result<(), S
 
 #[tauri::command]
 fn build_library_knowledge(app: tauri::AppHandle, limit: Option<u32>) -> Result<u32, String> {
-    if !is_ollama_running() {
-        return Err("Ollama is not running. Start Ollama first to build knowledge notes.".to_string());
-    }
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let config = load_config(&app_data_dir);
-    let models = get_available_models().map_err(|e| e.to_string())?;
-    if models.is_empty() {
-        return Err("No models found in Ollama. Install one first (e.g. ollama run llama3.2:3b).".to_string());
-    }
-    let tier: String = config.model_override.clone().unwrap_or_else(|| get_specs().recommended_tier);
-    let model_name = select_model_for_tier(&models, &tier).ok_or("No suitable model found for the selected tier.")?;
+    let models = load_models_for_inference(&config);
+    ensure_inference_ready(&config, &models)?;
     let state = app.state::<AppState>();
-    let made = build_learned_notes_for_all_text(state.db.as_ref(), &model_name, limit.unwrap_or(200) as usize)?;
+    let made = build_learned_notes_for_all_text(
+        &*state.db.lock().map_err(|e| e.to_string())?,
+        &config,
+        &models,
+        limit.unwrap_or(200) as usize,
+    )?;
     Ok(made as u32)
 }
 
 #[tauri::command]
 fn get_indexed_files(app: tauri::AppHandle) -> Result<Vec<IndexedFile>, String> {
     let state = app.state::<AppState>();
-    state.db.get_all()
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    g.get_all()
 }
 
 /// Manually ingest one or more files into the index. Corrupted or unreadable files
@@ -234,7 +412,7 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
     }
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let state = app.state::<AppState>();
-    let db = &state.db;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     for p in paths {
         let path_buf = std::path::PathBuf::from(&p);
         let path = path_buf.as_path();
@@ -244,7 +422,8 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
         if !indexer::is_supported_path(path) {
             continue;
         }
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| indexer::index_file(path)));
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| indexer::index_file(path)));
         match result {
             Ok(Some(data)) => {
                 let _ = db.upsert_file(
@@ -258,7 +437,7 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
                 );
                 if let Some(ref text) = data.text_content {
                     if !text.trim().is_empty() {
-                        let _ = vector_index::index_document(db, &p, text);
+                        let _ = vector_index::index_document(&*db, &p, text);
                     }
                 }
             }
@@ -294,7 +473,8 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
 #[tauri::command]
 fn get_index_stats(app: tauri::AppHandle) -> Result<IndexStats, String> {
     let state = app.state::<AppState>();
-    state.db.get_stats()
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    g.get_stats()
 }
 
 #[derive(serde::Serialize)]
@@ -309,7 +489,11 @@ fn get_rag_stats(app: tauri::AppHandle) -> Result<RagStats, String> {
     let RagCounts {
         document_count,
         chunk_count,
-    } = state.db.get_rag_counts()?;
+    } = state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get_rag_counts()?;
     Ok(RagStats {
         document_count,
         chunk_count,
@@ -340,7 +524,7 @@ struct RebuildProgress {
 #[tauri::command]
 async fn rebuild_vector_index(app: tauri::AppHandle) -> Result<RebuildVectorIndexResult, String> {
     let state = app.state::<AppState>();
-    let all = state.db.get_all()?;
+    let all = state.db.lock().map_err(|e| e.to_string())?.get_all()?;
     let files_with_text: Vec<IndexedFile> = all
         .into_iter()
         .filter(|r| {
@@ -353,12 +537,17 @@ async fn rebuild_vector_index(app: tauri::AppHandle) -> Result<RebuildVectorInde
     let app_handle = app.clone();
     let db = Arc::clone(&state.db);
     let result = tauri::async_runtime::spawn_blocking(move || {
+        let guard = db.lock().map_err(|e| e.to_string())?;
+        let db_ref = &*guard;
         let mut processed = 0u32;
         let mut failed = 0u32;
         let mut failed_files: Vec<RebuildFailedFile> = Vec::new();
         for row in &files_with_text {
-            let text = row.text_content.as_deref().expect("filter guarantees non-null text_content");
-            match vector_index::index_document(db.as_ref(), &row.path, text) {
+            let text = row
+                .text_content
+                .as_deref()
+                .expect("filter guarantees non-null text_content");
+            match vector_index::index_document(db_ref, &row.path, text) {
                 Ok(()) => processed += 1,
                 Err(e) => {
                     failed += 1;
@@ -378,6 +567,7 @@ async fn rebuild_vector_index(app: tauri::AppHandle) -> Result<RebuildVectorInde
                 },
             );
         }
+        let _ = db_ref.rebuild_chunk_embeddings_vec();
         Ok::<RebuildVectorIndexResult, String>(RebuildVectorIndexResult {
             processed,
             failed,
@@ -404,16 +594,131 @@ fn get_ollama_available_models() -> Result<Vec<ModelInfo>, String> {
     get_available_models()
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaTagModel>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OllamaTagModel {
+    name: String,
+}
+
+#[tauri::command]
+async fn get_local_models() -> Result<Vec<String>, String> {
+    let client = reqwest::Client::new();
+    let res = client
+        .get("http://localhost:11434/api/tags")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach Ollama /api/tags: {e}"))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!(
+            "Ollama /api/tags failed with status {status}: {body}"
+        ));
+    }
+    let parsed: OllamaTagsResponse = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Ollama tags response: {e}"))?;
+    Ok(parsed.models.into_iter().map(|m| m.name).collect())
+}
+
+#[tauri::command]
+async fn pull_new_model(model_name: String) -> Result<bool, String> {
+    let model = model_name.trim();
+    if model.is_empty() {
+        return Err("Model name is required.".to_string());
+    }
+    let client = reqwest::Client::new();
+    let res = client
+        .post("http://localhost:11434/api/pull")
+        .json(&serde_json::json!({ "name": model }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to call Ollama /api/pull: {e}"))?;
+    let status_ok = res.status().is_success();
+    let _body = res.text().await.unwrap_or_default();
+    Ok(status_ok)
+}
+
 #[tauri::command]
 fn is_ollama_available() -> bool {
     is_ollama_running()
 }
 
+/// `true` when the app is managing a live bundled `ollama serve` sidecar (`OllamaState` holds a child process).
+#[tauri::command]
+fn get_sidecar_status(state: tauri::State<'_, OllamaState>) -> bool {
+    state.0.lock().map(|guard| guard.is_some()).unwrap_or(false)
+}
+
+#[tauri::command]
+fn get_ollama_setup_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, OllamaState>,
+) -> Result<ollama_setup::OllamaSetupStatus, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&app_data_dir);
+    let sidecar = state.0.lock().map(|guard| guard.is_some()).unwrap_or(false);
+    Ok(ollama_setup::build_setup_status(
+        &app_data_dir,
+        &config,
+        sidecar,
+    ))
+}
+
+#[tauri::command]
+fn install_ollama_cli_for_athena(app: tauri::AppHandle) -> Result<String, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let p = ollama_setup::install_ollama_cli_to_app_data(&app_data_dir)?;
+    Ok(p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn copy_ollama_into_athena_managed(
+    app: tauri::AppHandle,
+    source_path: String,
+) -> Result<String, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let src = std::path::PathBuf::from(source_path.trim());
+    let p = ollama_setup::copy_cli_into_managed_dir(&src, &app_data_dir)?;
+    Ok(p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn set_ollama_athena_cli_path(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    let normalized = path.and_then(|p| {
+        let t = p.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    if let Some(ref p) = normalized {
+        let pb = std::path::Path::new(p);
+        if !path_looks_like_ollama_cli(pb) {
+            return Err("That path is not an ollama or ollama.exe file.".to_string());
+        }
+    }
+    config.ollama_athena_cli_path = normalized;
+    save_config(&app_data_dir, &config)
+}
+
 /// Tries to start the Ollama server (e.g. `ollama serve` or open Ollama app on macOS).
 /// Call this when the user explicitly asks to start Ollama; the app may need permission to launch processes.
 #[tauri::command]
-fn try_launch_ollama() {
-    try_launch_ollama_server();
+fn try_launch_ollama(app: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&app_data_dir);
+    let prefs = ollama_setup::resolve_launch_paths(&app_data_dir, &config);
+    try_launch_ollama_server_with_preferences(&prefs);
+    Ok(())
 }
 
 #[tauri::command]
@@ -449,6 +754,220 @@ fn set_model_override(app: tauri::AppHandle, value: Option<String>) -> Result<()
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct UserAndInferenceSettings {
+    user_display_name: Option<String>,
+    user_birthdate_iso: Option<String>,
+    allow_nsfw_unrestricted_models: bool,
+    is_at_least_18: bool,
+    is_birthday_today: bool,
+    inference_backend: Option<String>,
+    explicit_ollama_model: Option<String>,
+    openai_compatible_base_url: Option<String>,
+    openai_compatible_model: Option<String>,
+    openai_compatible_api_key_set: bool,
+}
+
+#[tauri::command]
+fn get_user_and_inference_settings(
+    app: tauri::AppHandle,
+) -> Result<UserAndInferenceSettings, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let c = load_config(&app_data_dir);
+    let bd = c.user_birthdate_iso.as_deref();
+    Ok(UserAndInferenceSettings {
+        user_display_name: c.user_display_name.clone(),
+        user_birthdate_iso: c.user_birthdate_iso.clone(),
+        allow_nsfw_unrestricted_models: c.allow_nsfw_unrestricted_models.unwrap_or(false),
+        is_at_least_18: user_profile::is_at_least_18(bd),
+        is_birthday_today: user_profile::is_birthday_today(bd),
+        inference_backend: c.inference_backend.clone(),
+        explicit_ollama_model: c.explicit_ollama_model.clone(),
+        openai_compatible_base_url: c.openai_compatible_base_url.clone(),
+        openai_compatible_model: c.openai_compatible_model.clone(),
+        openai_compatible_api_key_set: c
+            .openai_compatible_api_key
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false),
+    })
+}
+
+#[tauri::command]
+fn set_user_display_name(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    config.user_display_name = value.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_user_birthdate_iso(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    config.user_birthdate_iso = value.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            return None;
+        }
+        if chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d").is_ok() {
+            Some(t.to_string())
+        } else {
+            None
+        }
+    });
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_inference_backend(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    let normalized = match value.as_deref().map(|s| s.trim().to_lowercase()) {
+        Some(ref s) if s == "openai_compatible" || s == "openai" => Some("openai_compatible".to_string()),
+        _ => None,
+    };
+    config.inference_backend = normalized;
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_explicit_ollama_model(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    config.explicit_ollama_model = value.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_openai_compatible_base_url(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    config.openai_compatible_base_url = value.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_openai_compatible_api_key(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    config.openai_compatible_api_key = value.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_openai_compatible_model(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    config.openai_compatible_model = value.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_allow_nsfw_unrestricted_models(app: tauri::AppHandle, value: bool) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut config = load_config(&app_data_dir);
+    if !user_profile::is_at_least_18(config.user_birthdate_iso.as_deref()) {
+        config.allow_nsfw_unrestricted_models = Some(false);
+    } else {
+        config.allow_nsfw_unrestricted_models = Some(value);
+    }
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn probe_openai_compatible_connection(base_url: String) -> Result<bool, String> {
+    Ok(crate::openai_chat::probe_openai_compatible(&base_url))
+}
+
+#[tauri::command]
+fn is_inference_ready(app: tauri::AppHandle) -> Result<bool, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&app_data_dir);
+    let models = load_models_for_inference(&config);
+    Ok(ensure_inference_ready(&config, &models).is_ok())
+}
+
+#[tauri::command]
+fn moondream_describe_image(_app: tauri::AppHandle, image_path: String) -> Result<String, String> {
+    moondream::describe_image_stub(std::path::Path::new(&image_path))
+}
+
+#[tauri::command]
+fn kiwix_search_with_tool(
+    app: tauri::AppHandle,
+    zim_path: String,
+    query: String,
+) -> Result<Vec<String>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let cfg = load_config(&app_data_dir);
+    let bin = cfg
+        .kiwix_search_binary_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            "Set kiwix_search_binary_path in athena_config.json to your kiwix-search binary (GPL-3)."
+                .to_string()
+        })?;
+    kiwix_tools::kiwix_search_lines(bin, &zim_path, &query)
+}
+
+#[tauri::command]
+fn get_offline_route_geojson(
+    lat1: f64,
+    lon1: f64,
+    lat2: f64,
+    lon2: f64,
+) -> Result<offline_routing::RouteGeoJson, String> {
+    if !(lat1.is_finite() && lon1.is_finite() && lat2.is_finite() && lon2.is_finite()) {
+        return Err("Coordinates must be finite.".to_string());
+    }
+    Ok(offline_routing::straight_line_route_geojson(lat1, lon1, lat2, lon2))
+}
+
 const DEFAULT_MEMORY_MESSAGES: u32 = 20;
 const MIN_MEMORY_MESSAGES: u32 = 5;
 
@@ -456,7 +975,9 @@ const MIN_MEMORY_MESSAGES: u32 = 5;
 fn get_memory_messages(app: tauri::AppHandle) -> Result<u32, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let max = max_memory_messages_for_ram(get_specs().ram_gb);
-    let v = load_config(&app_data_dir).memory_messages.unwrap_or(DEFAULT_MEMORY_MESSAGES);
+    let v = load_config(&app_data_dir)
+        .memory_messages
+        .unwrap_or(DEFAULT_MEMORY_MESSAGES);
     Ok(v.clamp(MIN_MEMORY_MESSAGES, max))
 }
 
@@ -474,7 +995,9 @@ fn set_memory_messages(app: tauri::AppHandle, value: u32) -> Result<(), String> 
 #[tauri::command]
 fn get_feature_map_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(load_config(&app_data_dir).feature_map_enabled.unwrap_or(false))
+    Ok(load_config(&app_data_dir)
+        .feature_map_enabled
+        .unwrap_or(false))
 }
 
 #[tauri::command]
@@ -489,7 +1012,9 @@ fn set_feature_map_enabled(app: tauri::AppHandle, value: bool) -> Result<(), Str
 #[tauri::command]
 fn get_show_sources_in_chat(app: tauri::AppHandle) -> Result<bool, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(load_config(&app_data_dir).show_sources_in_chat.unwrap_or(true))
+    Ok(load_config(&app_data_dir)
+        .show_sources_in_chat
+        .unwrap_or(true))
 }
 
 #[tauri::command]
@@ -531,7 +1056,9 @@ fn normalize_mbtiles_file_name(name: &str) -> Option<String> {
 }
 
 #[tauri::command]
-fn get_enabled_main_map_raster_archive_file_names(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+fn get_enabled_main_map_raster_archive_file_names(
+    app: tauri::AppHandle,
+) -> Result<Vec<String>, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let cfg = load_config(&app_data_dir);
     let mut values: Vec<String> = cfg
@@ -592,8 +1119,13 @@ fn export_tactical_data(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     let export_path = tactical_export_default_path(&app)?;
-    let points = state.db.list_tactical_points_of_interest()?;
-    let nodes = state.db.list_tactical_mesh_node_locations()?;
+    let (points, nodes) = {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        (
+            g.list_tactical_points_of_interest()?,
+            g.list_tactical_mesh_node_locations()?,
+        )
+    };
     let payload = TacticalDataFile {
         exported_at: chrono::Utc::now().timestamp(),
         points_of_interest: points,
@@ -630,6 +1162,8 @@ fn import_tactical_data(
     let payload: TacticalDataFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     state
         .db
+        .lock()
+        .map_err(|e| e.to_string())?
         .import_tactical_data(&payload.points_of_interest, &payload.mesh_node_locations)?;
     Ok(TacticalImportResult {
         imported_points_of_interest: payload.points_of_interest.len(),
@@ -646,10 +1180,122 @@ struct TacticalMapLayers {
 
 #[tauri::command]
 fn get_tactical_map_layers(state: tauri::State<'_, AppState>) -> Result<TacticalMapLayers, String> {
+    let g = state.db.lock().map_err(|e| e.to_string())?;
     Ok(TacticalMapLayers {
-        points_of_interest: state.db.list_tactical_points_of_interest()?,
-        mesh_node_locations: state.db.list_tactical_mesh_node_locations()?,
+        points_of_interest: g.list_tactical_points_of_interest()?,
+        mesh_node_locations: g.list_tactical_mesh_node_locations()?,
     })
+}
+
+#[tauri::command]
+fn add_tactical_poi(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    lat: f64,
+    lon: f64,
+    lucide_icon_name: Option<String>,
+    description: Option<String>,
+    pin_layer: Option<String>,
+) -> Result<TacticalPointOfInterest, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Pin name is required.".to_string());
+    }
+    let raw_icon = lucide_icon_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("MapPin");
+    if !raw_icon.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(
+            "Icon name must be a Lucide export name (letters and digits only).".to_string(),
+        );
+    }
+    let layer = pin_layer
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("resource");
+    if layer != "resource" && layer != "network" {
+        return Err("pin_layer must be \"resource\" or \"network\".".to_string());
+    }
+    let desc = description.as_deref().map(str::trim).unwrap_or("").to_string();
+
+    let id = format!(
+        "tpoi-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()
+    );
+    let mut notes = String::new();
+    if layer == "network" {
+        notes.push_str("@network\n");
+    }
+    notes.push_str(&format!("@icon:{raw_icon}"));
+    if !desc.is_empty() {
+        notes.push('\n');
+        notes.push_str(&desc);
+    }
+    let updated_at = chrono::Utc::now().timestamp();
+    let point = TacticalPointOfInterest {
+        id,
+        name: name.to_string(),
+        lat,
+        lon,
+        notes,
+        updated_at,
+    };
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .upsert_tactical_point_of_interest(&point)?;
+    Ok(point)
+}
+
+#[tauri::command]
+fn delete_tactical_poi(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .delete_tactical_point_of_interest(&id)
+}
+
+#[tauri::command]
+fn broadcast_tactical_poi(
+    id: String,
+    state: tauri::State<'_, AppState>,
+    radio_state: tauri::State<'_, RadioState>,
+) -> Result<(), String> {
+    let point_id = id.trim().to_string();
+    if point_id.is_empty() {
+        return Err("Tactical point id is required.".to_string());
+    }
+    let point = state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get_tactical_point_of_interest_by_id(&point_id)?
+        .ok_or_else(|| "Tactical point not found.".to_string())?;
+    let encoded_json = serde_json::to_string(&point).map_err(|e| e.to_string())?;
+    let encoded = format!("ATN:{encoded_json}");
+
+    let mut guard = radio_state
+        .tx_port
+        .lock()
+        .map_err(|e| format!("Radio TX state lock failed: {e}"))?;
+    let Some(port) = guard.as_mut() else {
+        return Err("No radio port connected.".to_string());
+    };
+    port.write_all(encoded.as_bytes())
+        .map_err(|e| format!("Failed to write tactical POI payload: {e}"))?;
+    port.write_all(b"\n")
+        .map_err(|e| format!("Failed to write tactical POI newline: {e}"))?;
+    port.flush()
+        .map_err(|e| format!("Failed to flush tactical POI payload: {e}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -736,8 +1382,12 @@ fn get_memory_estimate(app: tauri::AppHandle) -> Result<MemoryEstimate, String> 
     let memory_messages = config.memory_messages.unwrap_or(DEFAULT_MEMORY_MESSAGES);
 
     let models = get_available_models().map_err(|e| e.to_string())?;
-    let tier: String = config.model_override.clone().unwrap_or_else(|| get_specs().recommended_tier);
-    let model_name = select_model_for_tier(&models, &tier).unwrap_or_else(|| "(no model)".to_string());
+    let tier: String = config
+        .model_override
+        .clone()
+        .unwrap_or_else(|| get_specs().recommended_tier);
+    let model_name =
+        select_model_for_tier(&models, &tier).unwrap_or_else(|| "(no model)".to_string());
     let model_size_b = models
         .iter()
         .find(|m| m.name == model_name)
@@ -749,7 +1399,8 @@ fn get_memory_estimate(app: tauri::AppHandle) -> Result<MemoryEstimate, String> 
     // ~250 tokens per message on average; ~50 KB per token for KV cache (small model)
     let estimated_context_tokens = memory_messages * 250;
     let estimated_context_ram_mb = (estimated_context_tokens as f64 * 0.05) as u32;
-    let total_estimated_ram_gb = estimated_model_ram_gb + (estimated_context_ram_mb as f64 / 1024.0);
+    let total_estimated_ram_gb =
+        estimated_model_ram_gb + (estimated_context_ram_mb as f64 / 1024.0);
 
     Ok(MemoryEstimate {
         memory_messages,
@@ -775,13 +1426,24 @@ fn get_chat(app: tauri::AppHandle, id: String) -> Result<Option<SavedChat>, Stri
 }
 
 #[tauri::command]
-fn save_chat(app: tauri::AppHandle, id: Option<String>, title: String, messages: Vec<SavedMessage>, description: Option<String>) -> Result<String, String> {
+fn save_chat(
+    app: tauri::AppHandle,
+    id: Option<String>,
+    title: String,
+    messages: Vec<SavedMessage>,
+    description: Option<String>,
+) -> Result<String, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     save_saved_chat(&app_data_dir, id, title, messages, description)
 }
 
 #[tauri::command]
-fn update_chat_metadata(app: tauri::AppHandle, id: String, title: Option<String>, description: Option<String>) -> Result<(), String> {
+fn update_chat_metadata(
+    app: tauri::AppHandle,
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+) -> Result<(), String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     update_saved_chat_metadata(&app_data_dir, id, title, description)
 }
@@ -799,7 +1461,11 @@ fn update_chat_context_summary(
 
 /// Synthesize speech for character voices (fallout, ultron). Returns WAV as base64 or error.
 #[tauri::command]
-fn synthesize_speech(app: tauri::AppHandle, text: String, voice_id: String) -> Result<String, String> {
+fn synthesize_speech(
+    app: tauri::AppHandle,
+    text: String,
+    voice_id: String,
+) -> Result<String, String> {
     #[cfg(feature = "piper-tts")]
     {
         use base64::Engine;
@@ -816,35 +1482,30 @@ fn synthesize_speech(app: tauri::AppHandle, text: String, voice_id: String) -> R
 
 #[tauri::command]
 fn generate_chat_title(app: tauri::AppHandle, first_message: String) -> Result<String, String> {
-    if !is_ollama_running() {
-        return Err("Ollama is not running.".to_string());
-    }
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let config = load_config(&app_data_dir);
-    let models = get_available_models().map_err(|e| e.to_string())?;
-    if models.is_empty() {
-        return Err("No models found in Ollama.".to_string());
-    }
-    let tier: String = config.model_override.clone().unwrap_or_else(|| get_specs().recommended_tier);
-    let model_name = select_model_for_tier(&models, &tier).ok_or("No suitable model found.")?;
-    ollama_generate_chat_title(&model_name, &first_message)
+    let models = load_models_for_inference(&config);
+    ensure_inference_ready(&config, &models)?;
+    generate_chat_title_unified(&config, &models, &first_message)
 }
 
 #[tauri::command]
-fn generate_chat_description(app: tauri::AppHandle, messages: Vec<SavedMessage>) -> Result<String, String> {
-    if !is_ollama_running() {
-        return Err("Ollama is not running.".to_string());
-    }
+fn generate_chat_description(
+    app: tauri::AppHandle,
+    messages: Vec<SavedMessage>,
+) -> Result<String, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let config = load_config(&app_data_dir);
-    let models = get_available_models().map_err(|e| e.to_string())?;
-    if models.is_empty() {
-        return Err("No models found in Ollama.".to_string());
-    }
-    let tier: String = config.model_override.clone().unwrap_or_else(|| get_specs().recommended_tier);
-    let model_name = select_model_for_tier(&models, &tier).ok_or("No suitable model found.")?;
-    let chat_messages: Vec<ChatMessage> = messages.into_iter().map(|m| ChatMessage { role: m.role, content: m.content }).collect();
-    ollama_generate_chat_description(&model_name, &chat_messages)
+    let models = load_models_for_inference(&config);
+    ensure_inference_ready(&config, &models)?;
+    let chat_messages: Vec<ChatMessage> = messages
+        .into_iter()
+        .map(|m| ChatMessage {
+            role: m.role,
+            content: m.content,
+        })
+        .collect();
+    generate_chat_description_unified(&config, &models, &chat_messages)
 }
 
 #[tauri::command]
@@ -874,7 +1535,11 @@ fn append_error_log(app: tauri::AppHandle, message: String) -> Result<(), String
         .map_err(|e| e.to_string())?
         .write_all(line.as_bytes())
         .map_err(|e| e.to_string())?;
-    if path.metadata().map(|m| m.len() as usize > ERROR_LOG_MAX_BYTES).unwrap_or(false) {
+    if path
+        .metadata()
+        .map(|m| m.len() as usize > ERROR_LOG_MAX_BYTES)
+        .unwrap_or(false)
+    {
         if let Ok(content) = std::fs::read_to_string(&path) {
             let target_keep = content.len().saturating_sub(ERROR_LOG_MAX_BYTES / 2);
             let start = content
@@ -882,7 +1547,10 @@ fn append_error_log(app: tauri::AppHandle, message: String) -> Result<(), String
                 .find(|(i, _)| *i >= target_keep)
                 .map(|(i, _)| i)
                 .unwrap_or(0);
-            let start = content[start..].find('\n').map(|nl| start + nl + 1).unwrap_or(start);
+            let start = content[start..]
+                .find('\n')
+                .map(|nl| start + nl + 1)
+                .unwrap_or(start);
             let _ = std::fs::write(&path, &content[start..]);
         }
     }
@@ -904,14 +1572,116 @@ pub struct DeviceStats {
     pub cpu_usage_pct: f32,
     pub ram_used_mb: u64,
     pub ram_total_mb: u64,
+    pub swap_used_mb: u64,
+    pub swap_total_mb: u64,
     pub disk_used_gb: f64,
     pub disk_total_gb: f64,
     pub net_rx_bytes: u64,
     pub net_tx_bytes: u64,
+    /// Cumulative bytes read from block devices (Linux: /sys/block/*/stat). Used for throughput deltas.
+    pub disk_read_bytes_total: u64,
+    pub disk_write_bytes_total: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_temp_c: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_usage_pct: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_pct: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_charging: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_time_to_empty_minutes: Option<u32>,
+}
+
+fn pick_main_disk_gb(disks: &sysinfo::Disks) -> (f64, f64) {
+    use std::path::Path;
+    #[cfg(windows)]
+    let root = Path::new("C:\\");
+    #[cfg(not(windows))]
+    let root = Path::new("/");
+
+    for disk in disks.list() {
+        if disk.mount_point() == root {
+            let total = disk.total_space();
+            if total == 0 {
+                continue;
+            }
+            let used = total.saturating_sub(disk.available_space());
+            return (
+                used as f64 / 1_073_741_824.0,
+                total as f64 / 1_073_741_824.0,
+            );
+        }
+    }
+    let mut best: Option<(f64, f64)> = None;
+    for disk in disks.list() {
+        let total = disk.total_space();
+        if total == 0 {
+            continue;
+        }
+        let used_gb = (total.saturating_sub(disk.available_space())) as f64 / 1_073_741_824.0;
+        let total_gb = total as f64 / 1_073_741_824.0;
+        match best {
+            None => best = Some((used_gb, total_gb)),
+            Some((_, best_total)) if total_gb > best_total => best = Some((used_gb, total_gb)),
+            _ => {}
+        }
+    }
+    best.unwrap_or((0.0, 0.0))
+}
+
+fn network_io_totals() -> (u64, u64) {
+    use sysinfo::Networks;
+    let mut networks = Networks::new_with_refreshed_list();
+    networks.refresh();
+    let mut rx = 0u64;
+    let mut tx = 0u64;
+    for (name, data) in networks.iter() {
+        if name == "lo" || name.starts_with("lo") {
+            continue;
+        }
+        rx += data.total_received();
+        tx += data.total_transmitted();
+    }
+    (rx, tx)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_block_io_bytes() -> (u64, u64) {
+    use std::fs;
+    use std::path::Path;
+    let mut r = 0u64;
+    let mut w = 0u64;
+    let dir = Path::new("/sys/block");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with("loop") || name.starts_with("ram") {
+            continue;
+        }
+        let path = format!("/sys/block/{}/stat", name);
+        if let Ok(line) = fs::read_to_string(&path) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 7 {
+                r += parts[2].parse::<u64>().unwrap_or(0);
+                w += parts[6].parse::<u64>().unwrap_or(0);
+            }
+        }
+    }
+    (r.saturating_mul(512), w.saturating_mul(512))
+}
+
+fn disk_io_bytes_totals() -> (u64, u64) {
+    #[cfg(target_os = "linux")]
+    {
+        linux_block_io_bytes()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (0, 0)
+    }
 }
 
 fn get_cpu_temp_c() -> Option<f32> {
@@ -929,7 +1699,10 @@ fn get_cpu_temp_c() -> Option<f32> {
         for line in text.lines() {
             if line.contains("CPU die temperature") {
                 if let Some(rest) = line.split("CPU die temperature").nth(1) {
-                    let num: String = rest.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+                    let num: String = rest
+                        .chars()
+                        .filter(|c| c.is_ascii_digit() || *c == '.')
+                        .collect();
                     if let Ok(t) = num.trim().parse::<f32>() {
                         return Some(t);
                     }
@@ -967,7 +1740,10 @@ fn get_gpu_usage_pct() -> Option<f32> {
     {
         use std::process::Command;
         let out = Command::new("nvidia-smi")
-            .args(["--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"])
+            .args([
+                "--query-gpu=utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ])
             .output()
             .ok()?;
         if !out.status.success() {
@@ -990,7 +1766,10 @@ fn get_gpu_usage_pct() -> Option<f32> {
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             if line.to_lowercase().contains("gpu") && line.contains('%') {
-                let num: String = line.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+                let num: String = line
+                    .chars()
+                    .filter(|c| c.is_ascii_digit() || *c == '.')
+                    .collect();
                 if let Ok(pct) = num.trim().parse::<f32>() {
                     return Some(pct.min(100.0));
                 }
@@ -1007,30 +1786,54 @@ fn get_gpu_usage_pct() -> Option<f32> {
 
 #[tauri::command]
 fn get_device_stats() -> Result<DeviceStats, String> {
-    use sysinfo::System;
-    let mut sys = System::new_all();
+    use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
+
+    let mut sys = System::new_with_specifics(
+        RefreshKind::new()
+            .with_cpu(CpuRefreshKind::everything())
+            .with_memory(MemoryRefreshKind::everything()),
+    );
     sys.refresh_memory();
-    // CPU usage is a delta: refresh twice so the second read is meaningful.
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     sys.refresh_cpu_usage();
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     sys.refresh_cpu_usage();
     let raw_cpu = sys.global_cpu_info().cpu_usage();
-    // Global CPU is the *sum* of all cores (each 0–100%), so average = sum / core_count, already in %.
     let num_cpus = sys.cpus().len().max(1) as f32;
     let cpu_usage_pct = (raw_cpu / num_cpus).min(100.0);
     let ram_used_mb = sys.used_memory() / (1024 * 1024);
     let ram_total_mb = sys.total_memory() / (1024 * 1024);
+    let swap_used_mb = sys.used_swap() / (1024 * 1024);
+    let swap_total_mb = sys.total_swap() / (1024 * 1024);
+
+    let disks = Disks::new_with_refreshed_list();
+    let (disk_used_gb, disk_total_gb) = pick_main_disk_gb(&disks);
+    let (net_rx_bytes, net_tx_bytes) = network_io_totals();
+    let (disk_read_bytes_total, disk_write_bytes_total) = disk_io_bytes_totals();
+
+    let battery = system::get_battery_state().unwrap_or(system::BatteryState {
+        percentage: None,
+        is_charging: None,
+        time_to_empty_minutes: None,
+    });
+
     Ok(DeviceStats {
         cpu_usage_pct,
         ram_used_mb,
         ram_total_mb,
-        disk_used_gb: 0.0,
-        disk_total_gb: 0.0,
-        net_rx_bytes: 0,
-        net_tx_bytes: 0,
+        swap_used_mb,
+        swap_total_mb,
+        disk_used_gb,
+        disk_total_gb,
+        net_rx_bytes,
+        net_tx_bytes,
+        disk_read_bytes_total,
+        disk_write_bytes_total,
         cpu_temp_c: get_cpu_temp_c(),
         gpu_usage_pct: get_gpu_usage_pct(),
+        battery_pct: battery.percentage,
+        battery_charging: battery.is_charging,
+        battery_time_to_empty_minutes: battery.time_to_empty_minutes,
     })
 }
 
@@ -1089,7 +1892,9 @@ fn build_context_from_docs(docs: &[IndexedFile], query: &str, max_chars: usize) 
                 } else {
                     t.clone()
                 }
-            } else if t.len() <= FULL_DOC_THRESHOLD && keywords.iter().any(|k| t.to_lowercase().contains(k)) {
+            } else if t.len() <= FULL_DOC_THRESHOLD
+                && keywords.iter().any(|k| t.to_lowercase().contains(k))
+            {
                 // Small doc that matches: include full text so brands/specs are never cut off.
                 t.clone()
             } else {
@@ -1138,11 +1943,17 @@ fn build_context_from_docs(docs: &[IndexedFile], query: &str, max_chars: usize) 
 }
 
 /// Short snippet from each doc (for fallback when keyword/semantic return nothing).
-fn build_recent_docs_context(docs: &[IndexedFile], max_chars_per_doc: usize, max_total: usize) -> String {
+fn build_recent_docs_context(
+    docs: &[IndexedFile],
+    max_chars_per_doc: usize,
+    max_total: usize,
+) -> String {
     let mut out = String::new();
     let mut total = 0;
     for d in docs {
-        let Some(ref t) = d.text_content else { continue };
+        let Some(ref t) = d.text_content else {
+            continue;
+        };
         let snippet = if t.len() <= max_chars_per_doc {
             t.as_str()
         } else {
@@ -1244,7 +2055,9 @@ fn build_context_rrf(
     let per_path_budget = RRF_COMBINED_MAX_CHARS / top_paths.len().max(1);
 
     for path in &top_paths {
-        let Some(entry) = by_path.get(path) else { continue };
+        let Some(entry) = by_path.get(path) else {
+            continue;
+        };
         let name = entry
             .doc
             .as_ref()
@@ -1315,6 +2128,10 @@ fn build_personality_section(config: &AppConfig) -> String {
     )
 }
 
+fn build_user_profile_section(config: &AppConfig) -> String {
+    user_profile::line_display_name_for_prompt(config.user_display_name.as_deref())
+}
+
 const KNOWLEDGE_BLOCK_FILENAME: &str = "knowledge_block.txt";
 
 fn knowledge_block_path(app_data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -1365,7 +2182,20 @@ fn build_poi_and_maps_section(app_data_dir: &std::path::Path) -> String {
     if !pois.is_empty() {
         let list: Vec<String> = pois
             .iter()
-            .map(|p| format!("{}: {} at ({:.5}, {:.5}){}", p.name, p.id, p.lat, p.lon, if p.notes.is_empty() { String::new() } else { format!(" — {}", p.notes) }))
+            .map(|p| {
+                format!(
+                    "{}: {} at ({:.5}, {:.5}){}",
+                    p.name,
+                    p.id,
+                    p.lat,
+                    p.lon,
+                    if p.notes.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", p.notes)
+                    }
+                )
+            })
             .collect();
         parts.push(format!(
             "The user has saved points of interest (POIs) on their map. Use these when they refer to places by name (e.g. \"Homebase\"). You can suggest adding new POIs; the user can add them by clicking the map in the Map tab or by naming the place.\n{}",
@@ -1373,7 +2203,10 @@ fn build_poi_and_maps_section(app_data_dir: &std::path::Path) -> String {
         ));
     }
     if !downloaded.is_empty() {
-        let list: Vec<String> = downloaded.iter().map(|m| format!("{} ({}, {})", m.name, m.region, m.style)).collect();
+        let list: Vec<String> = downloaded
+            .iter()
+            .map(|m| format!("{} ({}, {})", m.name, m.region, m.style))
+            .collect();
         parts.push(format!(
             "Downloaded offline maps (user can view these in the Map tab): {}.",
             list.join("; ")
@@ -1411,7 +2244,10 @@ fn build_retrieval_from_history(history: &[HistoryMessage], message: &str) -> (S
 }
 
 /// Same as above but from saved chat messages (source of truth when we have a loaded chat).
-fn build_retrieval_from_saved_messages(messages: &[SavedMessage], message: &str) -> (String, String) {
+fn build_retrieval_from_saved_messages(
+    messages: &[SavedMessage],
+    message: &str,
+) -> (String, String) {
     if messages.len() < 2 {
         return (message.to_string(), String::new());
     }
@@ -1450,14 +2286,23 @@ fn build_chat_messages(
     max_history_messages: usize,
 ) -> Vec<ChatMessage> {
     let max = max_history_messages.max(1);
-    let mut messages = vec![ChatMessage { role: "system".to_string(), content: system_content }];
+    let mut messages = vec![ChatMessage {
+        role: "system".to_string(),
+        content: system_content,
+    }];
     let start = history.len().saturating_sub(max);
     for h in &history[start..] {
         if !h.content.is_empty() || h.role == "user" {
-            messages.push(ChatMessage { role: h.role.clone(), content: h.content.clone() });
+            messages.push(ChatMessage {
+                role: h.role.clone(),
+                content: h.content.clone(),
+            });
         }
     }
-    messages.push(ChatMessage { role: "user".to_string(), content: new_user_message.to_string() });
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: new_user_message.to_string(),
+    });
     messages
 }
 
@@ -1481,101 +2326,110 @@ fn insert_spatial_system_before_last_user_message(
 }
 
 #[tauri::command]
-fn send_message(app: tauri::AppHandle, message: String, history: Option<Vec<HistoryMessage>>) -> Result<String, String> {
-    if !is_ollama_running() {
-        return Err("Ollama is not running. Start Ollama and ensure a model is installed (e.g. ollama run llama3.2:3b).".to_string());
-    }
+fn send_message(
+    app: tauri::AppHandle,
+    message: String,
+    history: Option<Vec<HistoryMessage>>,
+    model_options: Option<ModelOptions>,
+) -> Result<String, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let config = load_config(&app_data_dir);
-    let models = get_available_models().map_err(|e| e.to_string())?;
-    if models.is_empty() {
-        return Err("No models found in Ollama. Install one with: ollama run llama3.2:3b".to_string());
-    }
-    let tier: String = config.model_override.clone().unwrap_or_else(|| get_specs().recommended_tier);
-    let model_name = select_model_for_tier(&models, &tier).ok_or("No suitable model found for the selected tier.")?;
+    let models = load_models_for_inference(&config);
+    ensure_inference_ready(&config, &models)?;
 
     let state = app.state::<AppState>();
-    let db = &state.db;
+    let history_ref = history.as_deref().unwrap_or(&[]);
+    let max_memory = config.memory_messages.unwrap_or(20) as usize;
     let (message_for_model, athena_ref_mode) = parse_athena_ref_message(&message);
 
-    let (context_section, library_rule) = if athena_ref_mode {
-        (String::new(), LIBRARY_RULE_ATHENA_REF_MODE)
-    } else {
-        let retrieval_query = message_for_model.as_str();
-        let mentioned = db.get_indexed_files_by_name_mentioned(retrieval_query).unwrap_or_default();
-        let mentioned_section = if mentioned.is_empty() {
-            String::new()
+    let messages = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let (context_section, library_rule) = if athena_ref_mode {
+            (String::new(), LIBRARY_RULE_ATHENA_REF_MODE)
         } else {
-            let ctx = build_context_from_docs(&mentioned, retrieval_query, 4000);
-            format!(
-                "\n\nThe user referred to or asked about the following document(s); use them to answer:\n{}\n\n",
-                ctx
-            )
-        };
-
-        let mut docs = db.search_text_content(retrieval_query, RRF_KEYWORD_LIMIT).unwrap_or_default();
-        sort_docs_learned_first(&mut docs);
-        let query_vec = embeddings::embed_text(retrieval_query);
-        let semantic_chunks = db.search_similar_chunks(&query_vec, RRF_SEMANTIC_LIMIT).unwrap_or_default();
-        let (rrf_context, _source_names) = build_context_rrf(&docs, &semantic_chunks, retrieval_query, false);
-
-        let keyword_semantic_section = if rrf_context.is_empty() {
-            let recent = db.get_recent_text_files(3).unwrap_or_default();
-            let fallback = build_recent_docs_context(&recent, 600, 2000);
-            if fallback.is_empty() {
+            let retrieval_query = message_for_model.as_str();
+            let mentioned = db
+                .get_indexed_files_by_name_mentioned(retrieval_query)
+                .unwrap_or_default();
+            let mentioned_section = if mentioned.is_empty() {
                 String::new()
             } else {
+                let ctx = build_context_from_docs(&mentioned, retrieval_query, 4000);
                 format!(
-                    "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
-                    fallback
+                    "\n\nThe user referred to or asked about the following document(s); use them to answer:\n{}\n\n",
+                    ctx
                 )
-            }
-        } else {
+            };
+
+            let mut docs = db
+                .search_text_content(retrieval_query, RRF_KEYWORD_LIMIT)
+                .unwrap_or_default();
+            sort_docs_learned_first(&mut docs);
+            let query_vec = embeddings::embed_text(retrieval_query);
+            let semantic_chunks = db
+                .search_similar_chunks(&query_vec, RRF_SEMANTIC_LIMIT)
+                .unwrap_or_default();
+            let (rrf_context, _source_names) =
+                build_context_rrf(&docs, &semantic_chunks, retrieval_query, false);
+
+            let keyword_semantic_section = if rrf_context.is_empty() {
+                let recent = db.get_recent_text_files(3).unwrap_or_default();
+                let fallback = build_recent_docs_context(&recent, 600, 2000);
+                if fallback.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
+                        fallback
+                    )
+                }
+            } else {
+                format!(
+                    "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below):\n{}",
+                    rrf_context
+                )
+            };
+
+            let context_section = format!("{}{}", mentioned_section, keyword_semantic_section);
+            let library_rule = if context_section.trim().is_empty() {
+                "When the user asks about something that might be in their Library (e.g. their house, notes), say you don't have that information and suggest they add or place a relevant document in their Library folder, then try again."
+            } else {
+                LIBRARY_RULE_WITH_CONTEXT
+            };
+            (context_section, library_rule)
+        };
+
+        let conversation_context_prompt = "";
+        let athena_ref_section = if athena_ref_mode {
             format!(
-                "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below):\n{}",
-                rrf_context
+                "\n\n---\nAthena application reference (authoritative for questions about the Athena app):\n{}\n---\n",
+                ATHENA_PROJECT_REFERENCE
             )
-        };
-
-        let context_section = format!("{}{}", mentioned_section, keyword_semantic_section);
-        let library_rule = if context_section.trim().is_empty() {
-            "When the user asks about something that might be in their Library (e.g. their house, notes), say you don't have that information and suggest they add or place a relevant document in their Library folder, then try again."
         } else {
-            LIBRARY_RULE_WITH_CONTEXT
+            String::new()
         };
-        (context_section, library_rule)
+        let persistent_knowledge_section = build_persistent_knowledge_section(&app_data_dir);
+        let location_section = build_location_section(&config);
+        let poi_maps_section = build_poi_and_maps_section(&app_data_dir);
+        let personality_section = build_personality_section(&config);
+        let user_profile_section = build_user_profile_section(&config);
+        let system_content = format!(
+            "You are Athena, a local offline survival and repair assistant. You help with practical skills, first aid, repair, and survival knowledge. Answer concisely and clearly.\n\nCritical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}",
+            library_rule,
+            conversation_context_prompt,
+            persistent_knowledge_section,
+            context_section,
+            athena_ref_section,
+            location_section,
+            poi_maps_section,
+            personality_section,
+            user_profile_section
+        );
+
+        build_chat_messages(system_content, history_ref, &message_for_model, max_memory)
     };
 
-    let conversation_context_prompt = "";
-    let athena_ref_section = if athena_ref_mode {
-        format!(
-            "\n\n---\nAthena application reference (authoritative for questions about the Athena app):\n{}\n---\n",
-            ATHENA_PROJECT_REFERENCE
-        )
-    } else {
-        String::new()
-    };
-    let persistent_knowledge_section = build_persistent_knowledge_section(&app_data_dir);
-    let location_section = build_location_section(&config);
-    let poi_maps_section = build_poi_and_maps_section(&app_data_dir);
-    let personality_section = build_personality_section(&config);
-    let system_content = format!(
-        "You are Athena, a local offline survival and repair assistant. You help with practical skills, first aid, repair, and survival knowledge. Answer concisely and clearly.\n\nCritical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}",
-        library_rule,
-        conversation_context_prompt,
-        persistent_knowledge_section,
-        context_section,
-        athena_ref_section,
-        location_section,
-        poi_maps_section,
-        personality_section
-    );
-
-    let history = history.as_deref().unwrap_or(&[]);
-    let max_memory = config.memory_messages.unwrap_or(20) as usize;
-    let messages = build_chat_messages(system_content, history, &message_for_model, max_memory);
-
-    chat(&model_name, messages).map_err(|e| e.to_string())
+    chat_unified(&config, &models, messages, model_options).map_err(|e| e.to_string())
 }
 
 const STREAM_CHUNK_EVENT: &str = "athena:stream-chunk";
@@ -1619,9 +2473,17 @@ fn list_library_contents(app: tauri::AppHandle) -> Result<Vec<LibraryFile>, Stri
                 let path = e.path();
                 if path.is_file() {
                     let path_str = path.to_string_lossy().to_string();
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
                     let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    out.push(LibraryFile { path: path_str, name, size_bytes });
+                    out.push(LibraryFile {
+                        path: path_str,
+                        name,
+                        size_bytes,
+                    });
                 }
             }
         }
@@ -1640,9 +2502,45 @@ fn list_library_contents(app: tauri::AppHandle) -> Result<Vec<LibraryFile>, Stri
 #[tauri::command]
 fn remove_library_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let _ = state.db.delete_by_path_prefix(&path);
-    let _ = state.db.delete_by_path(&path);
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    let _ = g.delete_by_path_prefix(&path);
+    let _ = g.delete_by_path(&path);
     std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Copies the live SQLite database to a path chosen in the UI (Tauri save dialog).
+#[tauri::command]
+fn backup_database(state: tauri::State<'_, AppState>, dest_path: String) -> Result<(), String> {
+    let dest = std::path::PathBuf::from(dest_path.trim());
+    if dest.as_os_str().is_empty() {
+        return Err("Destination path is empty.".to_string());
+    }
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    g.backup_to_path(&dest)?;
+    Ok(())
+}
+
+/// Replaces `athena_index.db` with a user-selected file after closing the active connection.
+#[tauri::command]
+fn restore_database(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<(), String> {
+    let src = std::path::PathBuf::from(source_path.trim());
+    if !src.is_file() {
+        return Err("Please select a valid database file.".to_string());
+    }
+    rusqlite::Connection::open(&src)
+        .map_err(|e| format!("Selected file is not a valid SQLite database: {e}"))?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db_path = app_data_dir.join("athena_index.db");
+    let mut guard = state.db.lock().map_err(|e| e.to_string())?;
+    let _old = std::mem::replace(&mut *guard, Database::new_in_memory_placeholder()?);
+    drop(_old);
+    std::fs::copy(&src, &db_path).map_err(|e| e.to_string())?;
+    *guard = Database::new(&db_path)?;
     Ok(())
 }
 
@@ -1654,7 +2552,11 @@ fn get_map_catalog(app: tauri::AppHandle) -> Result<Vec<maps::MapCatalogEntry>, 
     let config = load_config(&app_data_dir);
     let location_enabled = config.feature_map_enabled.unwrap_or(false);
     let address = config.user_location_address.as_deref();
-    Ok(maps::get_map_catalog(&app_data_dir, location_enabled, address))
+    Ok(maps::get_map_catalog(
+        &app_data_dir,
+        location_enabled,
+        address,
+    ))
 }
 
 #[tauri::command]
@@ -1665,7 +2567,8 @@ fn get_downloaded_maps(app: tauri::AppHandle) -> Result<Vec<maps::DownloadedMap>
 
 /// Returns the offline map manager catalog (currently embedded mock JSON; later a remote fetch).
 #[tauri::command]
-fn get_offline_map_manager_catalog() -> Result<Vec<map_manager_catalog::OfflineMapCatalogEntry>, String> {
+fn get_offline_map_manager_catalog(
+) -> Result<Vec<map_manager_catalog::OfflineMapCatalogEntry>, String> {
     map_manager_catalog::catalog_from_embedded_mock_json()
 }
 
@@ -1690,7 +2593,8 @@ async fn download_offline_map(
     if download_url.is_empty() {
         return Err("Download URL is required.".to_string());
     }
-    let parsed = reqwest::Url::parse(&download_url).map_err(|e| format!("Invalid download URL: {e}"))?;
+    let parsed =
+        reqwest::Url::parse(&download_url).map_err(|e| format!("Invalid download URL: {e}"))?;
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
         return Err("Download URL must use http or https.".to_string());
@@ -1699,7 +2603,8 @@ async fn download_offline_map(
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     map_manager_download::ensure_offline_maps_directory(&app_data_dir)?;
 
-    let (final_path, part_path) = map_manager_download::destination_paths(&app_data_dir, &map_id, &download_url)?;
+    let (final_path, part_path) =
+        map_manager_download::destination_paths(&app_data_dir, &map_id, &download_url)?;
 
     if final_path.is_file() {
         return Err("This map archive is already downloaded.".to_string());
@@ -1801,7 +2706,9 @@ fn check_network_reachable() -> bool {
 }
 
 #[tauri::command]
-fn get_smallest_kiwix_map_suggestion(app: tauri::AppHandle) -> Result<Option<maps::MapCatalogEntry>, String> {
+fn get_smallest_kiwix_map_suggestion(
+    app: tauri::AppHandle,
+) -> Result<Option<maps::MapCatalogEntry>, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let config = load_config(&app_data_dir);
     let Some(addr) = config
@@ -1827,7 +2734,9 @@ fn list_tile_packs_cmd(app: tauri::AppHandle) -> Result<Vec<tile_pack::TilePackI
 }
 
 #[tauri::command]
-fn offline_basemap_paths_cmd(app: tauri::AppHandle) -> Result<tile_pack::OfflineBasemapPaths, String> {
+fn offline_basemap_paths_cmd(
+    app: tauri::AppHandle,
+) -> Result<tile_pack::OfflineBasemapPaths, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(tile_pack::offline_basemap_paths(&app_data_dir))
 }
@@ -1870,7 +2779,11 @@ fn export_tile_pack_to_mbtiles_file(
 }
 
 #[tauri::command]
-fn start_mbtiles_import(app: tauri::AppHandle, source_path: String, display_name: String) -> Result<String, String> {
+fn start_mbtiles_import(
+    app: tauri::AppHandle,
+    source_path: String,
+    display_name: String,
+) -> Result<String, String> {
     if source_path.trim().is_empty() {
         return Err("MBTiles path is required.".to_string());
     }
@@ -1894,7 +2807,11 @@ fn start_mbtiles_import(app: tauri::AppHandle, source_path: String, display_name
 }
 
 #[tauri::command]
-fn start_pmtiles_import(app: tauri::AppHandle, source_path: String, display_name: String) -> Result<String, String> {
+fn start_pmtiles_import(
+    app: tauri::AppHandle,
+    source_path: String,
+    display_name: String,
+) -> Result<String, String> {
     if source_path.trim().is_empty() {
         return Err("PMTiles path is required.".to_string());
     }
@@ -1990,12 +2907,24 @@ fn download_map(
             Ok(()) => {
                 let path_str = dest_path.to_string_lossy().to_string();
                 if let Ok(app_data) = app_emit.path().app_data_dir() {
-                    let _ = maps::add_downloaded_map(&app_data, path_str.clone(), name_clone, region_clone, style_clone);
+                    let _ = maps::add_downloaded_map(
+                        &app_data,
+                        path_str.clone(),
+                        name_clone,
+                        region_clone,
+                        style_clone,
+                    );
                 }
-                let _ = app_emit.emit(KIWIX_DONE_EVENT, serde_json::json!({ "id": url_clone, "path": path_str }));
+                let _ = app_emit.emit(
+                    KIWIX_DONE_EVENT,
+                    serde_json::json!({ "id": url_clone, "path": path_str }),
+                );
             }
             Err(e) => {
-                let _ = app_emit.emit(KIWIX_ERROR_EVENT, serde_json::json!({ "id": url_clone, "error": e }));
+                let _ = app_emit.emit(
+                    KIWIX_ERROR_EVENT,
+                    serde_json::json!({ "id": url_clone, "error": e }),
+                );
             }
         }
     });
@@ -2019,7 +2948,13 @@ fn get_pois(app: tauri::AppHandle) -> Result<Vec<maps::Poi>, String> {
 }
 
 #[tauri::command]
-fn add_poi(app: tauri::AppHandle, name: String, lat: f64, lon: f64, notes: String) -> Result<maps::Poi, String> {
+fn add_poi(
+    app: tauri::AppHandle,
+    name: String,
+    lat: f64,
+    lon: f64,
+    notes: String,
+) -> Result<maps::Poi, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     maps::add_poi(&app_data_dir, name, lat, lon, notes)
 }
@@ -2043,6 +2978,40 @@ fn update_poi(
     maps::update_poi(&app_data_dir, &id, name, lat, lon, notes)
 }
 
+/// Short Ollama Q&A for Help: no RAG, strict “Athena app only” system prompt.
+#[tauri::command]
+fn help_assistant_ask(app: tauri::AppHandle, question: String) -> Result<String, String> {
+    let q = question.trim();
+    if q.is_empty() {
+        return Err("Type a question first.".to_string());
+    }
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config = load_config(&app_data_dir);
+    let models = load_models_for_inference(&config);
+    ensure_inference_ready(&config, &models)?;
+    let mut system = "You are Athena's in-app help assistant. Answer ONLY about the Athena desktop application: chat, library, maps and tactical pins, mesh/Meshtastic, serial radio, Comms, settings, themes, Ollama, offline data, knowledge catalog, dashboard, and similar features. \
+If the user asks about anything else (general homework, unrelated topics), reply in one or two sentences that you only explain how to use Athena, and suggest what they could ask instead. \
+Be concise (under 8 short paragraphs). Do not invent features."
+        .to_string();
+    system.push_str(&user_profile::line_display_name_for_prompt(
+        config.user_display_name.as_deref(),
+    ));
+    let messages = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: system,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: q.to_string(),
+        },
+    ];
+    let options = ModelOptions {
+        temperature: 0.35,
+        num_ctx: 4096,
+    };
+    chat_unified(&config, &models, messages, Some(options))
+}
 
 #[tauri::command]
 fn send_message_stream(
@@ -2052,34 +3021,22 @@ fn send_message_stream(
     user_lat: Option<f64>,
     user_lon: Option<f64>,
     chat_id: Option<String>,
+    model_options: Option<ModelOptions>,
 ) -> Result<(), String> {
-    if !is_ollama_running() {
-        return Err("Ollama is not running. Start Ollama and ensure a model is installed (e.g. ollama run llama3.2:3b).".to_string());
-    }
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let config = load_config(&app_data_dir);
-    let models = get_available_models().map_err(|e| e.to_string())?;
-    if models.is_empty() {
-        return Err("No models found in Ollama. Install one with: ollama run llama3.2:3b".to_string());
-    }
-    let tier: String = config.model_override.clone().unwrap_or_else(|| get_specs().recommended_tier);
-    let model_name = select_model_for_tier(&models, &tier).ok_or("No suitable model found for the selected tier.")?;
+    let models = load_models_for_inference(&config);
+    ensure_inference_ready(&config, &models)?;
 
-    let db_path = app_data_dir.join("athena_index.db");
+    let state = app.state::<AppState>();
+    let db_arc = Arc::clone(&state.db);
+    let model_opts_for_stream = model_options.clone();
     let app_emit = app.clone();
     let history_clone = history;
     let app_data_dir_clone = app_data_dir.clone();
     let chat_id_clone = chat_id.clone();
     std::thread::spawn(move || {
         let app_data_dir = app_data_dir_clone;
-        let db = match Database::new(&db_path) {
-            Ok(d) => d,
-            Err(e) => {
-                let _ = app_emit.emit(STREAM_ERROR_EVENT, e);
-                return;
-            }
-        };
-
         let config = load_config(&app_data_dir);
         let history_ref = history_clone.as_deref().unwrap_or(&[]);
 
@@ -2111,142 +3068,170 @@ fn send_message_stream(
             build_retrieval_from_history(history_ref, &message_for_model)
         };
 
-        let (
-            context_section,
-            library_rule,
-            all_sources,
-        ) = if athena_ref_mode {
-            (String::new(), LIBRARY_RULE_ATHENA_REF_MODE, Vec::new())
-        } else {
-            let mentioned = db.get_indexed_files_by_name_mentioned(&retrieval_query).unwrap_or_default();
-            let mentioned_section = if mentioned.is_empty() {
-                String::new()
-            } else {
-                let ctx = build_context_from_docs(&mentioned, &retrieval_query, 4000);
-                format!(
-                    "\n\nThe user referred to or asked about the following document(s); use them to answer:\n{}\n\n",
-                    ctx
-                )
+        let (messages, all_sources) = {
+            let db = match db_arc.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    let _ = app_emit.emit(
+                        STREAM_ERROR_EVENT,
+                        format!("Database lock failed: {e}"),
+                    );
+                    return;
+                }
             };
 
-            let has_conversation_context = retrieval_query != message_for_model;
-            let keyword_limit = if has_conversation_context {
-                RRF_KEYWORD_LIMIT_WITH_CONTEXT
+            let (context_section, library_rule, all_sources) = if athena_ref_mode {
+                (String::new(), LIBRARY_RULE_ATHENA_REF_MODE, Vec::new())
             } else {
-                RRF_KEYWORD_LIMIT
-            };
-            let semantic_limit = if has_conversation_context {
-                RRF_SEMANTIC_LIMIT_WITH_CONTEXT
-            } else {
-                RRF_SEMANTIC_LIMIT
-            };
-            let mut docs = db.search_text_content(&retrieval_query, keyword_limit).unwrap_or_default();
-            sort_docs_learned_first(&mut docs);
-            let query_vec = embeddings::embed_text(&retrieval_query);
-            let semantic_chunks = db.search_similar_chunks(&query_vec, semantic_limit).unwrap_or_default();
-
-            let (rrf_context, source_names) = build_context_rrf(
-                &docs,
-                &semantic_chunks,
-                &retrieval_query,
-                has_conversation_context,
-            );
-
-            let keyword_semantic_section = if rrf_context.is_empty() {
-                let recent = db.get_recent_text_files(3).unwrap_or_default();
-                let fallback = build_recent_docs_context(&recent, 600, 2000);
-                if fallback.is_empty() {
+                let mentioned = db
+                    .get_indexed_files_by_name_mentioned(&retrieval_query)
+                    .unwrap_or_default();
+                let mentioned_section = if mentioned.is_empty() {
                     String::new()
                 } else {
+                    let ctx = build_context_from_docs(&mentioned, &retrieval_query, 4000);
                     format!(
-                        "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
-                        fallback
+                        "\n\nThe user referred to or asked about the following document(s); use them to answer:\n{}\n\n",
+                        ctx
                     )
+                };
+
+                let has_conversation_context = retrieval_query != message_for_model;
+                let keyword_limit = if has_conversation_context {
+                    RRF_KEYWORD_LIMIT_WITH_CONTEXT
+                } else {
+                    RRF_KEYWORD_LIMIT
+                };
+                let semantic_limit = if has_conversation_context {
+                    RRF_SEMANTIC_LIMIT_WITH_CONTEXT
+                } else {
+                    RRF_SEMANTIC_LIMIT
+                };
+                let mut docs = db
+                    .search_text_content(&retrieval_query, keyword_limit)
+                    .unwrap_or_default();
+                sort_docs_learned_first(&mut docs);
+                let query_vec = embeddings::embed_text(&retrieval_query);
+                let semantic_chunks = db
+                    .search_similar_chunks(&query_vec, semantic_limit)
+                    .unwrap_or_default();
+
+                let (rrf_context, source_names) = build_context_rrf(
+                    &docs,
+                    &semantic_chunks,
+                    &retrieval_query,
+                    has_conversation_context,
+                );
+
+                let keyword_semantic_section = if rrf_context.is_empty() {
+                    let recent = db.get_recent_text_files(3).unwrap_or_default();
+                    let fallback = build_recent_docs_context(&recent, 600, 2000);
+                    if fallback.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
+                            fallback
+                        )
+                    }
+                } else {
+                    format!(
+                        "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below). Addresses and property details here are from the user's Library—cite them as such. The \"current location\" line elsewhere is from Settings for general area only.\n{}",
+                        rrf_context
+                    )
+                };
+
+                let context_section = format!("{}{}", mentioned_section, keyword_semantic_section);
+
+                let mut all_sources: Vec<String> = mentioned.iter().map(|d| d.name.clone()).collect();
+                for n in &source_names {
+                    if !all_sources.contains(n) {
+                        all_sources.push(n.clone());
+                    }
                 }
-            } else {
+                const MAX_SOURCES_EMIT: usize = 12;
+                if all_sources.len() > MAX_SOURCES_EMIT {
+                    all_sources.truncate(MAX_SOURCES_EMIT);
+                }
+
+                let library_rule = if context_section.trim().is_empty() {
+                    "When the user asks about something that might be in their Library (e.g. their house, notes), say you don't have that information and suggest they add or place a relevant document in their Library folder, then try again."
+                } else {
+                    LIBRARY_RULE_WITH_CONTEXT
+                };
+
+                (context_section, library_rule, all_sources)
+            };
+
+            let athena_ref_section = if athena_ref_mode {
                 format!(
-                    "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below). Addresses and property details here are from the user's Library—cite them as such. The \"current location\" line elsewhere is from Settings for general area only.\n{}",
-                    rrf_context
+                    "\n\n---\nAthena application reference (authoritative for questions about the Athena app):\n{}\n---\n",
+                    ATHENA_PROJECT_REFERENCE
                 )
+            } else {
+                String::new()
             };
 
-            let context_section = format!("{}{}", mentioned_section, keyword_semantic_section);
+            let persistent_knowledge_section = build_persistent_knowledge_section(&app_data_dir);
+            let location_section = build_location_section(&config);
+            let poi_maps_section = build_poi_and_maps_section(&app_data_dir);
+            let user_gps_section = build_user_gps_section(user_lat, user_lon);
+            let personality_section = build_personality_section(&config);
+            let user_profile_section = build_user_profile_section(&config);
+            let system_content = format!(
+                "You are Athena, a local offline survival and repair assistant. You help with practical skills, first aid, repair, and survival knowledge. Answer concisely and clearly.\n\nCritical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
+                library_rule,
+                conversation_context_prompt,
+                persistent_knowledge_section,
+                context_section,
+                athena_ref_section,
+                location_section,
+                poi_maps_section,
+                user_gps_section,
+                personality_section,
+                user_profile_section
+            );
 
-            let mut all_sources: Vec<String> = mentioned.iter().map(|d| d.name.clone()).collect();
-            for n in &source_names {
-                if !all_sources.contains(n) {
-                    all_sources.push(n.clone());
+            let max_memory = config.memory_messages.unwrap_or(20) as usize;
+            let mut messages =
+                build_chat_messages(system_content, history_ref, &message_for_model, max_memory);
+
+            if let (Some(lat), Some(lon)) = (user_lat, user_lon) {
+                if lat.is_finite()
+                    && lon.is_finite()
+                    && crate::spatial::user_query_suggests_spatial_context(&message_for_model)
+                {
+                    if let Ok(spatial_block) =
+                        crate::spatial::build_spatial_context(&*db, lat, lon, &message_for_model)
+                    {
+                        messages =
+                            insert_spatial_system_before_last_user_message(messages, spatial_block);
+                    }
                 }
             }
-            const MAX_SOURCES_EMIT: usize = 12;
-            if all_sources.len() > MAX_SOURCES_EMIT {
-                all_sources.truncate(MAX_SOURCES_EMIT);
-            }
 
-            let library_rule = if context_section.trim().is_empty() {
-                "When the user asks about something that might be in their Library (e.g. their house, notes), say you don't have that information and suggest they add or place a relevant document in their Library folder, then try again."
-            } else {
-                LIBRARY_RULE_WITH_CONTEXT
-            };
-
-            (context_section, library_rule, all_sources)
+            (messages, all_sources)
         };
 
         if !all_sources.is_empty() {
             let _ = app_emit.emit(STREAM_SOURCES_EVENT, &all_sources);
         }
 
-        let athena_ref_section = if athena_ref_mode {
-            format!(
-                "\n\n---\nAthena application reference (authoritative for questions about the Athena app):\n{}\n---\n",
-                ATHENA_PROJECT_REFERENCE
-            )
-        } else {
-            String::new()
-        };
-
-        let persistent_knowledge_section = build_persistent_knowledge_section(&app_data_dir);
-        let location_section = build_location_section(&config);
-        let poi_maps_section = build_poi_and_maps_section(&app_data_dir);
-        let user_gps_section = build_user_gps_section(user_lat, user_lon);
-        let personality_section = build_personality_section(&config);
-        let system_content = format!(
-            "You are Athena, a local offline survival and repair assistant. You help with practical skills, first aid, repair, and survival knowledge. Answer concisely and clearly.\n\nCritical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}",
-            library_rule,
-            conversation_context_prompt,
-            persistent_knowledge_section,
-            context_section,
-            athena_ref_section,
-            location_section,
-            poi_maps_section,
-            user_gps_section,
-            personality_section
-        );
-
-        let max_memory = config.memory_messages.unwrap_or(20) as usize;
-        let mut messages = build_chat_messages(system_content, history_ref, &message_for_model, max_memory);
-
-        if let (Some(lat), Some(lon)) = (user_lat, user_lon) {
-            if lat.is_finite()
-                && lon.is_finite()
-                && crate::spatial::user_query_suggests_spatial_context(&message_for_model)
-            {
-                if let Ok(spatial_block) =
-                    crate::spatial::build_spatial_context(&db, lat, lon, &message_for_model)
-                {
-                    messages =
-                        insert_spatial_system_before_last_user_message(messages, spatial_block);
-                }
-            }
-        }
-
+        let models = load_models_for_inference(&config);
         let mut on_chunk = |chunk: &str| {
             let _ = app_emit.emit(STREAM_CHUNK_EVENT, chunk);
         };
         let on_done = || {
             let _ = app_emit.emit(STREAM_DONE_EVENT, ());
         };
-        if let Err(e) = chat_stream(&model_name, messages, &mut on_chunk, on_done) {
+        if let Err(e) = chat_stream_unified(
+            &config,
+            &models,
+            messages,
+            &mut on_chunk,
+            on_done,
+            model_opts_for_stream,
+        ) {
             let _ = app_emit.emit(STREAM_ERROR_EVENT, e);
         }
     });
@@ -2255,29 +3240,62 @@ fn send_message_stream(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = athena_mbtiles_tile_protocol::register_with_builder(athena_map_protocol::register_with_builder(
-        tauri::Builder::default(),
-    ))
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init());
+    let builder = athena_mbtiles_tile_protocol::register_with_builder(
+        athena_map_protocol::register_with_builder(tauri::Builder::default()),
+    )
+    .plugin(tauri_plugin_shell::init())
+    .plugin(tauri_plugin_opener::init())
+    .plugin(tauri_plugin_dialog::init());
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_macos_permissions::init());
     builder.setup(|app| {
             // Ensure the native window always has a non-empty title (avoids macOS fullscreen crash when title is null).
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_title("Athena");
+                #[cfg(target_os = "macos")]
+                {
+                    if let Err(e) = macos_window::apply_native_fullscreen_mitigation(&w) {
+                        eprintln!(
+                            "[athena] macOS: could not apply fullscreen mitigation (FullScreenNone): {e}"
+                        );
+                    }
+                    // Wry/Tauri may reset `collectionBehavior` after the webview attaches; re-apply
+                    // shortly after startup on the main thread.
+                    let h = app.handle().clone();
+                    std::thread::spawn(move || {
+                        for delay_ms in [500u64, 2000] {
+                            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                            let handle = h.clone();
+                            let _ = h.run_on_main_thread(move || {
+                                if let Some(win) = handle.get_webview_window("main") {
+                                    if let Err(e) =
+                                        macos_window::apply_native_fullscreen_mitigation(&win)
+                                    {
+                                        eprintln!(
+                                            "[athena] macOS: delayed fullscreen mitigation failed: {e}"
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    app.manage(macos_window::MacosSimpleFullscreenState(Arc::new(
+                        std::sync::atomic::AtomicBool::new(false),
+                    )));
+                }
             }
             let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
             let _ = map_manager_download::ensure_offline_maps_directory(&app_data_dir);
             let _ = map_manager_download::cleanup_stale_part_files(&app_data_dir);
-            let mesh_control =
-                mesh_listener::spawn_mesh_radio_listener(app.handle().clone(), app_data_dir.clone());
-            app.manage(mesh_control);
             let db_path = app_data_dir.join("athena_index.db");
-            let db = Database::new(&db_path)?;
-            let db = Arc::new(db);
+            let db = Arc::new(Mutex::new(Database::new(&db_path)?));
+            let mesh_control = mesh_listener::spawn_mesh_radio_listener(
+                app.handle().clone(),
+                app_data_dir.clone(),
+                Arc::clone(&db),
+            );
+            app.manage(mesh_control);
             let (watcher_tx, watcher_rx) = crossbeam_channel::unbounded();
             run_watcher_loop(Arc::clone(&db), watcher_rx, app_data_dir.clone(), app.handle().clone());
             app.manage(AppState {
@@ -2307,13 +3325,113 @@ pub fn run() {
                 None => vec![kiwix_dir_str],
             };
             let _ = watcher_tx.send(WatchCommand::SetFolders(folders));
-            std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(800));
-                if !is_ollama_running() {
-                    try_launch_ollama_server();
-                    std::thread::sleep(std::time::Duration::from_secs(3));
+
+            #[cfg(not(mobile))]
+            let spawned_sidecar: Option<CommandChild> = match app.handle().shell().sidecar("ollama") {
+                Ok(cmd) => match cmd.args(["serve"]).spawn() {
+                    Ok((mut rx, child)) => {
+                        tauri::async_runtime::spawn(async move {
+                            while rx.recv().await.is_some() {}
+                        });
+                        Some(child)
+                    }
+                    Err(e) => {
+                        eprintln!("[athena] Ollama sidecar spawn failed: {e}");
+                        None
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[athena] Ollama sidecar not available: {e}");
+                    None
                 }
-            });
+            };
+
+            #[cfg(not(mobile))]
+            let (ollama_child, use_legacy_ollama_launch) = match spawned_sidecar {
+                None => (None, true),
+                Some(child) => {
+                    let http_ok =
+                        tauri::async_runtime::block_on(ollama::ollama_http_ready_after_sidecar(5, 500));
+                    if http_ok {
+                        (Some(child), false)
+                    } else {
+                        eprintln!(
+                            "[athena] Ollama sidecar did not respond on the HTTP endpoint after spawn; terminating sidecar and enabling legacy launch."
+                        );
+                        if let Err(e) = child.kill() {
+                            eprintln!("[athena] Failed to kill Ollama sidecar after health check failure: {e}");
+                        }
+                        (None, true)
+                    }
+                }
+            };
+            #[cfg(mobile)]
+            let (ollama_child, use_legacy_ollama_launch) = (None, true);
+
+            app.manage(OllamaState(Mutex::new(ollama_child)));
+            app.manage(radio_manager::RadioState::new());
+
+            if use_legacy_ollama_launch {
+                let app_data_for_ollama = app_data_dir.clone();
+                let config_for_ollama = config.clone();
+                let app_handle_for_ollama = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                    if !is_ollama_running() {
+                        let prefs =
+                            ollama_setup::resolve_launch_paths(&app_data_for_ollama, &config_for_ollama);
+                        try_launch_ollama_server_with_preferences(&prefs);
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                    }
+                    if is_ollama_running() {
+                        return;
+                    }
+                    // Give the macOS Ollama.app / slow `ollama serve` startups time before downloading.
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    if is_ollama_running() {
+                        return;
+                    }
+                    if config_for_ollama.ollama_disable_auto_cli_download == Some(true) {
+                        return;
+                    }
+                    let managed = ollama_setup::managed_ollama_binary_path(&app_data_for_ollama);
+                    if managed.is_file() {
+                        let prefs =
+                            ollama_setup::resolve_launch_paths(&app_data_for_ollama, &config_for_ollama);
+                        try_launch_ollama_server_with_preferences(&prefs);
+                        return;
+                    }
+                    let _ = app_handle_for_ollama.emit(
+                        "ollama-setup-progress",
+                        serde_json::json!({ "phase": "downloading" }),
+                    );
+                    match ollama_setup::install_ollama_cli_to_app_data(&app_data_for_ollama) {
+                        Ok(bin) => {
+                            let _ = app_handle_for_ollama.emit(
+                                "ollama-setup-progress",
+                                serde_json::json!({
+                                    "phase": "installed",
+                                    "path": bin.to_string_lossy(),
+                                }),
+                            );
+                            let prefs = ollama_setup::resolve_launch_paths(
+                                &app_data_for_ollama,
+                                &config_for_ollama,
+                            );
+                            try_launch_ollama_server_with_preferences(&prefs);
+                        }
+                        Err(e) => {
+                            let _ = app_handle_for_ollama.emit(
+                                "ollama-setup-progress",
+                                serde_json::json!({
+                                    "phase": "error",
+                                    "message": e,
+                                }),
+                            );
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2329,14 +3447,37 @@ pub fn run() {
             rebuild_vector_index,
             list_library_contents,
             remove_library_file,
+            backup_database,
+            restore_database,
             get_system_specs,
             get_battery_state,
             get_ollama_available_models,
+            get_local_models,
+            pull_new_model,
+            get_sidecar_status,
+            get_ollama_setup_status,
+            install_ollama_cli_for_athena,
+            copy_ollama_into_athena_managed,
+            set_ollama_athena_cli_path,
             is_ollama_available,
             try_launch_ollama,
             get_recommended_model,
             get_model_override,
             set_model_override,
+            get_user_and_inference_settings,
+            set_user_display_name,
+            set_user_birthdate_iso,
+            set_inference_backend,
+            set_explicit_ollama_model,
+            set_openai_compatible_base_url,
+            set_openai_compatible_api_key,
+            set_openai_compatible_model,
+            set_allow_nsfw_unrestricted_models,
+            probe_openai_compatible_connection,
+            is_inference_ready,
+            moondream_describe_image,
+            kiwix_search_with_tool,
+            get_offline_route_geojson,
             get_memory_messages,
             set_memory_messages,
             get_feature_map_enabled,
@@ -2350,6 +3491,9 @@ pub fn run() {
             export_tactical_data,
             import_tactical_data,
             get_tactical_map_layers,
+            add_tactical_poi,
+            delete_tactical_poi,
+            broadcast_tactical_poi,
             get_offline_mbtiles_zoom_range,
             get_offline_mbtiles_bounds,
             get_satellite_api_key,
@@ -2358,6 +3502,7 @@ pub fn run() {
             get_local_time,
             get_sun_times,
             send_message,
+            help_assistant_ask,
             send_message_stream,
             scan_kiwix_zim_files,
             get_map_catalog,
@@ -2384,6 +3529,16 @@ pub fn run() {
             add_poi,
             remove_poi,
             update_poi,
+            map_manager::get_map_markers,
+            map_manager::add_map_marker,
+            map_manager::delete_map_marker,
+            map_manager::get_spatial_context,
+            map_manager::broadcast_map_marker,
+            map_manager::convert_coordinates,
+            map_manager::convert_mgrs_to_lat_lng,
+            map_manager::save_drawing,
+            map_manager::get_drawings,
+            map_manager::delete_drawing,
             list_chats,
             get_chat,
             save_chat,
@@ -2396,6 +3551,7 @@ pub fn run() {
             append_error_log,
             get_error_log,
             get_device_stats,
+            telemetry::get_system_stats,
             build_library_knowledge,
             set_fullscreen,
             is_fullscreen,
@@ -2403,7 +3559,34 @@ pub fn run() {
             get_mesh_ai_auto_reply,
             set_mesh_ai_auto_reply,
             is_mesh_radio_connected,
+            logbook_list_entries,
+            logbook_add_entry,
+            logbook_delete_entry,
+            logbook_broadcast_entry,
+            logbook_request_mesh_sync,
+            logbook_mesh_max_body_bytes,
+            rag_indexer::ingest_local_document,
+            rag_indexer::search_rag_chunks,
+            rag_indexer::download_knowledge_package,
+            rag_indexer::list_rag_documents,
+            radio_manager::get_available_ports,
+            radio_manager::connect_to_radio,
+            radio_manager::send_radio_message,
+            radio_manager::get_recent_radio_logs,
+            radio_manager::get_radio_telemetry_samples,
+            radio_manager::get_mesh_messages,
+            radio_manager::list_radio_channels,
+            radio_manager::upsert_radio_channel,
+            radio_manager::delete_radio_channel,
+            radio_manager::apply_channel_profile,
+            radio_manager::set_radio_config,
+            radio_manager::export_radio_logs,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let RunEvent::Exit = event {
+                kill_ollama_sidecar_if_running(app_handle);
+            }
+        });
 }

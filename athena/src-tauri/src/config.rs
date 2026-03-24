@@ -2,9 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+use crate::user_profile;
+
 const CONFIG_FILENAME: &str = "athena_config.json";
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub watch_folder: Option<String>,
     #[serde(default)]
@@ -39,6 +41,45 @@ pub struct AppConfig {
     /// When true, inbound Meshtastic text triggers Ollama and replies by DM to the sender. Default true.
     #[serde(default)]
     pub mesh_ai_auto_reply: Option<bool>,
+    /// When set, this `ollama` (or `ollama.exe`) binary is tried first for `ollama serve` before PATH / defaults.
+    #[serde(default)]
+    pub ollama_athena_cli_path: Option<String>,
+    /// When true, skip downloading the official Ollama CLI into app data when nothing is reachable on port 11434.
+    #[serde(default)]
+    pub ollama_disable_auto_cli_download: Option<bool>,
+    /// Optional schema version for future migrations (default 1).
+    #[serde(default)]
+    pub config_schema_version: Option<u32>,
+    /// User's preferred display name (local-only).
+    #[serde(default)]
+    pub user_display_name: Option<String>,
+    /// Birthdate `YYYY-MM-DD` for age gate and birthday message (local-only).
+    #[serde(default)]
+    pub user_birthdate_iso: Option<String>,
+    /// When true and user is 18+, show uncensored/NSFW model catalog entries.
+    #[serde(default)]
+    pub allow_nsfw_unrestricted_models: Option<bool>,
+    /// `ollama` (default) or `openai_compatible` for local OpenAI-style HTTP API.
+    #[serde(default)]
+    pub inference_backend: Option<String>,
+    /// When set and installed in Ollama, use this model name instead of tier selection.
+    #[serde(default)]
+    pub explicit_ollama_model: Option<String>,
+    /// Base URL for OpenAI-compatible server, e.g. `http://127.0.0.1:1234/v1`.
+    #[serde(default)]
+    pub openai_compatible_base_url: Option<String>,
+    /// Optional Bearer token for local servers that require it.
+    #[serde(default)]
+    pub openai_compatible_api_key: Option<String>,
+    /// Model id for `/v1/chat/completions` when using OpenAI-compatible backend.
+    #[serde(default)]
+    pub openai_compatible_model: Option<String>,
+    /// Optional path to `kiwix-search` binary (GPL-3; user-installed or bundled with attribution).
+    #[serde(default)]
+    pub kiwix_search_binary_path: Option<String>,
+    /// Optional path to `kiwix-serve` binary for local ZIM HTTP (GPL-3).
+    #[serde(default)]
+    pub kiwix_serve_binary_path: Option<String>,
 }
 
 /// A user-defined theme that can override colors, fonts, and personality.
@@ -78,18 +119,25 @@ pub fn config_path(app_data_dir: &Path) -> std::path::PathBuf {
     app_data_dir.join(CONFIG_FILENAME)
 }
 
+fn normalize_age_gate(mut c: AppConfig) -> AppConfig {
+    if !user_profile::is_at_least_18(c.user_birthdate_iso.as_deref()) {
+        c.allow_nsfw_unrestricted_models = Some(false);
+    }
+    c
+}
+
 pub fn load_config(app_data_dir: &Path) -> AppConfig {
     let path = config_path(app_data_dir);
     if path.exists() {
         match fs::read_to_string(&path) {
             Ok(s) => match serde_json::from_str::<AppConfig>(&s) {
-                Ok(c) => return c,
+                Ok(c) => return normalize_age_gate(c),
                 Err(_) => {}
             },
             Err(_) => {}
         }
     }
-    AppConfig::default()
+    normalize_age_gate(AppConfig::default())
 }
 
 pub fn save_config(app_data_dir: &Path, config: &AppConfig) -> Result<(), String> {
@@ -97,7 +145,8 @@ pub fn save_config(app_data_dir: &Path, config: &AppConfig) -> Result<(), String
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let s = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    let to_save = normalize_age_gate(config.clone());
+    let s = serde_json::to_string_pretty(&to_save).map_err(|e| e.to_string())?;
     fs::write(&path, s).map_err(|e| e.to_string())?;
     Ok(())
 }

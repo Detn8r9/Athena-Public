@@ -61,4 +61,3 @@ pub fn get_active_personality_id(config: &AppConfig) -> String {
 pub fn list_custom_themes(config: &AppConfig) -> &[CustomTheme] {
     &config.custom_themes
 }
-

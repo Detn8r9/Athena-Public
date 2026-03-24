@@ -17,19 +17,29 @@ const MAPS_DIRECTORY_NAME: &str = "maps";
 
 /// Chains [`tauri::Builder::register_asynchronous_uri_scheme_protocol`] for [`ATHENA_MBTILES_SCHEME`].
 pub fn register_with_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
-    builder.register_asynchronous_uri_scheme_protocol(ATHENA_MBTILES_SCHEME, |context, request, responder| {
-        let application_handle = context.app_handle().clone();
-        tauri::async_runtime::spawn(async move {
-            let response = match tauri::async_runtime::spawn_blocking(move || process_request(&application_handle, request)).await {
-                Ok(resp) => resp,
-                Err(_) => fallback_error_response(),
-            };
-            responder.respond(response);
-        });
-    })
+    builder.register_asynchronous_uri_scheme_protocol(
+        ATHENA_MBTILES_SCHEME,
+        |context, request, responder| {
+            let application_handle = context.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let response = match tauri::async_runtime::spawn_blocking(move || {
+                    process_request(&application_handle, request)
+                })
+                .await
+                {
+                    Ok(resp) => resp,
+                    Err(_) => fallback_error_response(),
+                };
+                responder.respond(response);
+            });
+        },
+    )
 }
 
-fn process_request<R: Runtime>(application_handle: &AppHandle<R>, request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+fn process_request<R: Runtime>(
+    application_handle: &AppHandle<R>,
+    request: Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
     match request.method() {
         m if m == Method::OPTIONS => options_response(),
         m if m == Method::HEAD => serve_head(application_handle, &request),
@@ -44,7 +54,10 @@ fn process_request<R: Runtime>(application_handle: &AppHandle<R>, request: Reque
 fn options_response() -> Response<Vec<u8>> {
     Response::builder()
         .status(StatusCode::NO_CONTENT)
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
+        .header(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        )
         .header(
             header::ACCESS_CONTROL_ALLOW_METHODS,
             HeaderValue::from_static("GET, HEAD, OPTIONS"),
@@ -57,7 +70,10 @@ fn options_response() -> Response<Vec<u8>> {
         .unwrap_or_else(|_| fallback_error_response())
 }
 
-fn serve_head<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+fn serve_head<R: Runtime>(
+    application_handle: &AppHandle<R>,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
     match resolve_tile_request(application_handle, request.uri().path()) {
         Ok((file_path, _, _, _)) => {
             let content_type = match mbtiles_io::read_mbtiles_raster_format_mime(&file_path) {
@@ -68,11 +84,11 @@ fn serve_head<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<V
             };
             Response::builder()
                 .status(StatusCode::OK)
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
                 .header(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static(content_type),
+                    header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    HeaderValue::from_static("*"),
                 )
+                .header(header::CONTENT_TYPE, HeaderValue::from_static(content_type))
                 .body(Vec::new())
                 .unwrap_or_else(|_| fallback_error_response())
         }
@@ -80,7 +96,10 @@ fn serve_head<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<V
     }
 }
 
-fn serve_get<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+fn serve_get<R: Runtime>(
+    application_handle: &AppHandle<R>,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
     match resolve_tile_request(application_handle, request.uri().path()) {
         Ok((file_path, z, x, y_xyz)) => {
             let content_type = match mbtiles_io::read_mbtiles_raster_format_mime(&file_path) {
@@ -93,24 +112,24 @@ fn serve_get<R: Runtime>(application_handle: &AppHandle<R>, request: &Request<Ve
             match mbtiles_io::read_mbtiles_raster_tile_xyz(&file_path, z, x, y_xyz) {
                 Ok(Some(bytes)) => Response::builder()
                     .status(StatusCode::OK)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
                     .header(
-                        header::CONTENT_TYPE,
-                        HeaderValue::from_static(content_type),
+                        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                        HeaderValue::from_static("*"),
                     )
+                    .header(header::CONTENT_TYPE, HeaderValue::from_static(content_type))
                     .header(
                         header::CACHE_CONTROL,
                         HeaderValue::from_static("public, max-age=86400"),
                     )
-                    .header(
-                        header::CONTENT_LENGTH,
-                        header_value_from_usize(bytes.len()),
-                    )
+                    .header(header::CONTENT_LENGTH, header_value_from_usize(bytes.len()))
                     .body(bytes)
                     .unwrap_or_else(|_| fallback_error_response()),
                 Ok(None) => Response::builder()
                     .status(StatusCode::NOT_FOUND)
-                    .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
+                    .header(
+                        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                        HeaderValue::from_static("*"),
+                    )
                     .header(
                         header::CONTENT_TYPE,
                         HeaderValue::from_static("text/plain; charset=utf-8"),
@@ -149,7 +168,10 @@ fn resolve_tile_request<R: Runtime>(
         }
     };
 
-    let segments: Vec<&str> = uri_path.split('/').filter(|segment| !segment.is_empty()).collect();
+    let segments: Vec<&str> = uri_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     if segments.len() != 4 {
         return Err(plain_text_response(
             StatusCode::BAD_REQUEST,
@@ -188,13 +210,22 @@ fn resolve_tile_request<R: Runtime>(
     }
 
     let z: u32 = zoom_segment.parse().map_err(|_| {
-        plain_text_response(StatusCode::BAD_REQUEST, "Zoom level must be a non-negative integer.")
+        plain_text_response(
+            StatusCode::BAD_REQUEST,
+            "Zoom level must be a non-negative integer.",
+        )
     })?;
     let x: u32 = column_segment.parse().map_err(|_| {
-        plain_text_response(StatusCode::BAD_REQUEST, "Tile X index must be a non-negative integer.")
+        plain_text_response(
+            StatusCode::BAD_REQUEST,
+            "Tile X index must be a non-negative integer.",
+        )
     })?;
     let y_xyz: u32 = row_segment.parse().map_err(|_| {
-        plain_text_response(StatusCode::BAD_REQUEST, "Tile Y index must be a non-negative integer.")
+        plain_text_response(
+            StatusCode::BAD_REQUEST,
+            "Tile Y index must be a non-negative integer.",
+        )
     })?;
 
     let candidate_path = canonical_maps_root.join(&archive_file_name);
@@ -226,15 +257,15 @@ fn plain_text_response(status: StatusCode, message: &str) -> Response<Vec<u8>> {
     let body = message.as_bytes().to_vec();
     Response::builder()
         .status(status)
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"))
+        .header(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        )
         .header(
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/plain; charset=utf-8"),
         )
-        .header(
-            header::CONTENT_LENGTH,
-            header_value_from_usize(body.len()),
-        )
+        .header(header::CONTENT_LENGTH, header_value_from_usize(body.len()))
         .body(body)
         .unwrap_or_else(|_| fallback_error_response())
 }

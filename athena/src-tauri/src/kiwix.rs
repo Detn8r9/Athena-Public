@@ -1,9 +1,9 @@
 // Kiwix ZIM: discover local .zim files by recursive directory scan (no in-app catalog or download).
 // Also provides a generic download_zim helper used by map downloads.
 
+use serde::Serialize;
 use std::io::Write;
 use std::path::Path;
-use serde::Serialize;
 use walkdir::WalkDir;
 
 fn format_size(bytes: u64) -> String {
@@ -33,7 +33,10 @@ pub struct DiscoveredZim {
 /// permission or I/O errors (logs and continues) so the app does not crash on restricted folders.
 pub fn scan_kiwix_zim_files(root: &Path) -> Result<Vec<DiscoveredZim>, String> {
     if !root.is_dir() {
-        return Err(format!("Library path is not a directory: {}", root.display()));
+        return Err(format!(
+            "Library path is not a directory: {}",
+            root.display()
+        ));
     }
     let mut out = Vec::new();
     for entry in WalkDir::new(root).follow_links(false).into_iter() {
@@ -65,10 +68,7 @@ pub fn scan_kiwix_zim_files(root: &Path) -> Result<Vec<DiscoveredZim>, String> {
             }
             Err(err) => {
                 if err.path().is_some() {
-                    eprintln!(
-                        "[Kiwix] Skipping path (permission or I/O error): {}",
-                        err
-                    );
+                    eprintln!("[Kiwix] Skipping path (permission or I/O error): {}", err);
                 }
             }
         }

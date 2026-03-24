@@ -2,9 +2,34 @@ use std::io::Read;
 use std::path::Path;
 
 const TEXT_EXTENSIONS: &[&str] = &[
-    "txt", "md", "html", "htm", "rst", "log", "csv", "json", "xml", "yaml", "yml",
-    "tex", "org", "ini", "cfg", "conf", "toml", "env", "properties", "asc", "text",
-    "adoc", "asciidoc", "creole", "wiki", "me", "nfo", "readme",
+    "txt",
+    "md",
+    "html",
+    "htm",
+    "rst",
+    "log",
+    "csv",
+    "json",
+    "xml",
+    "yaml",
+    "yml",
+    "tex",
+    "org",
+    "ini",
+    "cfg",
+    "conf",
+    "toml",
+    "env",
+    "properties",
+    "asc",
+    "text",
+    "adoc",
+    "asciidoc",
+    "creole",
+    "wiki",
+    "me",
+    "nfo",
+    "readme",
 ];
 const PDF_EXTENSIONS: &[&str] = &["pdf"];
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif"];
@@ -165,7 +190,9 @@ pub fn index_file(path: &std::path::Path) -> Option<IndexedFileData> {
                 .map(|s| s.to_lowercase())
                 .unwrap_or_default();
             let text = if ext == "html" || ext == "htm" {
-                std::fs::read_to_string(path).ok().map(|raw| strip_html(&raw))
+                std::fs::read_to_string(path)
+                    .ok()
+                    .map(|raw| strip_html(&raw))
             } else {
                 std::fs::read_to_string(path).ok()
             };
@@ -178,10 +205,8 @@ pub fn index_file(path: &std::path::Path) -> Option<IndexedFileData> {
                 Some(t) if t.trim().len() >= SCANNED_PDF_MIN_TEXT_LEN => {
                     text.map(|s| s.to_string())
                 }
-                _ => {
-                    crate::ocr::extract_text_from_scanned_pdf(path)
-                        .or_else(|| text.filter(|s| !s.trim().is_empty()).map(|s| s.to_string()))
-                }
+                _ => crate::ocr::extract_text_from_scanned_pdf(path)
+                    .or_else(|| text.filter(|s| !s.trim().is_empty()).map(|s| s.to_string())),
             };
             (content, None)
         }
@@ -233,8 +258,17 @@ pub fn index_file(path: &std::path::Path) -> Option<IndexedFileData> {
     let text_content = text_content.and_then(|t| limit_text_for_index(path, t));
 
     let file_type = match kind {
-        FileKind::Text | FileKind::Pdf | FileKind::Pages | FileKind::Odt | FileKind::Docx
-        | FileKind::Epub | FileKind::Pptx | FileKind::Xlsx | FileKind::Rtf | FileKind::Numbers | FileKind::Key => "text",
+        FileKind::Text
+        | FileKind::Pdf
+        | FileKind::Pages
+        | FileKind::Odt
+        | FileKind::Docx
+        | FileKind::Epub
+        | FileKind::Pptx
+        | FileKind::Xlsx
+        | FileKind::Rtf
+        | FileKind::Numbers
+        | FileKind::Key => "text",
         FileKind::Image => "image",
         FileKind::Video => "video",
         FileKind::Map => "map",
@@ -274,7 +308,11 @@ fn extract_text_from_pages(path: &Path) -> Option<String> {
         let mut entry = archive.by_index(i).ok()?;
         let name = entry.name().to_string();
         let name_lower = name.to_lowercase();
-        if name == "Index" || name_lower == "index.xml" || name_lower.ends_with("document.xml") || name_lower.contains("index/document") {
+        if name == "Index"
+            || name_lower == "index.xml"
+            || name_lower.ends_with("document.xml")
+            || name_lower.contains("index/document")
+        {
             let mut buf = Vec::new();
             if entry.read_to_end(&mut buf).is_err() {
                 continue;
@@ -452,12 +490,18 @@ fn extract_text_from_rtf(path: &Path) -> Option<String> {
             i += 1;
             continue;
         }
-        if skip_group == 0 && (bytes[i].is_ascii_graphic() || bytes[i] == b' ' || bytes[i] == b'\n') {
+        if skip_group == 0 && (bytes[i].is_ascii_graphic() || bytes[i] == b' ' || bytes[i] == b'\n')
+        {
             out.push(bytes[i] as char);
         }
         i += 1;
     }
-    let trimmed = out.split_whitespace().collect::<Vec<_>>().join(" ").trim().to_string();
+    let trimmed = out
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
     if trimmed.len() < 10 {
         return None;
     }
@@ -579,7 +623,11 @@ fn strip_html(html: &str) -> String {
                 continue;
             }
         }
-        if bytes[i].is_ascii_alphanumeric() || bytes[i] == b' ' || bytes[i] == b'\n' || bytes[i] == b'\t' {
+        if bytes[i].is_ascii_alphanumeric()
+            || bytes[i] == b' '
+            || bytes[i] == b'\n'
+            || bytes[i] == b'\t'
+        {
             out.push(bytes[i] as char);
         }
         i += 1;

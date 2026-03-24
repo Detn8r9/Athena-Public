@@ -209,7 +209,10 @@ pub fn cleanup_stale_part_files(app_data_dir: &std::path::Path) -> Result<(), St
     cleanup_stale_part_files_at(app_data_dir, std::time::SystemTime::now())
 }
 
-fn cleanup_stale_part_files_at(app_data_dir: &std::path::Path, now: std::time::SystemTime) -> Result<(), String> {
+fn cleanup_stale_part_files_at(
+    app_data_dir: &std::path::Path,
+    now: std::time::SystemTime,
+) -> Result<(), String> {
     let dir = offline_maps_directory(app_data_dir);
     if !dir.is_dir() {
         return Ok(());
@@ -232,7 +235,11 @@ fn cleanup_stale_part_files_at(app_data_dir: &std::path::Path, now: std::time::S
             Ok(t) => t,
             Err(_) => continue,
         };
-        if now.duration_since(modified).unwrap_or(std::time::Duration::ZERO) > max_age {
+        if now
+            .duration_since(modified)
+            .unwrap_or(std::time::Duration::ZERO)
+            > max_age
+        {
             let _ = std::fs::remove_file(&path);
         }
     }

@@ -12,13 +12,16 @@ fn raster_to_png_bytes(tile_type: TileType, uncompressed: &[u8]) -> Result<Vec<u
     match tile_type {
         TileType::Png => Ok(uncompressed.to_vec()),
         TileType::Jpeg | TileType::WebP | TileType::AVIF => {
-            let img = image::load_from_memory(uncompressed).map_err(|e| format!("Decode tile image: {e}"))?;
+            let img = image::load_from_memory(uncompressed)
+                .map_err(|e| format!("Decode tile image: {e}"))?;
             let mut cursor = Cursor::new(Vec::new());
             img.write_to(&mut cursor, ImageFormat::Png)
                 .map_err(|e| format!("Encode PNG: {e}"))?;
             Ok(cursor.into_inner())
         }
-        TileType::Mvt | TileType::Unknown => Err("Unsupported tile encoding for raster import.".to_string()),
+        TileType::Mvt | TileType::Unknown => {
+            Err("Unsupported tile encoding for raster import.".to_string())
+        }
     }
 }
 
@@ -69,8 +72,12 @@ pub fn import_pmtiles_to_xyz(
     for tid in ids {
         let (z, x, y) = zxy(tid).map_err(|e| format!("Invalid PMTiles tile id {tid}: {e}"))?;
         let z_i32 = i32::from(z);
-        let x_i32: i32 = x.try_into().map_err(|_| "Tile x out of range".to_string())?;
-        let y_i32: i32 = y.try_into().map_err(|_| "Tile y out of range".to_string())?;
+        let x_i32: i32 = x
+            .try_into()
+            .map_err(|_| "Tile x out of range".to_string())?;
+        let y_i32: i32 = y
+            .try_into()
+            .map_err(|_| "Tile y out of range".to_string())?;
 
         let Some(raw) = pm
             .get_tile_by_id(tid)

@@ -9,7 +9,10 @@ use std::path::Path;
 const VOICES_SUBDIR: &str = "voices";
 
 fn voice_config_path(app_data_dir: &Path, voice_id: &str) -> std::path::PathBuf {
-    app_data_dir.join(VOICES_SUBDIR).join(voice_id).join("model.onnx.json")
+    app_data_dir
+        .join(VOICES_SUBDIR)
+        .join(voice_id)
+        .join("model.onnx.json")
 }
 
 fn add_static_noise(samples: &mut [f32], amount: f32) {

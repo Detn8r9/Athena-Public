@@ -12,12 +12,7 @@ pub fn index_document(db: &Database, file_path: &str, full_text: &str) -> Result
     let chunks = chunking::chunk_text_default(full_text);
     for chunk in chunks {
         let vector = embeddings::embed_text(&chunk.text);
-        db.upsert_chunk_embedding(
-            file_path,
-            chunk.index as i64,
-            &chunk.text,
-            &vector,
-        )?;
+        db.upsert_chunk_embedding(file_path, chunk.index as i64, &chunk.text, &vector)?;
     }
     Ok(())
 }

@@ -1,27 +1,73 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 export type HelpSectionId =
   | "overview"
+  | "home"
+  | "tactical_map"
+  | "maps_offline"
   | "chat"
   | "tools"
   | "sidebar"
   | "header"
   | "library"
   | "meshtastic"
+  | "radio_comms"
   | "settings"
-  | "replies";
+  | "replies"
+  | "help_assistant";
 
-const SECTIONS: { id: HelpSectionId; label: string; blurb: string }[] = [
-  { id: "overview", label: "Overview", blurb: "What Athena is and how it works" },
-  { id: "chat", label: "Chat & composer", blurb: "Sending messages and shortcuts" },
-  { id: "tools", label: "Tools", blurb: "Attachments and the Tools menu" },
-  { id: "sidebar", label: "Sidebar", blurb: "Chats list and organization" },
-  { id: "header", label: "Top bar", blurb: "Icons across the header" },
-  { id: "library", label: "Library & Kiwix", blurb: "Documents, indexing, offline Wikipedia" },
-  { id: "meshtastic", label: "Meshtastic", blurb: "USB LoRa mesh radio" },
-  { id: "settings", label: "Settings", blurb: "General, AI, location, mesh, appearance, troubleshooting" },
-  { id: "replies", label: "Replies & playback", blurb: "TTS, copy, and citations" },
+type SectionDef = {
+  id: HelpSectionId;
+  label: string;
+  blurb: string;
+  /** Extra words for search (lowercase phrases). */
+  keywords?: string[];
+};
+
+const SECTIONS: SectionDef[] = [
+  { id: "overview", label: "Overview", blurb: "What Athena is and how it works", keywords: ["ollama", "local", "offline"] },
+  { id: "home", label: "Home", blurb: "Dashboard, CPU/RAM, quick launch", keywords: ["dashboard", "launcher", "system"] },
+  {
+    id: "tactical_map",
+    label: "Tactical map",
+    blurb: "Pins, layers, mesh, right‑click",
+    keywords: ["map", "pin", "tactical", "poi", "mesh", "leaflet"],
+  },
+  {
+    id: "maps_offline",
+    label: "Maps & offline data",
+    blurb: "Kiwix ZIMs vs MBTiles / archives",
+    keywords: ["kiwix", "zim", "mbtiles", "pmtiles", "download", "basemap", "archive"],
+  },
+  { id: "chat", label: "Chat & composer", blurb: "Sending messages and shortcuts", keywords: ["message", "keyboard"] },
+  { id: "tools", label: "Tools", blurb: "Attachments and the Tools menu", keywords: ["attach", "file", "image"] },
+  { id: "sidebar", label: "Sidebar", blurb: "Chats list and organization", keywords: ["chat list", "pin"] },
+  { id: "header", label: "Top bar", blurb: "Icons across the header", keywords: ["export", "pdf", "triage"] },
+  { id: "library", label: "Library & Kiwix", blurb: "Documents, indexing, offline Wikipedia", keywords: ["index", "rag", "zim"] },
+  { id: "meshtastic", label: "Meshtastic", blurb: "USB LoRa mesh radio", keywords: ["mesh", "lora", "usb"] },
+  {
+    id: "radio_comms",
+    label: "Comms (radio)",
+    blurb: "Serial radio terminal, channels",
+    keywords: ["radio", "serial", "comms", "mesh", "packet"],
+  },
+  { id: "settings", label: "Settings", blurb: "General, AI, location, mesh, appearance", keywords: ["preferences", "theme"] },
+  { id: "replies", label: "Replies & playback", blurb: "TTS, copy, and citations", keywords: ["speech", "copy"] },
+  {
+    id: "help_assistant",
+    label: "Ask Athena",
+    blurb: "AI help for using the app (beta)",
+    keywords: ["ai", "question", "search", "how do i"],
+  },
 ];
+
+function sectionMatches(query: string, s: SectionDef): boolean {
+  const t = query.trim().toLowerCase();
+  if (!t) return true;
+  const hay = [s.label, s.blurb, s.id, ...(s.keywords ?? [])].join(" ").toLowerCase();
+  return hay.includes(t);
+}
 
 interface HelpModalProps {
   open: boolean;
@@ -30,10 +76,23 @@ interface HelpModalProps {
 
 export function HelpModal({ open, onClose }: HelpModalProps) {
   const [active, setActive] = useState<HelpSectionId>("overview");
+  const [search, setSearch] = useState("");
+
+  const visibleSections = useMemo(() => SECTIONS.filter((s) => sectionMatches(search, s)), [search]);
 
   useEffect(() => {
-    if (open) setActive("overview");
+    if (open) {
+      setActive("overview");
+      setSearch("");
+    }
   }, [open]);
+
+  useEffect(() => {
+    if (visibleSections.length === 0) return;
+    if (!visibleSections.some((s) => s.id === active)) {
+      setActive(visibleSections[0].id);
+    }
+  }, [visibleSections, active]);
 
   if (!open) return null;
 
@@ -47,27 +106,46 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
           </button>
         </div>
 
+        <div className="help-modal-search-wrap">
+          <label htmlFor="help-modal-search" className="help-modal-search-label">
+            Search topics
+          </label>
+          <input
+            id="help-modal-search"
+            type="search"
+            className="help-modal-search-input map-chat-input"
+            placeholder="Filter topics (e.g. map, mesh, library)…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            autoComplete="off"
+          />
+        </div>
+
         <div className="help-modal-shell">
           <nav className="help-modal-nav" aria-labelledby="help-modal-title">
-            <p className="help-modal-nav-intro">Choose a topic:</p>
-            <ul className="help-modal-nav-list" role="tablist" aria-label="Help sections">
-              {SECTIONS.map((s) => (
-                <li key={s.id} role="none">
-                  <button
-                    type="button"
-                    role="tab"
-                    id={`help-tab-${s.id}`}
-                    aria-selected={active === s.id}
-                    aria-controls={`help-panel-${s.id}`}
-                    className={`help-modal-nav-btn${active === s.id ? " is-active" : ""}`}
-                    onClick={() => setActive(s.id)}
-                  >
-                    <span className="help-modal-nav-btn-label">{s.label}</span>
-                    <span className="help-modal-nav-btn-blurb">{s.blurb}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <p className="help-modal-nav-intro">{search.trim() ? "Matching topics:" : "Choose a topic:"}</p>
+            {visibleSections.length === 0 ? (
+              <p className="text-muted small help-modal-no-match">No topics match. Clear the search or try Ask Athena.</p>
+            ) : (
+              <ul className="help-modal-nav-list" role="tablist" aria-label="Help sections">
+                {visibleSections.map((s) => (
+                  <li key={s.id} role="none">
+                    <button
+                      type="button"
+                      role="tab"
+                      id={`help-tab-${s.id}`}
+                      aria-selected={active === s.id}
+                      aria-controls={`help-panel-${s.id}`}
+                      className={`help-modal-nav-btn${active === s.id ? " is-active" : ""}`}
+                      onClick={() => setActive(s.id)}
+                    >
+                      <span className="help-modal-nav-btn-label">{s.label}</span>
+                      <span className="help-modal-nav-btn-blurb">{s.blurb}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </nav>
 
           <div
@@ -76,15 +154,29 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
             id={`help-panel-${active}`}
             aria-labelledby={`help-tab-${active}`}
           >
-            {active === "overview" && <OverviewPanel />}
-            {active === "chat" && <ChatPanel />}
-            {active === "tools" && <ToolsPanel />}
-            {active === "sidebar" && <SidebarPanel />}
-            {active === "header" && <HeaderPanel />}
-            {active === "library" && <LibraryPanel />}
-            {active === "meshtastic" && <MeshtasticPanel />}
-            {active === "settings" && <SettingsPanel />}
-            {active === "replies" && <RepliesPanel />}
+            {visibleSections.length === 0 ? (
+              <p className="help-modal-empty-detail text-muted">
+                No topics match this filter. Clear the search box above, or open <strong>Ask Athena</strong> from the sidebar once
+                it appears again.
+              </p>
+            ) : (
+              <>
+                {active === "overview" && <OverviewPanel />}
+                {active === "home" && <HomePanel />}
+                {active === "tactical_map" && <TacticalMapPanel />}
+                {active === "maps_offline" && <MapsOfflinePanel />}
+                {active === "chat" && <ChatPanel />}
+                {active === "tools" && <ToolsPanel />}
+                {active === "sidebar" && <SidebarPanel />}
+                {active === "header" && <HeaderPanel />}
+                {active === "library" && <LibraryPanel />}
+                {active === "meshtastic" && <MeshtasticPanel />}
+                {active === "radio_comms" && <RadioCommsPanel />}
+                {active === "settings" && <SettingsPanel />}
+                {active === "replies" && <RepliesPanel />}
+                {active === "help_assistant" && <AskAthenaPanel />}
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -104,8 +196,11 @@ function OverviewPanel() {
       <h4>What you need</h4>
       <ul>
         <li>
-          <strong>Ollama</strong> installed and running, with at least one model pulled (e.g. <code>ollama run llama3.2:3b</code>
-          ). If Ollama isn&apos;t running, Athena shows a banner at the top of the app.
+          <strong>Ollama</strong> running on this machine, with at least one model pulled (e.g.{" "}
+          <code>ollama run llama3.2:3b</code>). If nothing is listening on port 11434, Athena can download the official Ollama
+          CLI into its app data folder and start <code>ollama serve</code> for you. If <code>ollama</code> is only on your disk in
+          an unusual place, the app may offer to <strong>copy</strong> it into that managed folder (your original stays put).
+          When Ollama isn&apos;t running, a banner appears at the top of the app.
         </li>
         <li>
           A <strong>Library folder</strong> (optional but recommended): PDFs, text, and Kiwix <code>.zim</code> files are indexed
@@ -234,6 +329,10 @@ function HeaderPanel() {
       <p>After the sidebar collapse control, the header icons are:</p>
       <ul className="help-detail-icon-list">
         <li>
+          <strong>Home</strong> — Opens the dashboard (CPU/RAM, quick tiles to Chat, Map, Comms, Library, etc.). Scrolls on small
+          screens.
+        </li>
+        <li>
           <strong>Export PDF</strong> — Saves the <em>current</em> conversation as a PDF file. Disabled when there are no messages
           or while an export is in progress.
         </li>
@@ -245,6 +344,9 @@ function HeaderPanel() {
         <li>
           <strong>Library</strong> — Choose your library folder, see indexed files, download more data (opens Kiwix Library in the
           browser), scan for local ZIM files, and rebuild the vector index when you add many documents.
+        </li>
+        <li>
+          <strong>Map</strong> (when enabled) — Tactical map with pins and layers. See <strong>Tactical map</strong> in Help.
         </li>
         <li>
           <strong>Meshtastic</strong> — Opens the USB mesh radio panel: Primary-channel broadcast send/receive. See the{" "}
@@ -337,6 +439,10 @@ function SettingsPanel() {
       <h4>General</h4>
       <ul>
         <li>
+          <strong>User profile</strong> — Optional display name (used in AI context) and birthdate (stored only on this device). At age
+          18+ you can enable the unrestricted model catalog for <strong>local</strong> uncensored models you install yourself.
+        </li>
+        <li>
           <strong>Help &amp; shortcuts</strong> — Quick reminders (focus input, find in chat, <code>/athena</code>, <code>/rag-count</code>
           ) and buttons to open Help or Library.
         </li>
@@ -347,6 +453,10 @@ function SettingsPanel() {
 
       <h4>AI &amp; models</h4>
       <ul>
+        <li>
+          <strong>Inference backend</strong> — Default <strong>Ollama</strong>, or <strong>OpenAI-compatible (local)</strong> for LM
+          Studio, llama.cpp server, etc. (localhost URLs only). Test connection from Settings when using the latter.
+        </li>
         <li>
           <strong>Ollama</strong> — Status and a &quot;Try to start Ollama&quot; action when the server isn&apos;t running.
         </li>
@@ -423,6 +533,214 @@ function RepliesPanel() {
       <p>
         Streaming replies appear as they generate; if something fails, check the error banner or the error log in Settings.
       </p>
+    </>
+  );
+}
+
+function HomePanel() {
+  return (
+    <>
+      <h3 className="help-detail-title">Home (dashboard)</h3>
+      <p>
+        The <strong>Home</strong> view is the launch pad: system readouts (CPU, RAM, and related stats when available), shortcuts to{" "}
+        <strong>Chat</strong>, <strong>Tactical map</strong> (if Maps is on), <strong>Comms</strong>, <strong>Library</strong>,{" "}
+        <strong>Knowledge catalog</strong>, and more.
+      </p>
+      <ul>
+        <li>
+          On <strong>short or narrow screens</strong>, the page scrolls so nothing is cut off below the header.
+        </li>
+        <li>
+          <strong>Recent Comms</strong> shows a short log of recent serial/mesh traffic when the radio stack has data—tap through to
+          the full Comms view for terminals and channels.
+        </li>
+      </ul>
+    </>
+  );
+}
+
+function TacticalMapPanel() {
+  return (
+    <>
+      <h3 className="help-detail-title">Tactical map</h3>
+      <p>
+        Open the map from <strong>Home</strong> or the <strong>map</strong> icon in the header (when Maps is enabled in Settings →
+        Location). You pan and zoom the basemap; <strong>right‑click</strong> (or long‑press on touch) drops or edits a point of
+        interest.
+      </p>
+      <h4>Pin picker (Resources · Network · Custom)</h4>
+      <p>
+        When you add or edit a pin, the icon chooser has three tabs—aligned with how pins are stored:
+      </p>
+      <ul>
+        <li>
+          <strong>Resources</strong> — Common sites and supplies (shelter, water, medical, fuel, etc.). Saved as{" "}
+          <em>resource</em> pins.
+        </li>
+        <li>
+          <strong>Network</strong> — Meshtastic / RF / comms‑style icons (mesh nodes, antennas, repeaters). Saved as{" "}
+          <em>network</em> pins so they filter separately from supplies.
+        </li>
+        <li>
+          <strong>Custom</strong> — Full Lucide library plus search—pick any icon when the presets don&apos;t fit.
+        </li>
+      </ul>
+      <h4>Sidebar &amp; layers</h4>
+      <p>
+        Use the tactical sidebar to toggle visibility, focus layers, and manage POIs. Mesh overlays (when connected) show node
+        positions on the map where supported by your build.
+      </p>
+    </>
+  );
+}
+
+function MapsOfflinePanel() {
+  return (
+    <>
+      <h3 className="help-detail-title">Maps &amp; offline data</h3>
+      <p>Athena mixes two different kinds of “offline map” data—each has its own job:</p>
+      <ul>
+        <li>
+          <strong>Kiwix / ZIM maps</strong> — Wikipedia‑style <code>.zim</code> files in your Library. Great for place names and
+          reference. Add them via Library → offline data, then index as usual.
+        </li>
+        <li>
+          <strong>Basemap tiles (MBTiles / PMTiles / archives)</strong> — Raster or vector tiles for the <em>moving map</em>. Pick
+          regions or import files under <strong>Settings → Offline maps</strong> and (when enabled) the Library <strong>Maps</strong>{" "}
+          tab. These are what you pan/zoom on the tactical map—not the ZIM files.
+        </li>
+      </ul>
+      <p>
+        If something looks empty, check that the right tile pack is <strong>enabled</strong> for the main map and that files finished
+        downloading. Satellite or API keys (when used) live under Settings → API keys.
+      </p>
+    </>
+  );
+}
+
+function RadioCommsPanel() {
+  return (
+    <>
+      <h3 className="help-detail-title">Comms (serial radio)</h3>
+      <p>
+        <strong>Comms</strong> is the full‑screen serial radio workspace (from Home or the dashboard). It is separate from the small{" "}
+        <strong>Meshtastic</strong> header panel: Comms is for choosing a <strong>serial port</strong>, viewing a live{" "}
+        <strong>terminal</strong> of RX lines, optional telemetry (RSSI/SNR), saved <strong>mesh message</strong> history, and{" "}
+        <strong>radio channels</strong> you define in-app.
+      </p>
+      <ul>
+        <li>
+          <strong>Connect</strong> — Pick a port, connect, and watch traffic scroll. Disconnect when you&apos;re done to free the
+          port.
+        </li>
+        <li>
+          <strong>Send</strong> — Type a line to transmit when your hardware/firmware path supports it; follow local regulations and
+          device limits.
+        </li>
+        <li>
+          <strong>Logs</strong> — Recent traffic can also feed AI context when enabled; you can export serial logs from Settings →
+          Troubleshooting for debugging.
+        </li>
+      </ul>
+      <p>
+        For USB Meshtastic <em>broadcast/DM</em> chat integration and auto‑reply, see <strong>Meshtastic</strong> in this help—that
+        flow uses the mesh panel and Settings → Mesh, not only the Comms terminal.
+      </p>
+    </>
+  );
+}
+
+function AskAthenaPanel() {
+  const [q, setQ] = useState("");
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    const question = q.trim();
+    if (!question || busy) return;
+    setBusy(true);
+    setErr(null);
+    setAnswer(null);
+    // Yield so the UI can paint loading state before the Tauri/Ollama round-trip (avoids a “frozen” frame).
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    try {
+      const text = await invoke<string>("help_assistant_ask", { question });
+      setAnswer(text);
+    } catch (e) {
+      setErr(e != null ? String(e) : "Request failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <h3 className="help-detail-title">Ask Athena (beta)</h3>
+      <p>
+        A short, <strong>in‑app only</strong> assistant powered by your local <strong>Ollama</strong> model. It is prompted to answer{" "}
+        <em>only</em> how to use Athena (UI, maps, mesh, library, settings)—not general homework or unrelated topics.
+      </p>
+      <ul>
+        <li>Requires <strong>Ollama running</strong> and at least one model installed (same as chat).</li>
+        <li>Does not use your document library (no RAG)—it&apos;s for navigation and “how do I…?” questions.</li>
+        <li>For long-form help in chat, you can still use <code>/athena</code> with the project reference.</li>
+      </ul>
+      <div className="help-ask-athena">
+        <label htmlFor="help-ask-input" className="help-ask-label">
+          Your question
+        </label>
+        <textarea
+          id="help-ask-input"
+          className="help-ask-textarea map-chat-input"
+          rows={3}
+          placeholder='e.g. "Where do I enable offline basemaps?"'
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void submit();
+            }
+          }}
+          disabled={busy}
+        />
+        <div className="help-ask-actions">
+          <span className="text-muted small help-ask-hint">
+            <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> to send
+          </span>
+          <button
+            type="button"
+            className={`send-btn${q.trim() && !busy ? " send-btn-active" : ""}`}
+            onClick={() => void submit()}
+            disabled={busy || !q.trim()}
+            title="Ask (⌘/Ctrl+Enter)"
+          >
+            Ask
+          </button>
+        </div>
+        {busy ? (
+          <div className="help-ask-thinking" role="status" aria-live="polite" aria-busy="true">
+            <span className="message-loading-dots" aria-hidden>
+              <span className="message-loading-dot" />
+              <span className="message-loading-dot" />
+              <span className="message-loading-dot" />
+            </span>
+            <span className="help-ask-thinking-label">Thinking…</span>
+          </div>
+        ) : null}
+        {err ? (
+          <p className="help-ask-error" role="alert">
+            {err}
+          </p>
+        ) : null}
+        {answer ? (
+          <div className="help-ask-answer">
+            <h4 className="help-ask-answer-title">Reply</h4>
+            <div className="help-ask-answer-body">{answer}</div>
+          </div>
+        ) : null}
+      </div>
     </>
   );
 }

@@ -23,7 +23,13 @@ fn safe_quarantine_name(name: &str) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
     base.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -47,8 +53,14 @@ pub fn move_to_quarantine(source: &Path, app_data_dir: &Path) -> Result<PathBuf,
     let mut n = 0u32;
     while dest.exists() {
         n += 1;
-        let stem = Path::new(&safe).file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-        let ext = Path::new(&safe).extension().and_then(|e| e.to_str()).unwrap_or("");
+        let stem = Path::new(&safe)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+        let ext = Path::new(&safe)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
         dest = if ext.is_empty() {
             quarantine.join(format!("{}_{}_{}", ts, stem, n))
         } else {

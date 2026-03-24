@@ -1,5 +1,7 @@
+use crate::config::AppConfig;
 use crate::db::Database;
-use crate::ollama::{chat, ChatMessage};
+use crate::inference;
+use crate::ollama::{ChatMessage, ModelInfo};
 use serde_json::json;
 use std::time::Duration;
 
@@ -18,7 +20,8 @@ fn truncate_for_model(s: &str, max_chars: usize) -> String {
 
 pub fn ensure_learned_note_for_text(
     db: &Database,
-    model_name: &str,
+    config: &AppConfig,
+    ollama_models: &[ModelInfo],
     source_path: &str,
     source_name: &str,
     source_text: &str,
@@ -56,14 +59,20 @@ Keep it under ~1200 words."#;
     );
 
     let messages = vec![
-        ChatMessage { role: "system".to_string(), content: system.to_string() },
-        ChatMessage { role: "user".to_string(), content: user },
+        ChatMessage {
+            role: "system".to_string(),
+            content: system.to_string(),
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: user,
+        },
     ];
 
-    // Light retry: Ollama may be starting up or busy.
+    // Light retry: local inference may be starting up or busy.
     let mut last_err: Option<String> = None;
     for _ in 0..2 {
-        match chat(model_name, messages.clone()) {
+        match inference::chat_unified(config, ollama_models, messages.clone(), None) {
             Ok(note) => {
                 let meta = json!({
                     "source_path": source_path,
@@ -91,7 +100,12 @@ Keep it under ~1200 words."#;
     Err(last_err.unwrap_or_else(|| "Failed to build learned note.".to_string()))
 }
 
-pub fn build_learned_notes_for_all_text(db: &Database, model_name: &str, limit: usize) -> Result<usize, String> {
+pub fn build_learned_notes_for_all_text(
+    db: &Database,
+    config: &AppConfig,
+    ollama_models: &[ModelInfo],
+    limit: usize,
+) -> Result<usize, String> {
     let all = db.get_all()?;
     let mut made = 0usize;
     for f in all {
@@ -101,7 +115,9 @@ pub fn build_learned_notes_for_all_text(db: &Database, model_name: &str, limit: 
         if f.file_type != "text" {
             continue;
         }
-        let Some(text) = f.text_content.clone() else { continue };
+        let Some(text) = f.text_content.clone() else {
+            continue;
+        };
         if text.trim().is_empty() {
             continue;
         }
@@ -109,10 +125,9 @@ pub fn build_learned_notes_for_all_text(db: &Database, model_name: &str, limit: 
         if text.len() > 2_000_000 {
             continue;
         }
-        if ensure_learned_note_for_text(db, model_name, &f.path, &f.name, &text).is_ok() {
+        if ensure_learned_note_for_text(db, config, ollama_models, &f.path, &f.name, &text).is_ok() {
             made += 1;
         }
     }
     Ok(made)
 }
-

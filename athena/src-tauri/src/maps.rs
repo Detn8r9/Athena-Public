@@ -66,10 +66,21 @@ fn kiwix_map_entries() -> Vec<(String, String, u64)> {
 fn regions_for_address(address: &str) -> Vec<String> {
     let a = address.to_lowercase();
     let mut out = Vec::new();
-    if a.contains("usa") || a.contains("united states") || a.contains("canada") || a.contains("mexico") || a.contains(" north america") {
+    if a.contains("usa")
+        || a.contains("united states")
+        || a.contains("canada")
+        || a.contains("mexico")
+        || a.contains(" north america")
+    {
         out.push("North America".to_string());
     }
-    if a.contains("europe") || a.contains("uk ") || a.contains(" germany") || a.contains(" france") || a.contains(" spain") || a.contains(" italy") {
+    if a.contains("europe")
+        || a.contains("uk ")
+        || a.contains(" germany")
+        || a.contains(" france")
+        || a.contains(" spain")
+        || a.contains(" italy")
+    {
         out.push("Europe".to_string());
     }
     if a.contains("australia") || a.contains("oceania") || a.contains(" new zealand") {
@@ -125,7 +136,12 @@ pub fn smallest_kiwix_map_for_address(address: &str) -> Option<MapCatalogEntry> 
         }
     }
     let (i, region, url, size_bytes) = best?;
-    let id = url.split('/').last().unwrap_or("").trim_end_matches(".zim").to_string();
+    let id = url
+        .split('/')
+        .last()
+        .unwrap_or("")
+        .trim_end_matches(".zim")
+        .to_string();
     Some(MapCatalogEntry {
         id: format!("kiwix_{}_{}", i, id),
         name: format!("{} (OpenStreetMap)", region),
@@ -145,7 +161,9 @@ pub fn get_map_catalog(
     user_address: Option<&str>,
 ) -> Vec<MapCatalogEntry> {
     let user_regions = if location_enabled {
-        user_address.map(|a| regions_for_address(a)).unwrap_or_default()
+        user_address
+            .map(|a| regions_for_address(a))
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -154,7 +172,12 @@ pub fn get_map_catalog(
         .into_iter()
         .enumerate()
         .map(|(i, (region, url, size_bytes))| {
-            let id = url.split('/').last().unwrap_or("").trim_end_matches(".zim").to_string();
+            let id = url
+                .split('/')
+                .last()
+                .unwrap_or("")
+                .trim_end_matches(".zim")
+                .to_string();
             let for_user_region = user_regions.iter().any(|r| r == &region);
             MapCatalogEntry {
                 id: format!("kiwix_{}_{}", i, id),
@@ -203,10 +226,28 @@ pub fn get_pois(app_data_dir: &Path) -> Vec<Poi> {
     load_pois(app_data_dir)
 }
 
-pub fn add_poi(app_data_dir: &Path, name: String, lat: f64, lon: f64, notes: String) -> Result<Poi, String> {
+pub fn add_poi(
+    app_data_dir: &Path,
+    name: String,
+    lat: f64,
+    lon: f64,
+    notes: String,
+) -> Result<Poi, String> {
     let mut pois = load_pois(app_data_dir);
-    let id = format!("poi_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
-    let poi = Poi { id: id.clone(), name, lat, lon, notes };
+    let id = format!(
+        "poi_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let poi = Poi {
+        id: id.clone(),
+        name,
+        lat,
+        lon,
+        notes,
+    };
     pois.push(poi.clone());
     save_pois(app_data_dir, &pois)?;
     Ok(poi)
@@ -219,9 +260,19 @@ pub fn remove_poi(app_data_dir: &Path, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn update_poi(app_data_dir: &Path, id: &str, name: Option<String>, lat: Option<f64>, lon: Option<f64>, notes: Option<String>) -> Result<Poi, String> {
+pub fn update_poi(
+    app_data_dir: &Path,
+    id: &str,
+    name: Option<String>,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    notes: Option<String>,
+) -> Result<Poi, String> {
     let mut pois = load_pois(app_data_dir);
-    let idx = pois.iter().position(|p| p.id == id).ok_or("POI not found")?;
+    let idx = pois
+        .iter()
+        .position(|p| p.id == id)
+        .ok_or("POI not found")?;
     if let Some(n) = name {
         pois[idx].name = n;
     }
@@ -275,12 +326,23 @@ pub fn get_downloaded_maps(app_data_dir: &Path) -> Vec<DownloadedMap> {
     load_downloaded_maps(app_data_dir)
 }
 
-pub fn add_downloaded_map(app_data_dir: &Path, path: String, name: String, region: String, style: String) -> Result<(), String> {
+pub fn add_downloaded_map(
+    app_data_dir: &Path,
+    path: String,
+    name: String,
+    region: String,
+    style: String,
+) -> Result<(), String> {
     let mut maps = load_downloaded_maps(app_data_dir);
     if maps.iter().any(|m| m.path == path) {
         return Ok(());
     }
-    maps.push(DownloadedMap { path, name, region, style });
+    maps.push(DownloadedMap {
+        path,
+        name,
+        region,
+        style,
+    });
     save_downloaded_maps(app_data_dir, &maps)?;
     Ok(())
 }

@@ -98,7 +98,12 @@ pub fn export_xyz_to_mbtiles(
                 if !y_path.is_file() {
                     continue;
                 }
-                if y_path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("png")) != Some(true) {
+                if y_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("png"))
+                    != Some(true)
+                {
                     continue;
                 }
                 let y_xyz: i32 = y_path
@@ -183,11 +188,7 @@ pub fn import_mbtiles_to_xyz(
             on_progress(done, total.max(1));
         }
     }
-    Ok((
-        done,
-        min_z.clamp(0, 255) as u8,
-        max_z.clamp(0, 255) as u8,
-    ))
+    Ok((done, min_z.clamp(0, 255) as u8, max_z.clamp(0, 255) as u8))
 }
 
 /// Reads one raster tile from an MBTiles file using XYZ (slippy map) indices.
@@ -302,12 +303,16 @@ fn parse_metadata_bounds(raw_bounds: &str) -> Option<(f64, f64, f64, f64)> {
         return None;
     }
     let parse = |s: &str| s.parse::<f64>().ok();
-    let (Some(min_lon), Some(min_lat), Some(max_lon), Some(max_lat)) =
-        (parse(parts[0]), parse(parts[1]), parse(parts[2]), parse(parts[3]))
-    else {
+    let (Some(min_lon), Some(min_lat), Some(max_lon), Some(max_lat)) = (
+        parse(parts[0]),
+        parse(parts[1]),
+        parse(parts[2]),
+        parse(parts[3]),
+    ) else {
         return None;
     };
-    if !min_lon.is_finite() || !min_lat.is_finite() || !max_lon.is_finite() || !max_lat.is_finite() {
+    if !min_lon.is_finite() || !min_lat.is_finite() || !max_lon.is_finite() || !max_lat.is_finite()
+    {
         return None;
     }
     if min_lon >= max_lon || min_lat >= max_lat {
@@ -419,4 +424,3 @@ pub fn read_mbtiles_bounds(mbtiles_path: &Path) -> Result<Option<(f64, f64, f64,
         .map_err(|e| e.to_string())?;
     Ok(raw_bounds.as_deref().and_then(parse_metadata_bounds))
 }
-

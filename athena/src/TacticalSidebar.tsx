@@ -7,6 +7,7 @@ import {
   CircleDot,
   DatabaseBackup,
   Link2,
+  MapPin,
   Network,
   Package,
   Power,
@@ -17,6 +18,11 @@ import {
 } from "lucide-react";
 
 export type TacticalLayerVisibilityState = {
+  /**
+   * Network vs Resources are mutually exclusive on the map: switching families hides the other
+   * family’s overlays so the view stays readable.
+   */
+  activeFamily: "network" | "resources";
   network: {
     nodes: boolean;
     coverageCircles: boolean;
@@ -28,9 +34,12 @@ export type TacticalLayerVisibilityState = {
     food: boolean;
     equipment: boolean;
   };
+  /** Right-click / custom `@icon:` pins that are not the core preset icons (Home, Zap, Droplets, Apple). */
+  customPins: boolean;
 };
 
 export const defaultTacticalLayerVisibilityState: TacticalLayerVisibilityState = {
+  activeFamily: "resources",
   network: {
     nodes: true,
     coverageCircles: true,
@@ -42,6 +51,7 @@ export const defaultTacticalLayerVisibilityState: TacticalLayerVisibilityState =
     food: true,
     equipment: true,
   },
+  customPins: true,
 };
 
 type TacticalImportResult = {
@@ -55,8 +65,6 @@ export interface TacticalSidebarProps {
   onVisibilityStateChange?: (visibilityState: TacticalLayerVisibilityState) => void;
   onTacticalDataImported?: () => void;
 }
-
-type TacticalCategory = "network" | "resources";
 
 const COLLAPSE_AFTER_IDLE_MS = 5000;
 
@@ -122,6 +130,7 @@ function normalizeInitialState(
   incoming?: TacticalLayerVisibilityState,
 ): TacticalLayerVisibilityState {
   return {
+    activeFamily: incoming?.activeFamily ?? defaultTacticalLayerVisibilityState.activeFamily,
     network: {
       nodes: incoming?.network.nodes ?? defaultTacticalLayerVisibilityState.network.nodes,
       coverageCircles:
@@ -136,6 +145,7 @@ function normalizeInitialState(
       equipment:
         incoming?.resources.equipment ?? defaultTacticalLayerVisibilityState.resources.equipment,
     },
+    customPins: incoming?.customPins ?? defaultTacticalLayerVisibilityState.customPins,
   };
 }
 
@@ -145,7 +155,6 @@ export function TacticalSidebar({
   onTacticalDataImported,
 }: TacticalSidebarProps) {
   const [expanded, setExpanded] = useState(false);
-  const [activeCategory, setActiveCategory] = useState<TacticalCategory>("network");
   const [visibilityState, setVisibilityState] = useState<TacticalLayerVisibilityState>(() =>
     normalizeInitialState(initialVisibilityState),
   );
@@ -153,10 +162,6 @@ export function TacticalSidebar({
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const collapseTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    setVisibilityState(normalizeInitialState(initialVisibilityState));
-  }, [initialVisibilityState]);
 
   useEffect(() => {
     onVisibilityStateChange?.(visibilityState);
@@ -206,6 +211,7 @@ export function TacticalSidebar({
   ) => {
     setVisibilityState((previous) => ({
       ...previous,
+      activeFamily: "network",
       network: {
         ...previous.network,
         [key]: nextValue,
@@ -219,10 +225,26 @@ export function TacticalSidebar({
   ) => {
     setVisibilityState((previous) => ({
       ...previous,
+      activeFamily: "resources",
       resources: {
         ...previous.resources,
         [key]: nextValue,
       },
+    }));
+  };
+
+  const toggleCustomPinsLayer = (nextValue: boolean) => {
+    setVisibilityState((previous) => ({
+      ...previous,
+      activeFamily: "resources",
+      customPins: nextValue,
+    }));
+  };
+
+  const setActiveFamily = (family: "network" | "resources") => {
+    setVisibilityState((previous) => ({
+      ...previous,
+      activeFamily: family,
     }));
   };
 
@@ -296,11 +318,13 @@ export function TacticalSidebar({
           style={{
             ...iconButtonStyle,
             borderColor:
-              activeCategory === "network" ? "rgba(56, 189, 248, 0.8)" : iconButtonStyle.borderColor,
+              visibilityState.activeFamily === "network"
+                ? "rgba(56, 189, 248, 0.8)"
+                : iconButtonStyle.borderColor,
           }}
           onClick={() => {
             setExpanded(true);
-            setActiveCategory("network");
+            setActiveFamily("network");
             scheduleAutoCollapse();
           }}
           aria-label="Network layer controls"
@@ -313,13 +337,13 @@ export function TacticalSidebar({
           style={{
             ...iconButtonStyle,
             borderColor:
-              activeCategory === "resources"
+              visibilityState.activeFamily === "resources"
                 ? "rgba(56, 189, 248, 0.8)"
                 : iconButtonStyle.borderColor,
           }}
           onClick={() => {
             setExpanded(true);
-            setActiveCategory("resources");
+            setActiveFamily("resources");
             scheduleAutoCollapse();
           }}
           aria-label="Resource layer controls"
@@ -380,9 +404,11 @@ export function TacticalSidebar({
               height: "32px",
               padding: "0 0.65rem",
               borderColor:
-                activeCategory === "network" ? "rgba(56, 189, 248, 0.8)" : iconButtonStyle.borderColor,
+                visibilityState.activeFamily === "network"
+                  ? "rgba(56, 189, 248, 0.8)"
+                  : iconButtonStyle.borderColor,
             }}
-            onClick={() => setActiveCategory("network")}
+            onClick={() => setActiveFamily("network")}
           >
             <Network size={14} style={{ marginRight: "0.35rem" }} />
             Network
@@ -395,18 +421,18 @@ export function TacticalSidebar({
               height: "32px",
               padding: "0 0.65rem",
               borderColor:
-                activeCategory === "resources"
+                visibilityState.activeFamily === "resources"
                   ? "rgba(56, 189, 248, 0.8)"
                   : iconButtonStyle.borderColor,
             }}
-            onClick={() => setActiveCategory("resources")}
+            onClick={() => setActiveFamily("resources")}
           >
             <Package size={14} style={{ marginRight: "0.35rem" }} />
             Resources
           </button>
         </div>
 
-        {activeCategory === "network" ? (
+        {visibilityState.activeFamily === "network" ? (
           <section>
             <div style={sectionLabelStyle}>Network</div>
             <label style={rowLabelStyle}>
@@ -475,6 +501,16 @@ export function TacticalSidebar({
               />
               <Package size={15} />
               Equipment
+            </label>
+            <div style={{ ...sectionLabelStyle, marginTop: "0.55rem" }}>Custom pins</div>
+            <label style={rowLabelStyle}>
+              <input
+                type="checkbox"
+                checked={visibilityState.customPins}
+                onChange={(event) => toggleCustomPinsLayer(event.target.checked)}
+              />
+              <MapPin size={15} />
+              Custom Pins
             </label>
           </section>
         )}

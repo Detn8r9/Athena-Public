@@ -135,7 +135,8 @@ fn tile_xy(lat_deg: f64, lon_deg: f64, zoom: u8) -> (i32, i32) {
     let n = (1u32 << zoom) as f64;
     let x = ((lon_deg + 180.0) / 360.0 * n).floor() as i32;
     let lat_rad = lat_deg.to_radians();
-    let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n).floor() as i32;
+    let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n)
+        .floor() as i32;
     (x, y)
 }
 
@@ -183,8 +184,12 @@ pub fn geocode_nominatim(query: &str) -> Result<(f64, f64), String> {
     }
     let text = resp.into_string().map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let arr = v.as_array().ok_or_else(|| "No geocode results".to_string())?;
-    let first = arr.first().ok_or_else(|| "No geocode results".to_string())?;
+    let arr = v
+        .as_array()
+        .ok_or_else(|| "No geocode results".to_string())?;
+    let first = arr
+        .first()
+        .ok_or_else(|| "No geocode results".to_string())?;
     fn parse_coord(v: &serde_json::Value) -> Option<f64> {
         v.as_f64().or_else(|| v.as_str()?.parse().ok())
     }
@@ -235,8 +240,10 @@ pub fn download_tile_pack_background(
             let root = app_data.join(TILE_PACKS_SUBDIR).join(&pack_id);
             fs::create_dir_all(&root).map_err(|e| e.to_string())?;
 
-            let (nw_lat, nw_lon) = offset_miles(center_lat, center_lon, radius_miles, -radius_miles);
-            let (se_lat, se_lon) = offset_miles(center_lat, center_lon, -radius_miles, radius_miles);
+            let (nw_lat, nw_lon) =
+                offset_miles(center_lat, center_lon, radius_miles, -radius_miles);
+            let (se_lat, se_lon) =
+                offset_miles(center_lat, center_lon, -radius_miles, radius_miles);
             let min_lat = se_lat.min(nw_lat);
             let max_lat = se_lat.max(nw_lat);
             let min_lon = nw_lon.min(se_lon);
@@ -277,9 +284,7 @@ pub fn download_tile_pack_background(
                     }
                     let mut body = Vec::new();
                     let mut reader = resp.into_reader().take(2 * 1024 * 1024);
-                    reader
-                        .read_to_end(&mut body)
-                        .map_err(|e| e.to_string())?;
+                    reader.read_to_end(&mut body).map_err(|e| e.to_string())?;
                     fs::write(&path, body).map_err(|e| e.to_string())?;
                     std::thread::sleep(std::time::Duration::from_millis(OSM_DELAY_MS));
                 }

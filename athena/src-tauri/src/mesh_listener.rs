@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::db::Database;
+use crate::mesh_logbook;
+
 use meshtastic::api::StreamApi;
 use meshtastic::packet::{PacketDestination, PacketRouter};
 use meshtastic::protobufs;
@@ -20,7 +23,8 @@ use tokio::time::{interval, MissedTickBehavior};
 
 use crate::config::load_config;
 use crate::mesh_ai::{
-    process_mesh_message_and_reply, should_run_mesh_ai, MESHTASTIC_BROADCAST_TO, PRIMARY_MESH_CHANNEL,
+    process_mesh_message_and_reply, should_run_mesh_ai, MESHTASTIC_BROADCAST_TO,
+    PRIMARY_MESH_CHANNEL,
 };
 use crate::mesh_radio::MeshRadioSerialLink;
 
@@ -45,6 +49,7 @@ pub const MESH_TEXT_EVENT: &str = "athena:mesh-text";
 pub const MESH_CONNECTION_EVENT: &str = "athena:mesh-connection";
 
 static MESH_RADIO_CONNECTED: AtomicBool = AtomicBool::new(false);
+static MESH_MY_NODE_NUM: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Serialize, Clone, Debug)]
 pub struct MeshConnectionPayload {
@@ -56,8 +61,16 @@ pub fn mesh_radio_is_connected() -> bool {
     MESH_RADIO_CONNECTED.load(Ordering::Relaxed)
 }
 
+/// This device's Meshtastic node number when known (0 if radio not configured yet).
+pub fn mesh_local_node_id() -> u32 {
+    MESH_MY_NODE_NUM.load(Ordering::Relaxed)
+}
+
 fn notify_mesh_connected(app: &tauri::AppHandle, connected: bool) {
     MESH_RADIO_CONNECTED.store(connected, Ordering::Relaxed);
+    if !connected {
+        MESH_MY_NODE_NUM.store(0, Ordering::Relaxed);
+    }
     let payload = MeshConnectionPayload { connected };
     if let Err(e) = app.emit(MESH_CONNECTION_EVENT, &payload) {
         eprintln!("[mesh] emit {MESH_CONNECTION_EVENT} failed: {e}");
@@ -107,11 +120,17 @@ impl MeshRadioControl {
         match self.cmd_tx.try_send(cmd) {
             Ok(()) => {}
             Err(TrySendError::Full(cmd)) => {
-                fail_mesh_command(cmd, "Meshtastic command queue is full; wait and retry.".to_string());
+                fail_mesh_command(
+                    cmd,
+                    "Meshtastic command queue is full; wait and retry.".to_string(),
+                );
                 return Err("Meshtastic command queue is full; wait and retry.".to_string());
             }
             Err(TrySendError::Closed(cmd)) => {
-                fail_mesh_command(cmd, "Meshtastic background thread is not running.".to_string());
+                fail_mesh_command(
+                    cmd,
+                    "Meshtastic background thread is not running.".to_string(),
+                );
                 return Err("Meshtastic background thread is not running.".to_string());
             }
         }
@@ -126,6 +145,55 @@ fn fail_mesh_command(cmd: MeshCommand, err: String) {
         MeshCommand::SendText { reply, .. } => {
             let _ = reply.send(Err(err));
         }
+    }
+}
+
+/// After another device sends `ATHLB1:{"t":"req"}`, push recent local rows on Primary (paced for LoRa).
+async fn respond_logbook_sync_request(
+    db: Arc<Mutex<Database>>,
+    cmd_tx: Sender<MeshCommand>,
+    my_node: u32,
+) {
+    if my_node == 0 {
+        return;
+    }
+    let entries = match db
+        .lock()
+        .map_err(|e| e.to_string())
+        .and_then(|g| g.list_logbook_recent_for_mesh_share(12))
+    {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[mesh] logbook sync: list failed: {e}");
+            return;
+        }
+    };
+    for entry in entries {
+        let wire = mesh_logbook::wire_from_logbook_entry(&entry, my_node);
+        let packet = match mesh_logbook::encode_logbook_packet(&wire) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        match cmd_tx.try_send(MeshCommand::SendText {
+            text: packet,
+            want_ack: false,
+            channel: PRIMARY_MESH_CHANNEL,
+            destination: None,
+            reply: reply_tx,
+        }) {
+            Ok(()) => {}
+            Err(TrySendError::Full(cmd)) => {
+                fail_mesh_command(cmd, "Meshtastic command queue is full.".to_string());
+                break;
+            }
+            Err(TrySendError::Closed(cmd)) => {
+                fail_mesh_command(cmd, "Meshtastic command channel closed.".to_string());
+                break;
+            }
+        }
+        let _ = reply_rx.await;
+        tokio::time::sleep(std::time::Duration::from_millis(420)).await;
     }
 }
 
@@ -167,7 +235,11 @@ async fn mesh_text_emit_loop(app: tauri::AppHandle, mut rx: Receiver<MeshTextEve
 
 /// Spawns a dedicated thread with a multi-thread Tokio runtime. Register the returned
 /// [`MeshRadioControl`] with [`tauri::Manager::manage`].
-pub fn spawn_mesh_radio_listener(app_handle: tauri::AppHandle, app_data_dir: PathBuf) -> MeshRadioControl {
+pub fn spawn_mesh_radio_listener(
+    app_handle: tauri::AppHandle,
+    app_data_dir: PathBuf,
+    db: Arc<Mutex<Database>>,
+) -> MeshRadioControl {
     let (mesh_tx, mesh_rx) = mpsc::channel::<MeshTextEventPayload>(MESH_TEXT_QUEUE_CAPACITY);
     let (cmd_tx, cmd_rx) = mpsc::channel::<MeshCommand>(MESH_CMD_QUEUE_CAPACITY);
     let control = MeshRadioControl {
@@ -189,7 +261,7 @@ pub fn spawn_mesh_radio_listener(app_handle: tauri::AppHandle, app_data_dir: Pat
             };
             runtime.block_on(async move {
                 tokio::spawn(mesh_text_emit_loop(app_handle.clone(), mesh_rx));
-                mesh_radio_main_loop(app_handle, app_data_dir, cmd_rx, cmd_tx, mesh_tx).await;
+                mesh_radio_main_loop(app_handle, app_data_dir, db, cmd_rx, cmd_tx, mesh_tx).await;
             });
         });
     if let Err(e) = spawn_result {
@@ -210,11 +282,17 @@ impl AthenaPacketRouter {
 }
 
 impl PacketRouter<(), PacketRouterError> for AthenaPacketRouter {
-    fn handle_packet_from_radio(&mut self, _packet: protobufs::FromRadio) -> Result<(), PacketRouterError> {
+    fn handle_packet_from_radio(
+        &mut self,
+        _packet: protobufs::FromRadio,
+    ) -> Result<(), PacketRouterError> {
         Ok(())
     }
 
-    fn handle_mesh_packet(&mut self, _packet: protobufs::MeshPacket) -> Result<(), PacketRouterError> {
+    fn handle_mesh_packet(
+        &mut self,
+        _packet: protobufs::MeshPacket,
+    ) -> Result<(), PacketRouterError> {
         Ok(())
     }
 
@@ -231,7 +309,8 @@ fn extract_my_node_num(from_radio: &protobufs::FromRadio) -> Option<u32> {
 }
 
 fn ingest_node_display_name(from_radio: &protobufs::FromRadio, map: &Mutex<HashMap<u32, String>>) {
-    let Some(protobufs::from_radio::PayloadVariant::NodeInfo(ni)) = &from_radio.payload_variant else {
+    let Some(protobufs::from_radio::PayloadVariant::NodeInfo(ni)) = &from_radio.payload_variant
+    else {
         return;
     };
     let Some(ref user) = ni.user else {
@@ -281,6 +360,7 @@ async fn sleep_or_command(
 async fn mesh_radio_main_loop(
     app: tauri::AppHandle,
     app_data_dir: PathBuf,
+    db: Arc<Mutex<Database>>,
     mut cmd_rx: Receiver<MeshCommand>,
     cmd_tx: Sender<MeshCommand>,
     mesh_tx: Sender<MeshTextEventPayload>,
@@ -338,18 +418,58 @@ async fn mesh_radio_main_loop(
                         Some(packet) => {
                             if let Some(n) = extract_my_node_num(&packet) {
                                 my_node_num.store(n, Ordering::Relaxed);
+                                MESH_MY_NODE_NUM.store(n, Ordering::Relaxed);
                             }
                             ingest_node_display_name(&packet, &node_names);
 
                             if let Some((from, to, channel, text)) = try_decode_mesh_text(packet) {
                                 if channel == PRIMARY_MESH_CHANNEL && to == MESHTASTIC_BROADCAST_TO {
-                                    let payload = MeshTextEventPayload { sender_id: from, text: text.clone() };
-                                    match mesh_tx.try_send(payload) {
-                                        Ok(()) => {}
-                                        Err(TrySendError::Full(_)) => {
-                                            eprintln!("[mesh] mesh-text throttle queue full; dropping broadcast notification");
+                                    if let Some(inbound) = mesh_logbook::try_parse_logbook_packet(&text) {
+                                        match inbound {
+                                            mesh_logbook::LogbookMeshInbound::SyncRequest => {
+                                                let my = my_node_num.load(Ordering::Relaxed);
+                                                // Ignore our own echoed sync request (saves airtime).
+                                                if my != 0 && from != my {
+                                                    let db_s = Arc::clone(&db);
+                                                    let cmd_s = cmd_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        respond_logbook_sync_request(db_s, cmd_s, my).await;
+                                                    });
+                                                }
+                                            }
+                                            mesh_logbook::LogbookMeshInbound::Entry(wire) => {
+                                                let author = wire.n.unwrap_or(from);
+                                                match db.lock().ok().map(|g| {
+                                                    g.try_insert_logbook_from_mesh(
+                                                        &wire.id,
+                                                        &wire.b,
+                                                        wire.c,
+                                                        author,
+                                                    )
+                                                }) {
+                                                    Some(Ok(true)) => {
+                                                        let _ = app.emit("athena:logbook-updated", ());
+                                                    }
+                                                    Some(Ok(false)) => {}
+                                                    Some(Err(e)) => {
+                                                        eprintln!("[mesh] logbook insert failed: {e}");
+                                                    }
+                                                    None => {
+                                                        eprintln!("[mesh] logbook insert skipped: database lock poisoned");
+                                                    }
+                                                }
+                                            }
                                         }
-                                        Err(TrySendError::Closed(_)) => {}
+                                    } else {
+                                        let payload =
+                                            MeshTextEventPayload { sender_id: from, text: text.clone() };
+                                        match mesh_tx.try_send(payload) {
+                                            Ok(()) => {}
+                                            Err(TrySendError::Full(_)) => {
+                                                eprintln!("[mesh] mesh-text throttle queue full; dropping broadcast notification");
+                                            }
+                                            Err(TrySendError::Closed(_)) => {}
+                                        }
                                     }
                                 }
 
@@ -357,6 +477,7 @@ async fn mesh_radio_main_loop(
                                 let cfg = load_config(app_data_dir.as_path());
                                 if cfg.mesh_ai_auto_reply.unwrap_or(true)
                                     && should_run_mesh_ai(from, to, my, channel)
+                                    && !mesh_logbook::is_logbook_mesh_text(&text)
                                 {
                                     let display_name = node_names
                                         .lock()
@@ -467,6 +588,7 @@ async fn mesh_radio_main_loop(
         eprintln!("[mesh] packet stream ended; disconnecting");
         notify_mesh_connected(&app, false);
         my_node_num.store(0, Ordering::Relaxed);
+        MESH_MY_NODE_NUM.store(0, Ordering::Relaxed);
         if let Err(e) = stream_api.disconnect().await {
             eprintln!("[mesh] disconnect: {e}");
         }

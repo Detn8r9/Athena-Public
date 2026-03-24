@@ -70,10 +70,7 @@ fn chat_stream_errors_when_body_stalls_after_first_chunk() {
     let port = spawn_chunked_stall_server();
     thread::sleep(Duration::from_millis(50));
 
-    std::env::set_var(
-        "ATHENA_OLLAMA_BASE_URL",
-        format!("http://127.0.0.1:{port}"),
-    );
+    std::env::set_var("ATHENA_OLLAMA_BASE_URL", format!("http://127.0.0.1:{port}"));
     // Short idle window so the test finishes quickly; production default remains 30s via env unset.
     std::env::set_var("ATHENA_OLLAMA_STREAM_IDLE_MS", "100");
     std::env::set_var("ATHENA_OLLAMA_STREAM_MAX_DURATION_MS", "60000");
@@ -88,9 +85,13 @@ fn chat_stream_errors_when_body_stalls_after_first_chunk() {
         }],
         &mut |s| aggregated.push_str(s),
         || {},
+        None,
     );
 
-    assert!(result.is_err(), "expected idle timeout error, got Ok with output {aggregated:?}");
+    assert!(
+        result.is_err(),
+        "expected idle timeout error, got Ok with output {aggregated:?}"
+    );
     let err = result.unwrap_err();
     assert!(
         err.contains("stalled") || err.contains("Ollama stream"),

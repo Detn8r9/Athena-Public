@@ -11,7 +11,8 @@ pub const SATELLITE_REGION_DOWNLOAD_PROGRESS_EVENT: &str = "satellite_region_dow
 pub const SATELLITE_REGION_DOWNLOAD_COMPLETE_EVENT: &str = "satellite_region_download_complete";
 pub const SATELLITE_REGION_DOWNLOAD_ERROR_EVENT: &str = "satellite_region_download_error";
 
-const SATELLITE_TILESET_URL_TEMPLATE: &str = "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key={key}";
+const SATELLITE_TILESET_URL_TEMPLATE: &str =
+    "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key={key}";
 const SATELLITE_TILE_TIMEOUT_SECS: u64 = 30;
 const SATELLITE_MAX_TILES_PER_JOB: usize = 30_000;
 const EARTH_MEAN_RADIUS_MILES: f64 = 3958.7613;
@@ -46,15 +47,23 @@ struct TileCoord {
     y: u32,
 }
 
-fn validate_bounding_box(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> Result<(), String> {
-    if !min_lon.is_finite() || !min_lat.is_finite() || !max_lon.is_finite() || !max_lat.is_finite() {
+fn validate_bounding_box(
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+) -> Result<(), String> {
+    if !min_lon.is_finite() || !min_lat.is_finite() || !max_lon.is_finite() || !max_lat.is_finite()
+    {
         return Err("Bounding box coordinates must be finite numbers.".to_string());
     }
     if min_lon < -180.0 || max_lon > 180.0 {
         return Err("Longitude must stay within -180 to 180 degrees.".to_string());
     }
     if min_lat < -85.051_128_78 || max_lat > 85.051_128_78 {
-        return Err("Latitude must stay within Web Mercator limits (-85.0511 to 85.0511).".to_string());
+        return Err(
+            "Latitude must stay within Web Mercator limits (-85.0511 to 85.0511).".to_string(),
+        );
     }
     if min_lon >= max_lon {
         return Err("Bounding box requires min_lon to be less than max_lon.".to_string());
@@ -65,7 +74,12 @@ fn validate_bounding_box(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64)
     Ok(())
 }
 
-fn validate_bounding_box_extent_miles(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> Result<(), String> {
+fn validate_bounding_box_extent_miles(
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+) -> Result<(), String> {
     let center_lat = (min_lat + max_lat) / 2.0;
     let center_lat_rad = center_lat.to_radians();
     let half_lat_deg = (max_lat - min_lat) / 2.0;
@@ -99,7 +113,14 @@ fn lat_to_tile_y(lat_deg: f64, z: u8) -> u32 {
     y.max(0.0).min(n - 1.0) as u32
 }
 
-fn enumerate_tiles(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64, min_zoom: u8, max_zoom: u8) -> Vec<TileCoord> {
+fn enumerate_tiles(
+    min_lon: f64,
+    min_lat: f64,
+    max_lon: f64,
+    max_lat: f64,
+    min_zoom: u8,
+    max_zoom: u8,
+) -> Vec<TileCoord> {
     let mut out = Vec::new();
     for z in min_zoom..=max_zoom {
         let x_min = lon_to_tile_x(min_lon, z);
@@ -117,7 +138,13 @@ fn enumerate_tiles(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64, min_z
 
 fn sanitize_for_filename(raw: &str) -> String {
     raw.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim_matches('_')
         .chars()
@@ -138,7 +165,13 @@ fn create_map_id(location_label: &str) -> String {
     }
 }
 
-fn create_mbtiles_schema(connection: &Connection, name: &str, min_zoom: u8, max_zoom: u8, bounds: &str) -> Result<(), String> {
+fn create_mbtiles_schema(
+    connection: &Connection,
+    name: &str,
+    min_zoom: u8,
+    max_zoom: u8,
+    bounds: &str,
+) -> Result<(), String> {
     connection
         .execute_batch(
             "CREATE TABLE metadata (name text, value text);
@@ -157,13 +190,20 @@ fn create_mbtiles_schema(connection: &Connection, name: &str, min_zoom: u8, max_
         ("bounds", bounds.to_string()),
     ] {
         connection
-            .execute("INSERT INTO metadata (name, value) VALUES (?1, ?2)", params![k, v])
+            .execute(
+                "INSERT INTO metadata (name, value) VALUES (?1, ?2)",
+                params![k, v],
+            )
             .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-fn insert_tile_jpeg(connection: &Connection, tile: TileCoord, tile_data: &[u8]) -> Result<(), String> {
+fn insert_tile_jpeg(
+    connection: &Connection,
+    tile: TileCoord,
+    tile_data: &[u8],
+) -> Result<(), String> {
     let nrows = 1i64
         .checked_shl(tile.z as u32)
         .ok_or_else(|| format!("Zoom {} is too large for tile-row conversion.", tile.z))?;
@@ -230,12 +270,25 @@ pub async fn start_satellite_region_download(
     let final_path = maps_dir.join(format!("{map_id}.mbtiles"));
     let part_path = maps_dir.join(format!("{map_id}.mbtiles.part"));
     if final_path.exists() {
-        return Err("A satellite archive with this generated id already exists; retry the download.".to_string());
+        return Err(
+            "A satellite archive with this generated id already exists; retry the download."
+                .to_string(),
+        );
     }
     let _ = std::fs::remove_file(&part_path);
     let bounds = format!("{min_lon:.6},{min_lat:.6},{max_lon:.6},{max_lat:.6}");
-    let display_name = format!("Satellite region ({})", location_label.unwrap_or_else(|| "saved location".to_string()));
-    let job_id = format!("satellite_job_{}_{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(), std::process::id());
+    let display_name = format!(
+        "Satellite region ({})",
+        location_label.unwrap_or_else(|| "saved location".to_string())
+    );
+    let job_id = format!(
+        "satellite_job_{}_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        std::process::id()
+    );
 
     let app_handle = app.clone();
     let job_id_task = job_id.clone();
