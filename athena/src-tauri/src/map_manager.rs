@@ -6,6 +6,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::db::{MapDrawing, MapMarker};
+use crate::lan_sync;
 use crate::radio_manager::RadioState;
 use crate::AppState;
 
@@ -81,7 +82,11 @@ pub async fn convert_mgrs_to_lat_lng(mgrs: String) -> Result<LatLngResult, Strin
 
 #[tauri::command]
 pub async fn get_map_markers(state: tauri::State<'_, AppState>) -> Result<Vec<MapMarker>, String> {
-    state.db.lock().map_err(|e| e.to_string())?.list_map_markers()
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_map_markers()
 }
 
 #[tauri::command]
@@ -115,6 +120,9 @@ pub async fn add_map_marker(
         .lock()
         .map_err(|e| e.to_string())?
         .insert_map_marker(&marker)?;
+    if let Ok(v) = serde_json::to_value(&marker) {
+        lan_sync::publish_local_sync_row(lan_sync::LAN_TBL_MAP_MARKERS, v);
+    }
     Ok(marker)
 }
 
@@ -135,7 +143,11 @@ pub async fn delete_map_marker(
     if id.trim().is_empty() {
         return Err("Marker id is required.".to_string());
     }
-    state.db.lock().map_err(|e| e.to_string())?.delete_map_marker(&id)
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .delete_map_marker(&id)
 }
 
 #[tauri::command]
@@ -157,12 +169,14 @@ pub async fn save_drawing(
     if geometry_json.is_empty() {
         return Err("geometry_json is required.".to_string());
     }
-    serde_json::from_str::<serde_json::Value>(&geometry_json).map_err(|e| format!("geometry_json must be valid JSON: {e}"))?;
+    serde_json::from_str::<serde_json::Value>(&geometry_json)
+        .map_err(|e| format!("geometry_json must be valid JSON: {e}"))?;
     let style_json = style_json.trim().to_string();
     if style_json.is_empty() {
         return Err("style_json is required.".to_string());
     }
-    serde_json::from_str::<serde_json::Value>(&style_json).map_err(|e| format!("style_json must be valid JSON: {e}"))?;
+    serde_json::from_str::<serde_json::Value>(&style_json)
+        .map_err(|e| format!("style_json must be valid JSON: {e}"))?;
     let id = id
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -184,7 +198,11 @@ pub async fn save_drawing(
 
 #[tauri::command]
 pub async fn get_drawings(state: tauri::State<'_, AppState>) -> Result<Vec<MapDrawing>, String> {
-    state.db.lock().map_err(|e| e.to_string())?.list_map_drawings()
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_map_drawings()
 }
 
 #[tauri::command]
@@ -192,12 +210,20 @@ pub async fn delete_drawing(state: tauri::State<'_, AppState>, id: String) -> Re
     if id.trim().is_empty() {
         return Err("Drawing id is required.".to_string());
     }
-    state.db.lock().map_err(|e| e.to_string())?.delete_map_drawing(&id)
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .delete_map_drawing(&id)
 }
 
 #[tauri::command]
 pub async fn get_spatial_context(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let markers = state.db.lock().map_err(|e| e.to_string())?.list_map_markers()?;
+    let markers = state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_map_markers()?;
     if markers.is_empty() {
         return Ok(String::new());
     }

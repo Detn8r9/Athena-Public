@@ -1,4 +1,4 @@
-# Athena Micro – Code review (inefficiencies, redundancy, potential issues)
+# ATHENA – Code review (inefficiencies, redundancy, potential issues)
 
 **Updates applied:** Single `extract_keywords`/`is_stopword` in `db.rs` (used from `lib.rs`); `send_message` aligned with streaming path (RRF, mentioned-doc section, same section order); RRF source-name dedup via `HashSet`; `build_persistent_knowledge_section` simplified to one trim+empty check; rebuild uses `.expect(...)` instead of `.unwrap()` on `text_content`.
 

@@ -21,7 +21,7 @@ fn wal_concurrent_read_write_avoids_database_locked() {
             s.spawn(move || {
                 for i in 0..100 {
                     let path = format!("stress/w{}/file_{}.txt", worker, i);
-                    if let Err(e) = db.upsert_file(&path, "text", "name", Some(1), None, None, None)
+                    if let Err(e) = db.upsert_file(&path, "text", "name", Some(1), None, None, None, None, None, None)
                     {
                         errors
                             .lock()

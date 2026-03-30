@@ -218,6 +218,7 @@ fn insert_tile_jpeg(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_satellite_region_download(
     app: AppHandle,
     min_lon: f64,

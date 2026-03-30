@@ -1,23 +1,34 @@
+mod academy;
 mod athena_map_protocol;
 mod athena_mbtiles_tile_protocol;
 mod chats;
 mod chunking;
+mod commands;
 mod config;
 mod db;
+mod downloader;
+mod neural_embed;
+mod rerank;
 mod embeddings;
-mod inference;
 mod indexer;
+mod inference;
 mod kiwix;
 mod kiwix_tools;
+mod lan_cluster;
+mod lan_identity;
+mod lan_packets;
+mod lan_sync;
 mod learner;
+mod library_installer_location;
 #[cfg(target_os = "macos")]
 mod macos_window;
+mod map_manager;
 mod map_manager_catalog;
 mod map_manager_download;
-mod map_manager;
 mod maps;
 mod mbtiles_io;
 mod mesh_ai;
+mod mesh_calendar;
 mod mesh_listener;
 mod mesh_logbook;
 mod mesh_radio;
@@ -27,29 +38,39 @@ mod offline_routing;
 mod ollama;
 mod ollama_setup;
 mod openai_chat;
+mod package_manager;
+mod portable;
 mod pmtiles_io;
 mod pmtiles_region_extract;
 mod quarantine;
-mod rag_indexer;
 mod radio_manager;
+mod rag_indexer;
 mod satellite_region_download;
+mod sdr_manager;
 mod spatial;
 mod system;
 mod telemetry;
 mod theme;
 mod tile_pack;
-mod user_profile;
 #[cfg(feature = "piper-tts")]
 mod tts;
+mod user_profile;
+mod usb;
 mod vector_index;
 mod watcher;
 
+/// Full product name (locked in). The UI and assistant persona may still use the short name **Athena**.
+pub const ATHENA_FULL_NAME: &str =
+    "Autonomous Tactical Heuristic Emergency Network Archive (ATHENA)";
+
 /// Re-exported for integration tests (`tests/`) and external callers embedding `athena_lib`.
 pub use db::Database;
+pub use portable::init_portable_app_data_override;
 pub use ollama::{chat_stream, ChatMessage, ModelOptions};
 
 use crossbeam_channel::Sender;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -62,30 +83,106 @@ use chats::{
     save_chat as save_saved_chat, update_chat_context_summary as update_saved_chat_context_summary,
     update_chat_metadata as update_saved_chat_metadata, ChatSummary, SavedChat, SavedMessage,
 };
-use config::{load_config, save_config, AppConfig, CustomTheme};
+use config::{
+    effective_embedding_folder, effective_reranker_folder, ensure_model_directories, load_config,
+    save_config, AppConfig, CustomTheme, ModelDirectoryPaths,
+};
 use db::{
-    extract_keywords, ChunkEmbedding, IndexStats, IndexedFile, LogbookEntry, RagCounts,
-    TacticalMeshNodeLocation, TacticalPointOfInterest,
+    extract_keywords, AcademyProgressRow, ArchiveWatchRootRow, CalendarEvent, ChunkEmbedding,
+    HybridSearchHit, IndexStats, IndexedFile, LogbookEntry, RagCounts, TacticalMeshNodeLocation,
+    TacticalPointOfInterest,
 };
 use inference::{
     chat_stream_unified, chat_unified, ensure_inference_ready, generate_chat_description_unified,
     generate_chat_title_unified, load_models_for_inference,
 };
-use kiwix::{scan_kiwix_zim_files as kiwix_scan_zim_files, DiscoveredZim};
+use kiwix::{scan_kiwix_zim_files_multi as kiwix_scan_zim_files_multi, DiscoveredZim};
 use learner::build_learned_notes_for_all_text;
 use ollama::{
     get_available_models, get_system_specs as get_specs, is_ollama_running,
-    max_memory_messages_for_ram, path_looks_like_ollama_cli, select_model_for_tier,
-    try_launch_ollama_server_with_preferences, ModelInfo, SystemSpecs,
+    max_memory_messages_for_ram, maybe_ensure_default_ollama_model, path_looks_like_ollama_cli,
+    select_model_for_tier, try_launch_ollama_server_with_preferences, ModelInfo, SystemSpecs,
 };
 use radio_manager::RadioState;
+use walkdir::WalkDir;
 use watcher::{run_watcher_loop, WatchCommand};
 
 pub struct AppState {
     /// Shared SQLite handle; must be exclusive during restore/replace of `athena_index.db`.
     pub db: Arc<Mutex<Database>>,
+    /// AppData `models/...` tree for ONNX and chat assets.
+    pub model_paths: ModelDirectoryPaths,
     pub watcher_tx: Sender<WatchCommand>,
     pub active_offline_map_downloads: Arc<Mutex<HashSet<String>>>,
+    pub active_package_downloads: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
+    /// Serialize reads/writes of `athena_config.json`.
+    pub config_lock: Arc<Mutex<()>>,
+}
+
+
+/// Chat models: only `.gguf` files; skip hidden names (e.g. `.DS_Store`).
+fn list_sorted_gguf_files(dir: &std::path::Path) -> Result<Vec<String>, String> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            !name.starts_with('.') && name.to_lowercase().ends_with(".gguf")
+        })
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+fn validate_model_subfolder_name(raw: &str) -> Result<String, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err("Folder name is empty.".to_string());
+    }
+    if s.contains('/') || s.contains('\\') || s.contains("..") {
+        return Err("Invalid folder name.".to_string());
+    }
+    if s.chars()
+        .any(|c| matches!(c, '\0' | ':' | '<' | '>' | '|' | '*' | '?'))
+    {
+        return Err("Invalid folder name.".to_string());
+    }
+    Ok(s.to_string())
+}
+
+fn list_sorted_subdirs(dir: &std::path::Path) -> Result<Vec<String>, String> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+#[tauri::command]
+fn scan_chat_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    list_sorted_gguf_files(&state.model_paths.chat_models)
+}
+
+#[tauri::command]
+fn scan_embedding_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    list_sorted_subdirs(&state.model_paths.embeddings_root)
+}
+
+#[tauri::command]
+fn scan_reranker_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    list_sorted_subdirs(&state.model_paths.rerankers_root)
 }
 
 /// Bundled `ollama serve` sidecar process; stdout/stderr are drained asynchronously; killed on [`RunEvent::Exit`].
@@ -123,7 +220,7 @@ async fn send_mesh_message(
     if text.is_empty() {
         return Err("Message text is empty.".to_string());
     }
-    if text.as_bytes().len() > 233 {
+    if text.len() > 233 {
         // Meshtastic payload limit is byte-oriented; 233 is a common safe bound for short text.
         return Err("Message is too long (max 233 bytes for typical Meshtastic text).".to_string());
     }
@@ -138,6 +235,7 @@ async fn send_mesh_message(
 }
 
 static LOGBOOK_ENTRY_SEQ: AtomicU64 = AtomicU64::new(1);
+static CALENDAR_ENTRY_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[tauri::command]
 fn logbook_list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<LogbookEntry>, String> {
@@ -150,7 +248,9 @@ fn logbook_list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<Logbook
 
 #[tauri::command]
 async fn logbook_add_entry(
+    app: tauri::AppHandle,
     body: String,
+    parent_entry_id: Option<String>,
     state: tauri::State<'_, AppState>,
     control: tauri::State<'_, mesh_listener::MeshRadioControl>,
 ) -> Result<LogbookEntry, String> {
@@ -161,6 +261,33 @@ async fn logbook_add_entry(
     if body.len() > 32_000 {
         return Err("Note is too long (32k character limit).".to_string());
     }
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let cfg = load_config(&app_data_dir);
+    let author_name = cfg
+        .logbook_author_name
+        .as_deref()
+        .unwrap_or("")
+        .trim();
+    let author_occupation = cfg
+        .logbook_author_occupation
+        .as_deref()
+        .unwrap_or("")
+        .trim();
+    let parent = parent_entry_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(pid) = parent {
+        let exists = state
+            .db
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get_logbook_entry(pid)?
+            .is_some();
+        if !exists {
+            return Err("Parent log entry was not found.".to_string());
+        }
+    }
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -170,17 +297,23 @@ async fn logbook_add_entry(
         created_at,
         LOGBOOK_ENTRY_SEQ.fetch_add(1, Ordering::Relaxed)
     );
-    state
+    {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        g.insert_logbook_local(
+            &id,
+            &body,
+            created_at,
+            author_name,
+            author_occupation,
+            parent,
+        )?;
+    }
+    let entry = state
         .db
         .lock()
         .map_err(|e| e.to_string())?
-        .insert_logbook_local(&id, &body, created_at)?;
-    let entry = LogbookEntry {
-        id,
-        body,
-        created_at,
-        from_node_id: None,
-    };
+        .get_logbook_entry(&id)?
+        .ok_or_else(|| "Logbook insert failed.".to_string())?;
     if mesh_listener::mesh_radio_is_connected() {
         let wire =
             mesh_logbook::wire_from_logbook_entry(&entry, mesh_listener::mesh_local_node_id());
@@ -194,12 +327,48 @@ async fn logbook_add_entry(
 }
 
 #[tauri::command]
+fn academy_get_curriculum() -> Result<academy::AcademyCurriculumRoot, String> {
+    academy::get_curriculum()
+}
+
+#[tauri::command]
+fn academy_list_completed(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<AcademyProgressRow>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_academy_progress()
+}
+
+#[tauri::command]
+fn academy_mark_lesson_complete(
+    state: tauri::State<'_, AppState>,
+    args: academy::AcademyLessonIdArg,
+) -> Result<(), String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .mark_academy_lesson_complete(&args.lesson_id)
+}
+
+#[tauri::command]
+fn academy_get_lesson_html(
+    app: tauri::AppHandle,
+    args: academy::AcademyLessonIdArg,
+) -> Result<academy::AcademyLessonHtml, String> {
+    academy::fetch_lesson_html(&app, &args.lesson_id)
+}
+
+#[tauri::command]
 fn logbook_delete_entry(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     state
         .db
         .lock()
         .map_err(|e| e.to_string())?
-        .delete_logbook_entry(&id.trim())
+        .delete_logbook_entry(id.trim())
 }
 
 #[tauri::command]
@@ -222,6 +391,41 @@ async fn logbook_broadcast_entry(
         .await
 }
 
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogbookAuthorProfilePayload {
+    name: String,
+    occupation: String,
+}
+
+#[tauri::command]
+fn get_logbook_author_profile(app: tauri::AppHandle) -> Result<LogbookAuthorProfilePayload, String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let c = load_config(&app_data_dir);
+    Ok(LogbookAuthorProfilePayload {
+        name: c.logbook_author_name.unwrap_or_default().trim().to_string(),
+        occupation: c
+            .logbook_author_occupation
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    })
+}
+
+#[tauri::command]
+fn set_logbook_author_profile(
+    app: tauri::AppHandle,
+    name: String,
+    occupation: String,
+) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut c = load_config(&app_data_dir);
+    c.logbook_author_name = Some(name.trim().to_string());
+    c.logbook_author_occupation = Some(occupation.trim().to_string());
+    save_config(&app_data_dir, &c)
+}
+
 #[tauri::command]
 fn logbook_mesh_max_body_bytes() -> usize {
     mesh_logbook::max_body_utf8_bytes_for_mesh()
@@ -238,8 +442,135 @@ async fn logbook_request_mesh_sync(
 }
 
 #[tauri::command]
+fn calendar_list_events(
+    state: tauri::State<'_, AppState>,
+    range_start: Option<i64>,
+    range_end: Option<i64>,
+    include_deleted: Option<bool>,
+) -> Result<Vec<CalendarEvent>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_calendar_events(range_start, range_end, include_deleted.unwrap_or(false))
+}
+
+#[tauri::command]
+async fn calendar_upsert_event(
+    mut event: CalendarEvent,
+    state: tauri::State<'_, AppState>,
+    control: tauri::State<'_, mesh_listener::MeshRadioControl>,
+) -> Result<CalendarEvent, String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    if event.id.trim().is_empty() {
+        event.id = format!(
+            "cal-{}-{}",
+            now_ms,
+            CALENDAR_ENTRY_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+    } else {
+        event.id = event.id.trim().to_string();
+    }
+    event.title = event.title.trim().to_string();
+    if event.title.is_empty() {
+        return Err("Event title is required.".to_string());
+    }
+    if event.start_ts > event.end_ts {
+        std::mem::swap(&mut event.start_ts, &mut event.end_ts);
+    }
+    event.source = if event.source.trim().is_empty() {
+        "user".to_string()
+    } else {
+        event.source.trim().to_string()
+    };
+    if event.updated_at <= 0 {
+        event.updated_at = now_ms;
+    }
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .upsert_calendar_event(&event)?;
+
+    if mesh_listener::mesh_radio_is_connected() {
+        let wire =
+            mesh_calendar::wire_from_calendar_event(&event, mesh_listener::mesh_local_node_id());
+        if let Ok(packet) = mesh_calendar::encode_calendar_packet(&wire) {
+            let _ = control
+                .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+                .await;
+        }
+    }
+    Ok(event)
+}
+
+#[tauri::command]
+async fn calendar_delete_event(
+    id: String,
+    state: tauri::State<'_, AppState>,
+    control: tauri::State<'_, mesh_listener::MeshRadioControl>,
+) -> Result<(), String> {
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Err("Event id is required.".to_string());
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .tombstone_calendar_event(&id, now_ms)?;
+    let tombstone = CalendarEvent {
+        id,
+        title: "(deleted)".to_string(),
+        notes: None,
+        start_ts: now_ms,
+        end_ts: now_ms,
+        all_day: true,
+        location_label: None,
+        linked_marker_id: None,
+        participant_names: Vec::new(),
+        reminder_minutes_before: None,
+        recurrence_rule: None,
+        category: None,
+        source: "user".to_string(),
+        updated_at: now_ms,
+        origin_node_id: None,
+        deleted: true,
+    };
+    if mesh_listener::mesh_radio_is_connected() {
+        let wire = mesh_calendar::wire_from_calendar_event(
+            &tombstone,
+            mesh_listener::mesh_local_node_id(),
+        );
+        if let Ok(packet) = mesh_calendar::encode_calendar_packet(&wire) {
+            let _ = control
+                .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+                .await;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn calendar_request_mesh_sync(
+    control: tauri::State<'_, mesh_listener::MeshRadioControl>,
+) -> Result<(), String> {
+    let packet = mesh_calendar::encode_calendar_sync_request()?;
+    control
+        .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+        .await
+}
+
+#[tauri::command]
 fn get_mesh_ai_auto_reply(app: tauri::AppHandle) -> Result<bool, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(load_config(&app_data_dir)
         .mesh_ai_auto_reply
         .unwrap_or(true))
@@ -252,7 +583,7 @@ fn is_mesh_radio_connected() -> bool {
 
 #[tauri::command]
 fn set_mesh_ai_auto_reply(app: tauri::AppHandle, value: bool) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut cfg = load_config(&app_data_dir);
     cfg.mesh_ai_auto_reply = Some(value);
     save_config(&app_data_dir, &cfg)
@@ -260,15 +591,22 @@ fn set_mesh_ai_auto_reply(app: tauri::AppHandle, value: bool) -> Result<(), Stri
 
 #[tauri::command]
 fn get_watch_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let state = app.state::<AppState>();
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    if let Some(p) = g.first_archive_watch_root_path()? {
+        return Ok(Some(p));
+    }
+    drop(g);
     Ok(load_config(&app_data_dir).watch_folder)
 }
 
 #[tauri::command]
+#[allow(clippy::type_complexity)]
 fn get_theme_config(
     app: tauri::AppHandle,
 ) -> Result<(Option<String>, Option<String>, Vec<CustomTheme>), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let cfg = load_config(&app_data_dir);
     Ok((cfg.theme_id, cfg.personality_id, cfg.custom_themes))
 }
@@ -280,7 +618,7 @@ fn set_theme_config(
     personality_id: Option<String>,
     custom_themes: Vec<CustomTheme>,
 ) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut cfg = load_config(&app_data_dir);
     cfg.theme_id = theme_id;
     cfg.personality_id = personality_id;
@@ -304,7 +642,7 @@ async fn set_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> Result<(), S
     let window = app
         .get_webview_window("main")
         .ok_or("Main window not found")?;
-    let _ = window.set_title("Athena");
+    let _ = window.set_title("ATHENA");
 
     #[cfg(target_os = "macos")]
     {
@@ -314,7 +652,7 @@ async fn set_fullscreen(app: tauri::AppHandle, fullscreen: bool) -> Result<(), S
         if let Some(state) = app.try_state::<macos_window::MacosSimpleFullscreenState>() {
             state.0.store(fullscreen, Ordering::SeqCst);
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -335,34 +673,94 @@ fn is_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
     window.is_fullscreen().map_err(|e| e.to_string())
 }
 
-fn kiwix_downloads_dir(app_data_dir: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn kiwix_downloads_dir(app_data_dir: &std::path::Path) -> std::path::PathBuf {
     app_data_dir.join("kiwix_downloads")
 }
 
-#[tauri::command]
-fn set_watch_folder(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let mut config = load_config(&app_data_dir);
-    config.watch_folder = path.clone();
-    save_config(&app_data_dir, &config)?;
-    let kiwix_dir = kiwix_downloads_dir(&app_data_dir)
-        .to_string_lossy()
-        .to_string();
+pub(crate) fn compute_watcher_folders(
+    db: &Database,
+    app_data_dir: &std::path::Path,
+    config: &AppConfig,
+) -> Result<Vec<String>, String> {
+    let kiwix_dir = kiwix_downloads_dir(app_data_dir);
     std::fs::create_dir_all(&kiwix_dir).map_err(|e| e.to_string())?;
-    let folders: Vec<String> = match path {
-        Some(p) => vec![p, kiwix_dir],
-        None => vec![kiwix_dir],
-    };
+    let kiwix_str = kiwix_dir.to_string_lossy().to_string();
+    let mut folders: Vec<String> = Vec::new();
+    for folder in db.list_archive_watch_root_paths_ordered()? {
+        let norm = folder.trim();
+        if norm.is_empty() {
+            continue;
+        }
+        let resolved = crate::portable::resolve_library_watch_root_path(norm, app_data_dir);
+        let resolved = resolved.canonicalize().unwrap_or(resolved);
+        if resolved.as_path() == app_data_dir {
+            continue;
+        }
+        let push_str = resolved.to_string_lossy().to_string();
+        if !folders.iter().any(|f| f == &push_str) {
+            folders.push(push_str);
+        }
+    }
+    if folders.is_empty() {
+        if let Some(ref wf) = config.watch_folder {
+            let norm = wf.trim();
+            if !norm.is_empty() {
+                let resolved = crate::portable::resolve_library_watch_root_path(norm, app_data_dir);
+                let resolved = resolved.canonicalize().unwrap_or(resolved);
+                if resolved.as_path() != app_data_dir {
+                    let push_str = resolved.to_string_lossy().to_string();
+                    if !folders.iter().any(|f| f == &push_str) {
+                        folders.push(push_str);
+                    }
+                }
+            }
+        }
+    }
+    if !folders.iter().any(|f| f == &kiwix_str) {
+        folders.push(kiwix_str);
+    }
+    Ok(folders)
+}
+
+fn refresh_watcher_folders_from_app(app: &tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let config = load_config(&app_data_dir);
     let state = app.state::<AppState>();
+    let folders = {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        compute_watcher_folders(&*g, &app_data_dir, &config)?
+    };
     state
         .watcher_tx
         .send(WatchCommand::SetFolders(folders))
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+
+#[tauri::command]
+fn set_watch_folder(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let state = app.state::<AppState>();
+    {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        g.clear_archive_watch_roots()?;
+        if let Some(ref p) = path {
+            let trimmed = p.trim();
+            if !trimmed.is_empty() {
+                g.add_archive_watch_root(trimmed, None)?;
+            }
+        }
+    }
+    let mut config = load_config(&app_data_dir);
+    config.watch_folder = path.clone();
+    save_config(&app_data_dir, &config)?;
+    refresh_watcher_folders_from_app(&app)?;
 
     // Kick off "learned notes" generation in the background so the assistant can retrieve distilled facts.
     let db = Arc::clone(&state.db);
     std::thread::spawn(move || {
-        let app_data_dir = match app.path().app_data_dir() {
+        let app_data_dir = match crate::portable::resolved_app_data_dir(&app) {
             Ok(d) => d,
             Err(_) => return,
         };
@@ -372,7 +770,7 @@ fn set_watch_folder(app: tauri::AppHandle, path: Option<String>) -> Result<(), S
             return;
         }
         let _ = match db.lock() {
-            Ok(guard) => build_learned_notes_for_all_text(&*guard, &config, &models, 50),
+            Ok(guard) => build_learned_notes_for_all_text(&guard, &config, &models, 50),
             Err(_) => return,
         };
     });
@@ -380,9 +778,48 @@ fn set_watch_folder(app: tauri::AppHandle, path: Option<String>) -> Result<(), S
     Ok(())
 }
 
+
+#[tauri::command]
+fn list_archive_watch_roots(state: tauri::State<'_, AppState>) -> Result<Vec<ArchiveWatchRootRow>, String> {
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    g.list_archive_watch_roots()
+}
+
+#[tauri::command]
+fn add_archive_watch_root(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+    label: Option<String>,
+) -> Result<i64, String> {
+    let id = {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        let lbl = label.as_deref().filter(|s| !s.trim().is_empty());
+        g.add_archive_watch_root(&path, lbl)
+            .map_err(|e| if e.contains("UNIQUE") { "That folder is already registered.".to_string() } else { e })?
+    };
+    refresh_watcher_folders_from_app(&app)?;
+    Ok(id)
+}
+
+#[tauri::command]
+fn remove_archive_watch_root(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        g.remove_archive_watch_root(id)?;
+    }
+    refresh_watcher_folders_from_app(&app)?;
+    Ok(())
+}
+
+
 #[tauri::command]
 fn build_library_knowledge(app: tauri::AppHandle, limit: Option<u32>) -> Result<u32, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
@@ -410,7 +847,7 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
     if paths.is_empty() {
         return Ok(());
     }
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let state = app.state::<AppState>();
     let db = state.db.lock().map_err(|e| e.to_string())?;
     for p in paths {
@@ -422,11 +859,24 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
         if !indexer::is_supported_path(path) {
             continue;
         }
+        let ctx = watcher::resolve_ingest_context(&*db, &app_data_dir, path);
+        let ctx_tuple = ctx.as_ref().map(|(k, r)| (k.as_str(), r.as_path()));
+        if indexer::skip_if_up_to_date(path, &*db, ctx_tuple).is_some() {
+            continue;
+        }
+        let ingest_display_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|s| !s.is_empty());
+        let _ingest_guard =
+            watcher::IngestionActivityGuard::begin(&app, ingest_display_name);
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| indexer::index_file(path)));
         match result {
-            Ok(Some(data)) => {
-                let _ = db.upsert_file(
+            Ok(Some(mut data)) => {
+                indexer::fill_relative_path_key(&mut data, ctx_tuple, path);
+                println!("[athena] Checkpoint M1: ingest_files got Some; upsert_file");
+                if let Err(e) = db.upsert_file(
                     &data.path,
                     &data.file_type,
                     &data.name,
@@ -434,10 +884,29 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
                     data.modified_at,
                     data.text_content.as_deref(),
                     data.metadata_json.as_deref(),
-                );
+                    Some(data.display_title.as_str()),
+                    data.page_count.map(|n| n as i64),
+                    data.relative_path.as_deref(),
+                ) {
+                    eprintln!("[athena] Fatal Ingestion Error: ingest upsert_file failed: {:?}", e);
+                    continue;
+                }
+                println!("[athena] Checkpoint M2: upsert ok; maybe index_document");
                 if let Some(ref text) = data.text_content {
                     if !text.trim().is_empty() {
-                        let _ = vector_index::index_document(&*db, &p, text);
+                        println!("[athena] Checkpoint M3: calling vector_index::index_document");
+                        match vector_index::index_document(
+                            &db,
+                            &p,
+                            &data.display_title,
+                            data.index_pages.as_deref(),
+                            text,
+                        ) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                eprintln!("[athena] Fatal Ingestion Error: {:?}", e);
+                            }
+                        }
                     }
                 }
             }
@@ -500,6 +969,29 @@ fn get_rag_stats(app: tauri::AppHandle) -> Result<RagStats, String> {
     })
 }
 
+#[tauri::command]
+fn test_rag_search(query: String, app: tauri::AppHandle) -> Result<(), String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Err("query is required".to_string());
+    }
+    let state = app.state::<AppState>();
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let hits = db.search_similar_chunks(q, 3)?;
+    eprintln!("[athena] test_rag_search query={}", q);
+    for (i, h) in hits.iter().enumerate() {
+        let preview: String = h.chunk_text.chars().take(400).collect();
+        eprintln!(
+            "[athena] hit {} file={} chunk_index={} preview={}",
+            i + 1,
+            h.file_path,
+            h.chunk_index,
+            preview.replace('\n', " ")
+        );
+    }
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 struct RebuildFailedFile {
     path: String,
@@ -530,7 +1022,7 @@ async fn rebuild_vector_index(app: tauri::AppHandle) -> Result<RebuildVectorInde
         .filter(|r| {
             r.text_content
                 .as_deref()
-                .map_or(false, |t| !t.trim().is_empty())
+                .is_some_and(|t| !t.trim().is_empty())
         })
         .collect();
     let total = files_with_text.len();
@@ -547,9 +1039,16 @@ async fn rebuild_vector_index(app: tauri::AppHandle) -> Result<RebuildVectorInde
                 .text_content
                 .as_deref()
                 .expect("filter guarantees non-null text_content");
-            match vector_index::index_document(db_ref, &row.path, text) {
+            let doc_title = row
+                .display_title
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(row.name.as_str());
+            match vector_index::index_document(db_ref, &row.path, doc_title, None, text) {
                 Ok(()) => processed += 1,
                 Err(e) => {
+                    eprintln!("[athena] Fatal Ingestion Error: {:?}", e);
                     failed += 1;
                     failed_files.push(RebuildFailedFile {
                         path: row.path.clone(),
@@ -660,7 +1159,7 @@ fn get_ollama_setup_status(
     app: tauri::AppHandle,
     state: tauri::State<'_, OllamaState>,
 ) -> Result<ollama_setup::OllamaSetupStatus, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let sidecar = state.0.lock().map(|guard| guard.is_some()).unwrap_or(false);
     Ok(ollama_setup::build_setup_status(
@@ -672,7 +1171,7 @@ fn get_ollama_setup_status(
 
 #[tauri::command]
 fn install_ollama_cli_for_athena(app: tauri::AppHandle) -> Result<String, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let p = ollama_setup::install_ollama_cli_to_app_data(&app_data_dir)?;
     Ok(p.to_string_lossy().to_string())
 }
@@ -682,7 +1181,7 @@ fn copy_ollama_into_athena_managed(
     app: tauri::AppHandle,
     source_path: String,
 ) -> Result<String, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let src = std::path::PathBuf::from(source_path.trim());
     let p = ollama_setup::copy_cli_into_managed_dir(&src, &app_data_dir)?;
     Ok(p.to_string_lossy().to_string())
@@ -690,7 +1189,7 @@ fn copy_ollama_into_athena_managed(
 
 #[tauri::command]
 fn set_ollama_athena_cli_path(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     let normalized = path.and_then(|p| {
         let t = p.trim();
@@ -714,7 +1213,7 @@ fn set_ollama_athena_cli_path(app: tauri::AppHandle, path: Option<String>) -> Re
 /// Call this when the user explicitly asks to start Ollama; the app may need permission to launch processes.
 #[tauri::command]
 fn try_launch_ollama(app: tauri::AppHandle) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let prefs = ollama_setup::resolve_launch_paths(&app_data_dir, &config);
     try_launch_ollama_server_with_preferences(&prefs);
@@ -731,13 +1230,13 @@ fn get_recommended_model() -> Result<Option<String>, String> {
 
 #[tauri::command]
 fn get_model_override(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(load_config(&app_data_dir).model_override)
 }
 
 #[tauri::command]
 fn set_model_override(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     let normalized = value.and_then(|v| {
         let v = v.to_lowercase();
@@ -761,18 +1260,26 @@ struct UserAndInferenceSettings {
     allow_nsfw_unrestricted_models: bool,
     is_at_least_18: bool,
     is_birthday_today: bool,
+    time_format: String,
+    calendar_region: Option<String>,
+    calendar_quiet_hours_start: u8,
+    calendar_quiet_hours_end: u8,
     inference_backend: Option<String>,
     explicit_ollama_model: Option<String>,
     openai_compatible_base_url: Option<String>,
     openai_compatible_model: Option<String>,
     openai_compatible_api_key_set: bool,
+    /// Effective ONNX embedding folder under `models/embeddings`.
+    active_embedding_model_folder: String,
+    /// Effective ONNX reranker folder under `models/rerankers`.
+    active_reranker_model_folder: String,
 }
 
 #[tauri::command]
 fn get_user_and_inference_settings(
     app: tauri::AppHandle,
 ) -> Result<UserAndInferenceSettings, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let c = load_config(&app_data_dir);
     let bd = c.user_birthdate_iso.as_deref();
     Ok(UserAndInferenceSettings {
@@ -781,6 +1288,13 @@ fn get_user_and_inference_settings(
         allow_nsfw_unrestricted_models: c.allow_nsfw_unrestricted_models.unwrap_or(false),
         is_at_least_18: user_profile::is_at_least_18(bd),
         is_birthday_today: user_profile::is_birthday_today(bd),
+        time_format: match c.time_format.as_deref().map(str::trim) {
+            Some("24") => "24".to_string(),
+            _ => "12".to_string(),
+        },
+        calendar_region: c.calendar_region.clone(),
+        calendar_quiet_hours_start: c.calendar_quiet_hours_start.unwrap_or(22).min(23),
+        calendar_quiet_hours_end: c.calendar_quiet_hours_end.unwrap_or(7).min(23),
         inference_backend: c.inference_backend.clone(),
         explicit_ollama_model: c.explicit_ollama_model.clone(),
         openai_compatible_base_url: c.openai_compatible_base_url.clone(),
@@ -790,12 +1304,14 @@ fn get_user_and_inference_settings(
             .as_deref()
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false),
+        active_embedding_model_folder: effective_embedding_folder(&c),
+        active_reranker_model_folder: effective_reranker_folder(&c),
     })
 }
 
 #[tauri::command]
 fn set_user_display_name(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.user_display_name = value.and_then(|s| {
         let t = s.trim();
@@ -811,7 +1327,7 @@ fn set_user_display_name(app: tauri::AppHandle, value: Option<String>) -> Result
 
 #[tauri::command]
 fn set_user_birthdate_iso(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.user_birthdate_iso = value.and_then(|s| {
         let t = s.trim();
@@ -829,11 +1345,56 @@ fn set_user_birthdate_iso(app: tauri::AppHandle, value: Option<String>) -> Resul
 }
 
 #[tauri::command]
+fn set_time_format(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut config = load_config(&app_data_dir);
+    config.time_format = match value.as_deref().map(|s| s.trim()) {
+        Some("24") => Some("24".to_string()),
+        Some("12") => Some("12".to_string()),
+        _ => None,
+    };
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_calendar_region(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut config = load_config(&app_data_dir);
+    config.calendar_region = value.and_then(|s| {
+        let t = s.trim().to_uppercase();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_calendar_quiet_hours(
+    app: tauri::AppHandle,
+    start_hour: u8,
+    end_hour: u8,
+) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut config = load_config(&app_data_dir);
+    config.calendar_quiet_hours_start = Some(start_hour.min(23));
+    config.calendar_quiet_hours_end = Some(end_hour.min(23));
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn set_inference_backend(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     let normalized = match value.as_deref().map(|s| s.trim().to_lowercase()) {
-        Some(ref s) if s == "openai_compatible" || s == "openai" => Some("openai_compatible".to_string()),
+        Some(ref s) if s == "openai_compatible" || s == "openai" => {
+            Some("openai_compatible".to_string())
+        }
         _ => None,
     };
     config.inference_backend = normalized;
@@ -843,7 +1404,7 @@ fn set_inference_backend(app: tauri::AppHandle, value: Option<String>) -> Result
 
 #[tauri::command]
 fn set_explicit_ollama_model(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.explicit_ollama_model = value.and_then(|s| {
         let t = s.trim();
@@ -858,8 +1419,81 @@ fn set_explicit_ollama_model(app: tauri::AppHandle, value: Option<String>) -> Re
 }
 
 #[tauri::command]
-fn set_openai_compatible_base_url(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+async fn set_active_embedding_model(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    folder_name: String,
+) -> Result<(), String> {
+    let safe = validate_model_subfolder_name(&folder_name)?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let dir = state.model_paths.embeddings_root.join(&safe);
+    if !dir.is_dir() {
+        return Err(format!(
+            "Embedding folder not found under models/embeddings: {safe}"
+        ));
+    }
+    let mut config = load_config(&app_data_dir);
+    config.active_embedding_model_folder = Some(safe);
+    save_config(&app_data_dir, &config)?;
+    let bundle_emb = app
+        .path()
+        .resolve("embedding", tauri::path::BaseDirectory::Resource)
+        .ok()
+        .map(|p| p.to_path_buf());
+    let dir_blocking = dir;
+    tokio::task::spawn_blocking(move || {
+        let emb = Arc::new(neural_embed::NeuralEmbedder::load(
+            Some(dir_blocking.as_path()),
+            bundle_emb.as_deref(),
+        ));
+        neural_embed::replace_global(emb);
+    })
+    .await
+    .map_err(|e| format!("embedding model swap task: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_active_reranker_model(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    folder_name: String,
+) -> Result<(), String> {
+    let safe = validate_model_subfolder_name(&folder_name)?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let dir = state.model_paths.rerankers_root.join(&safe);
+    if !dir.is_dir() {
+        return Err(format!(
+            "Reranker folder not found under models/rerankers: {safe}"
+        ));
+    }
+    let mut config = load_config(&app_data_dir);
+    config.active_reranker_model_folder = Some(safe);
+    save_config(&app_data_dir, &config)?;
+    let bundle_rr = app
+        .path()
+        .resolve("reranker", tauri::path::BaseDirectory::Resource)
+        .ok()
+        .map(|p| p.to_path_buf());
+    let dir_blocking = dir;
+    tokio::task::spawn_blocking(move || {
+        let rr = Arc::new(rerank::Reranker::load(
+            Some(dir_blocking.as_path()),
+            bundle_rr.as_deref(),
+        ));
+        rerank::replace_global(rr);
+    })
+    .await
+    .map_err(|e| format!("reranker model swap task: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_openai_compatible_base_url(
+    app: tauri::AppHandle,
+    value: Option<String>,
+) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.openai_compatible_base_url = value.and_then(|s| {
         let t = s.trim();
@@ -874,8 +1508,11 @@ fn set_openai_compatible_base_url(app: tauri::AppHandle, value: Option<String>) 
 }
 
 #[tauri::command]
-fn set_openai_compatible_api_key(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+fn set_openai_compatible_api_key(
+    app: tauri::AppHandle,
+    value: Option<String>,
+) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.openai_compatible_api_key = value.and_then(|s| {
         let t = s.trim();
@@ -891,7 +1528,7 @@ fn set_openai_compatible_api_key(app: tauri::AppHandle, value: Option<String>) -
 
 #[tauri::command]
 fn set_openai_compatible_model(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.openai_compatible_model = value.and_then(|s| {
         let t = s.trim();
@@ -907,7 +1544,7 @@ fn set_openai_compatible_model(app: tauri::AppHandle, value: Option<String>) -> 
 
 #[tauri::command]
 fn set_allow_nsfw_unrestricted_models(app: tauri::AppHandle, value: bool) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     if !user_profile::is_at_least_18(config.user_birthdate_iso.as_deref()) {
         config.allow_nsfw_unrestricted_models = Some(false);
@@ -925,7 +1562,7 @@ fn probe_openai_compatible_connection(base_url: String) -> Result<bool, String> 
 
 #[tauri::command]
 fn is_inference_ready(app: tauri::AppHandle) -> Result<bool, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let models = load_models_for_inference(&config);
     Ok(ensure_inference_ready(&config, &models).is_ok())
@@ -942,7 +1579,7 @@ fn kiwix_search_with_tool(
     zim_path: String,
     query: String,
 ) -> Result<Vec<String>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let cfg = load_config(&app_data_dir);
     let bin = cfg
         .kiwix_search_binary_path
@@ -965,7 +1602,9 @@ fn get_offline_route_geojson(
     if !(lat1.is_finite() && lon1.is_finite() && lat2.is_finite() && lon2.is_finite()) {
         return Err("Coordinates must be finite.".to_string());
     }
-    Ok(offline_routing::straight_line_route_geojson(lat1, lon1, lat2, lon2))
+    Ok(offline_routing::straight_line_route_geojson(
+        lat1, lon1, lat2, lon2,
+    ))
 }
 
 const DEFAULT_MEMORY_MESSAGES: u32 = 20;
@@ -973,7 +1612,7 @@ const MIN_MEMORY_MESSAGES: u32 = 5;
 
 #[tauri::command]
 fn get_memory_messages(app: tauri::AppHandle) -> Result<u32, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let max = max_memory_messages_for_ram(get_specs().ram_gb);
     let v = load_config(&app_data_dir)
         .memory_messages
@@ -983,7 +1622,7 @@ fn get_memory_messages(app: tauri::AppHandle) -> Result<u32, String> {
 
 #[tauri::command]
 fn set_memory_messages(app: tauri::AppHandle, value: u32) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     let max = max_memory_messages_for_ram(get_specs().ram_gb);
     let clamped = value.clamp(MIN_MEMORY_MESSAGES, max);
@@ -994,7 +1633,7 @@ fn set_memory_messages(app: tauri::AppHandle, value: u32) -> Result<(), String> 
 
 #[tauri::command]
 fn get_feature_map_enabled(app: tauri::AppHandle) -> Result<bool, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(load_config(&app_data_dir)
         .feature_map_enabled
         .unwrap_or(false))
@@ -1002,7 +1641,7 @@ fn get_feature_map_enabled(app: tauri::AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 fn set_feature_map_enabled(app: tauri::AppHandle, value: bool) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.feature_map_enabled = Some(value);
     save_config(&app_data_dir, &config)?;
@@ -1011,7 +1650,7 @@ fn set_feature_map_enabled(app: tauri::AppHandle, value: bool) -> Result<(), Str
 
 #[tauri::command]
 fn get_show_sources_in_chat(app: tauri::AppHandle) -> Result<bool, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(load_config(&app_data_dir)
         .show_sources_in_chat
         .unwrap_or(true))
@@ -1019,7 +1658,7 @@ fn get_show_sources_in_chat(app: tauri::AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 fn set_show_sources_in_chat(app: tauri::AppHandle, value: bool) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.show_sources_in_chat = Some(value);
     save_config(&app_data_dir, &config)?;
@@ -1028,13 +1667,13 @@ fn set_show_sources_in_chat(app: tauri::AppHandle, value: bool) -> Result<(), St
 
 #[tauri::command]
 fn get_user_location(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(load_config(&app_data_dir).user_location_address.clone())
 }
 
 #[tauri::command]
 fn set_user_location(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.user_location_address = value.filter(|s| !s.trim().is_empty());
     save_config(&app_data_dir, &config)?;
@@ -1059,7 +1698,7 @@ fn normalize_mbtiles_file_name(name: &str) -> Option<String> {
 fn get_enabled_main_map_raster_archive_file_names(
     app: tauri::AppHandle,
 ) -> Result<Vec<String>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let cfg = load_config(&app_data_dir);
     let mut values: Vec<String> = cfg
         .enabled_main_map_raster_archive_file_names
@@ -1076,7 +1715,7 @@ fn set_enabled_main_map_raster_archive_file_names(
     app: tauri::AppHandle,
     archive_file_names: Vec<String>,
 ) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut normalized: Vec<String> = archive_file_names
         .iter()
         .filter_map(|name| normalize_mbtiles_file_name(name))
@@ -1104,11 +1743,11 @@ struct TacticalImportResult {
 }
 
 fn tactical_export_default_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let base_dir = app
-        .path()
-        .download_dir()
-        .or_else(|_| app.path().app_data_dir())
-        .map_err(|e| e.to_string())?;
+    let base_dir = if let Ok(d) = app.path().download_dir() {
+        d
+    } else {
+        crate::portable::resolved_app_data_dir(app)?
+    };
     std::fs::create_dir_all(&base_dir).map_err(|e| e.to_string())?;
     Ok(base_dir.join("athena_tactical.athena-tactical"))
 }
@@ -1219,7 +1858,11 @@ fn add_tactical_poi(
     if layer != "resource" && layer != "network" {
         return Err("pin_layer must be \"resource\" or \"network\".".to_string());
     }
-    let desc = description.as_deref().map(str::trim).unwrap_or("").to_string();
+    let desc = description
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
 
     let id = format!(
         "tpoi-{}",
@@ -1303,7 +1946,7 @@ fn get_offline_mbtiles_zoom_range(
     app: tauri::AppHandle,
     archive_file_name: String,
 ) -> Result<Option<(u8, u8)>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let maps_dir = map_manager_download::offline_maps_directory(&app_data_dir);
     let name = archive_file_name.trim();
     if name.is_empty() {
@@ -1327,7 +1970,7 @@ fn get_offline_mbtiles_bounds(
     app: tauri::AppHandle,
     archive_file_name: String,
 ) -> Result<Option<(f64, f64, f64, f64)>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let maps_dir = map_manager_download::offline_maps_directory(&app_data_dir);
     let name = archive_file_name.trim();
     if name.is_empty() {
@@ -1348,13 +1991,13 @@ fn get_offline_mbtiles_bounds(
 
 #[tauri::command]
 fn get_satellite_api_key(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(load_config(&app_data_dir).satellite_api_key.clone())
 }
 
 #[tauri::command]
 fn set_satellite_api_key(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut config = load_config(&app_data_dir);
     config.satellite_api_key = value
         .map(|v| v.trim().to_string())
@@ -1377,7 +2020,7 @@ pub struct MemoryEstimate {
 
 #[tauri::command]
 fn get_memory_estimate(app: tauri::AppHandle) -> Result<MemoryEstimate, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let memory_messages = config.memory_messages.unwrap_or(DEFAULT_MEMORY_MESSAGES);
 
@@ -1415,13 +2058,13 @@ fn get_memory_estimate(app: tauri::AppHandle) -> Result<MemoryEstimate, String> 
 
 #[tauri::command]
 fn list_chats(app: tauri::AppHandle) -> Result<Vec<ChatSummary>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     list_saved_chats(&app_data_dir)
 }
 
 #[tauri::command]
 fn get_chat(app: tauri::AppHandle, id: String) -> Result<Option<SavedChat>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     get_saved_chat(&app_data_dir, id)
 }
 
@@ -1433,7 +2076,7 @@ fn save_chat(
     messages: Vec<SavedMessage>,
     description: Option<String>,
 ) -> Result<String, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     save_saved_chat(&app_data_dir, id, title, messages, description)
 }
 
@@ -1444,7 +2087,7 @@ fn update_chat_metadata(
     title: Option<String>,
     description: Option<String>,
 ) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     update_saved_chat_metadata(&app_data_dir, id, title, description)
 }
 
@@ -1455,7 +2098,7 @@ fn update_chat_context_summary(
     last_user_msg: String,
     last_assistant_msg: String,
 ) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     update_saved_chat_context_summary(&app_data_dir, id, &last_user_msg, &last_assistant_msg)
 }
 
@@ -1469,7 +2112,7 @@ fn synthesize_speech(
     #[cfg(feature = "piper-tts")]
     {
         use base64::Engine;
-        let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
         let bytes = tts::synthesize_speech(&app_data_dir, &text, &voice_id)?;
         Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
     }
@@ -1482,7 +2125,7 @@ fn synthesize_speech(
 
 #[tauri::command]
 fn generate_chat_title(app: tauri::AppHandle, first_message: String) -> Result<String, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
@@ -1494,7 +2137,7 @@ fn generate_chat_description(
     app: tauri::AppHandle,
     messages: Vec<SavedMessage>,
 ) -> Result<String, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
@@ -1510,7 +2153,7 @@ fn generate_chat_description(
 
 #[tauri::command]
 fn delete_chat(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     delete_saved_chat(&app_data_dir, id)
 }
 
@@ -1523,7 +2166,7 @@ fn error_log_path(app_data_dir: &std::path::Path) -> std::path::PathBuf {
 
 #[tauri::command]
 fn append_error_log(app: tauri::AppHandle, message: String) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
     let path = error_log_path(&app_data_dir);
     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
@@ -1559,7 +2202,7 @@ fn append_error_log(app: tauri::AppHandle, message: String) -> Result<(), String
 
 #[tauri::command]
 fn get_error_log(app: tauri::AppHandle) -> Result<String, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let path = error_log_path(&app_data_dir);
     if !path.exists() {
         return Ok(String::new());
@@ -1581,6 +2224,25 @@ pub struct DeviceStats {
     /// Cumulative bytes read from block devices (Linux: /sys/block/*/stat). Used for throughput deltas.
     pub disk_read_bytes_total: u64,
     pub disk_write_bytes_total: u64,
+    pub logical_cpus: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_cores: Option<u32>,
+    pub uptime_secs: u64,
+    pub load_one: f64,
+    pub load_five: f64,
+    pub load_fifteen: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub long_os_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_arch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_brand: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_temp_c: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1817,6 +2479,16 @@ fn get_device_stats() -> Result<DeviceStats, String> {
         time_to_empty_minutes: None,
     });
 
+    let logical_cpus = sys.cpus().len() as u32;
+    let physical_cores = sys.physical_core_count().map(|n| n as u32);
+    let cpu_brand = sys
+        .cpus()
+        .first()
+        .map(|c| c.brand().trim().to_string())
+        .filter(|s| !s.is_empty());
+    let load = sysinfo::System::load_average();
+    let uptime_secs = sysinfo::System::uptime();
+
     Ok(DeviceStats {
         cpu_usage_pct,
         ram_used_mb,
@@ -1829,6 +2501,18 @@ fn get_device_stats() -> Result<DeviceStats, String> {
         net_tx_bytes,
         disk_read_bytes_total,
         disk_write_bytes_total,
+        logical_cpus,
+        physical_cores,
+        uptime_secs,
+        load_one: load.one,
+        load_five: load.five,
+        load_fifteen: load.fifteen,
+        host_name: sysinfo::System::host_name(),
+        os_name: sysinfo::System::name(),
+        kernel_version: sysinfo::System::kernel_version(),
+        long_os_version: sysinfo::System::long_os_version(),
+        cpu_arch: sysinfo::System::cpu_arch(),
+        cpu_brand,
         cpu_temp_c: get_cpu_temp_c(),
         gpu_usage_pct: get_gpu_usage_pct(),
         battery_pct: battery.percentage,
@@ -1843,7 +2527,7 @@ const LIBRARY_RULE_WITH_CONTEXT: &str = "The excerpts below are the user's own L
 /// Shipped reference: user prefix `/athena` injects this (see `ATHENA_PROJECT_REFERENCE.md`).
 const ATHENA_PROJECT_REFERENCE: &str = include_str!("../../ATHENA_PROJECT_REFERENCE.md");
 
-const LIBRARY_RULE_ATHENA_REF_MODE: &str = "The user is asking about the Athena desktop application itself (features, settings, UI, Meshtastic, Library, shortcuts, limitations). Answer using the \"Athena application reference\" appendix in this system prompt. Do not invent features not described there. If something is not in the appendix, say you are not sure and suggest the in-app Help (?) menu.";
+const LIBRARY_RULE_ATHENA_REF_MODE: &str = "The user is asking about the ATHENA desktop application itself (Autonomous Tactical Heuristic Emergency Network Archive; users often call it \"Athena\"): features, settings, UI, Meshtastic, Library, shortcuts, limitations. Answer using the \"ATHENA application reference\" appendix in this system prompt. Do not invent features not described there. If something is not in the appendix, say you are not sure and suggest the in-app Help (?) menu.";
 
 /// Strips leading `/athena` (case-insensitive). Returns `(message_for_model, is_athena_ref_query)`.
 fn parse_athena_ref_message(message: &str) -> (String, bool) {
@@ -1851,7 +2535,7 @@ fn parse_athena_ref_message(message: &str) -> (String, bool) {
     if t.len() >= 7 && t[..7].eq_ignore_ascii_case("/athena") {
         let after = t.get(7..).unwrap_or("").trim_start();
         let user_part = if after.is_empty() {
-            "Briefly describe what the Athena application is and summarize its main capabilities, using the Athena application reference in your system instructions."
+            "Briefly describe what the ATHENA application (Autonomous Tactical Heuristic Emergency Network Archive) is and summarize its main capabilities, using the ATHENA application reference in your system instructions."
         } else {
             after
         };
@@ -1886,17 +2570,21 @@ fn build_context_from_docs(docs: &[IndexedFile], query: &str, max_chars: usize) 
     let keywords = extract_keywords(query, 6);
     for d in docs {
         if let Some(ref t) = d.text_content {
+            let t = t.trim();
+            if t.is_empty() {
+                continue;
+            }
             let snippet = if keywords.is_empty() {
-                if t.len() > 4000 {
-                    format!("{}...", &t[..4000])
+                if t.len() > FULL_DOC_THRESHOLD {
+                    format!("{}...", &t[..FULL_DOC_THRESHOLD])
                 } else {
-                    t.clone()
+                    t.to_string()
                 }
             } else if t.len() <= FULL_DOC_THRESHOLD
                 && keywords.iter().any(|k| t.to_lowercase().contains(k))
             {
                 // Small doc that matches: include full text so brands/specs are never cut off.
-                t.clone()
+                t.to_string()
             } else {
                 let lower = t.to_lowercase();
                 // Find the span that includes every keyword so the snippet contains all relevant parts.
@@ -1921,7 +2609,7 @@ fn build_context_from_docs(docs: &[IndexedFile], query: &str, max_chars: usize) 
                     let end = (max_pos + SNIPPET_WINDOW_AFTER).min(t.len());
                     (start, end)
                 } else {
-                    (0, t.len().min(4000))
+                    (0, t.len().min(FULL_DOC_THRESHOLD))
                 };
                 let mut s = t[start..end].to_string();
                 if start > 0 {
@@ -1974,11 +2662,15 @@ fn build_semantic_context(chunks: &[ChunkEmbedding], max_chars: usize) -> String
     let mut out = String::new();
     let mut total = 0;
     for c in chunks {
+        let body = c.chunk_text.trim();
+        if body.is_empty() {
+            continue;
+        }
         let name = std::path::Path::new(&c.file_path)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(&c.file_path);
-        let block = format!("\n--- From: {} ---\n{}\n", name, c.chunk_text);
+        let block = format!("\n--- From: {} ---\n{}\n", name, body);
         if total + block.len() > max_chars {
             break;
         }
@@ -2069,27 +2761,81 @@ fn build_context_rrf(
                     .unwrap_or(path)
                     .to_string()
             });
-        if seen_names.insert(name.clone()) {
-            source_names.push(name);
-        }
         let remaining = RRF_COMBINED_MAX_CHARS.saturating_sub(total);
         let budget = per_path_budget.min(remaining);
         if budget == 0 {
             break;
         }
-        if let Some(ref doc) = entry.doc {
-            let ctx = build_context_from_docs(std::slice::from_ref(doc), query, budget);
-            if !ctx.is_empty() {
-                out.push_str(&ctx);
-                total += ctx.len();
-            }
+        let ctx = if let Some(ref doc) = entry.doc {
+            build_context_from_docs(std::slice::from_ref(doc), query, budget)
         } else if !entry.chunks.is_empty() {
-            let ctx = build_semantic_context(&entry.chunks, budget);
+            build_semantic_context(&entry.chunks, budget)
+        } else {
+            String::new()
+        };
+        if !ctx.trim().is_empty() {
+            if seen_names.insert(name.clone()) {
+                source_names.push(name);
+            }
             out.push_str(&ctx);
             total += ctx.len();
         }
     }
     (out, source_names)
+}
+
+fn format_hybrid_library_context(hits: &[HybridSearchHit]) -> String {
+    let mut out = String::new();
+    for (i, h) in hits.iter().enumerate() {
+        let title = h.display_title.as_deref().unwrap_or("Untitled");
+        let page = h
+            .page_number
+            .map(|p| format!(" (page {p})"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "--- Source {}: {}{} ---\n{}\n\n",
+            i + 1,
+            title,
+            page,
+            h.expanded_text
+        ));
+    }
+    out
+}
+
+/// Single-turn RAG text for chat console: same RRF keyword + semantic merge as main chat (no history).
+pub(crate) fn console_chat_library_context(db: &Database, query: &str) -> String {
+    if let Ok(hits) = db.hybrid_search(query) {
+        if !hits.is_empty() {
+            return format!(
+                "Relevant excerpts from the user's library (addresses and property details are from the user's files):\n{}",
+                format_hybrid_library_context(&hits)
+            );
+        }
+    }
+    let mut docs = db
+        .search_text_content(query, RRF_KEYWORD_LIMIT)
+        .unwrap_or_default();
+    sort_docs_learned_first(&mut docs);
+    let chunks = db
+        .search_similar_chunks(query, RRF_SEMANTIC_LIMIT)
+        .unwrap_or_default();
+    let (rrf, _) = build_context_rrf(&docs, &chunks, query, false);
+    if !rrf.is_empty() {
+        return format!(
+            "Relevant excerpts from the user's library (addresses and property details are from the user's files):\n{}",
+            rrf
+        );
+    }
+        let recent = db.get_recent_text_files(5).unwrap_or_default();
+    let fallback = build_recent_docs_context(&recent, 600, 4000);
+    if !fallback.is_empty() {
+        return format!(
+            "Recent library documents (use if the question might be answered here):\n{}",
+            fallback
+        );
+    }
+    "No relevant chunks found in the local library.".to_string()
 }
 
 /// Previous conversation turns (user + assistant) for context. Omit the current user message.
@@ -2235,8 +2981,11 @@ fn build_retrieval_from_history(history: &[HistoryMessage], message: &str) -> (S
         return (message.to_string(), String::new());
     }
     let start = history.len().saturating_sub(4);
+    // User turns only: assistant replies often repeat indexed doc text (e.g. long quotes) and would
+    // dominate BM25 / embeddings / rerank, locking retrieval on one file across follow-up questions.
     let combined: String = history[start..]
         .iter()
+        .filter(|m| m.role.eq_ignore_ascii_case("user"))
         .map(|m| m.content.as_str())
         .collect::<Vec<_>>()
         .join(" ");
@@ -2254,6 +3003,7 @@ fn build_retrieval_from_saved_messages(
     let start = messages.len().saturating_sub(4);
     let combined: String = messages[start..]
         .iter()
+        .filter(|m| m.role.eq_ignore_ascii_case("user"))
         .map(|m| m.content.as_str())
         .collect::<Vec<_>>()
         .join(" ");
@@ -2332,7 +3082,7 @@ fn send_message(
     history: Option<Vec<HistoryMessage>>,
     model_options: Option<ModelOptions>,
 ) -> Result<String, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
@@ -2361,33 +3111,39 @@ fn send_message(
                 )
             };
 
-            let mut docs = db
-                .search_text_content(retrieval_query, RRF_KEYWORD_LIMIT)
-                .unwrap_or_default();
-            sort_docs_learned_first(&mut docs);
-            let query_vec = embeddings::embed_text(retrieval_query);
-            let semantic_chunks = db
-                .search_similar_chunks(&query_vec, RRF_SEMANTIC_LIMIT)
-                .unwrap_or_default();
-            let (rrf_context, _source_names) =
-                build_context_rrf(&docs, &semantic_chunks, retrieval_query, false);
-
-            let keyword_semantic_section = if rrf_context.is_empty() {
-                let recent = db.get_recent_text_files(3).unwrap_or_default();
-                let fallback = build_recent_docs_context(&recent, 600, 2000);
-                if fallback.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
-                        fallback
-                    )
-                }
-            } else {
-                format!(
+            let keyword_semantic_section = match db.hybrid_search(retrieval_query) {
+                Ok(hits) if !hits.is_empty() => format!(
                     "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below):\n{}",
-                    rrf_context
-                )
+                    format_hybrid_library_context(&hits)
+                ),
+                _ => {
+                    let mut docs = db
+                        .search_text_content(retrieval_query, RRF_KEYWORD_LIMIT)
+                        .unwrap_or_default();
+                    sort_docs_learned_first(&mut docs);
+                    let semantic_chunks = db
+                        .search_similar_chunks(retrieval_query, RRF_SEMANTIC_LIMIT)
+                        .unwrap_or_default();
+                    let (rrf_context, _source_names) =
+                        build_context_rrf(&docs, &semantic_chunks, retrieval_query, false);
+                    if rrf_context.is_empty() {
+                        let recent = db.get_recent_text_files(3).unwrap_or_default();
+                        let fallback = build_recent_docs_context(&recent, 600, 2000);
+                        if fallback.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
+                                fallback
+                            )
+                        }
+                    } else {
+                        format!(
+                            "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below):\n{}",
+                            rrf_context
+                        )
+                    }
+                }
             };
 
             let context_section = format!("{}{}", mentioned_section, keyword_semantic_section);
@@ -2402,7 +3158,7 @@ fn send_message(
         let conversation_context_prompt = "";
         let athena_ref_section = if athena_ref_mode {
             format!(
-                "\n\n---\nAthena application reference (authoritative for questions about the Athena app):\n{}\n---\n",
+                "\n\n---\nATHENA application reference (authoritative for questions about the app):\n{}\n---\n",
                 ATHENA_PROJECT_REFERENCE
             )
         } else {
@@ -2414,7 +3170,8 @@ fn send_message(
         let personality_section = build_personality_section(&config);
         let user_profile_section = build_user_profile_section(&config);
         let system_content = format!(
-            "You are Athena, a local offline survival and repair assistant. You help with practical skills, first aid, repair, and survival knowledge. Answer concisely and clearly.\n\nCritical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}",
+            "You are Athena, the assistant for {}. You are a local offline survival and repair assistant. You help with practical skills, first aid, repair, and survival knowledge. Answer concisely and clearly.\n\nCritical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}",
+            ATHENA_FULL_NAME,
             library_rule,
             conversation_context_prompt,
             persistent_knowledge_section,
@@ -2432,10 +3189,117 @@ fn send_message(
     chat_unified(&config, &models, messages, model_options).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_lan_cluster_peers() -> Vec<crate::lan_cluster::LanClusterPeerView> {
+    crate::lan_cluster::list_cluster_peers_for_ui()
+}
+
 const STREAM_CHUNK_EVENT: &str = "athena:stream-chunk";
 const STREAM_DONE_EVENT: &str = "athena:stream-done";
 const STREAM_ERROR_EVENT: &str = "athena:stream-error";
-const STREAM_SOURCES_EVENT: &str = "athena:stream-sources";
+pub(crate) const STREAM_SOURCES_EVENT: &str = "athena:stream-sources";
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamLibrarySource {
+    pub file_path: String,
+    pub display_title: String,
+    pub page_number: Option<u32>,
+}
+
+pub(crate) fn hybrid_hit_to_stream_source(h: &db::HybridSearchHit) -> StreamLibrarySource {
+    StreamLibrarySource {
+        file_path: h.file_path.clone(),
+        display_title: h.display_title.clone().unwrap_or_else(|| {
+            std::path::Path::new(&h.file_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Library")
+                .to_string()
+        }),
+        page_number: h.page_number.and_then(|p| u32::try_from(p).ok()),
+    }
+}
+
+fn stream_sources_from_rrf(
+    docs: &[IndexedFile],
+    chunks: &[ChunkEmbedding],
+    source_names: &[String],
+) -> Vec<StreamLibrarySource> {
+    use std::collections::HashMap;
+    let mut map: HashMap<String, String> = HashMap::new();
+    for d in docs {
+        map.insert(d.name.clone(), d.path.clone());
+    }
+    for c in chunks {
+        if let Some(fname) = std::path::Path::new(&c.file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+        {
+            map.entry(fname.to_string())
+                .or_insert_with(|| c.file_path.clone());
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<(String, Option<u32>)> =
+        std::collections::HashSet::new();
+    for n in source_names {
+        let path = map.get(n).cloned().or_else(|| {
+            docs.iter()
+                .find(|d| d.path == *n || d.path.ends_with(n))
+                .map(|d| d.path.clone())
+        }).or_else(|| {
+            chunks
+                .iter()
+                .find(|c| c.file_path.ends_with(n))
+                .map(|c| c.file_path.clone())
+        });
+        if let Some(fp) = path {
+            let key = (fp.clone(), None);
+            if seen.insert(key) {
+                out.push(StreamLibrarySource {
+                    file_path: fp,
+                    display_title: n.clone(),
+                    page_number: None,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn merge_mentioned_and_library_citations(
+    mentioned: &[IndexedFile],
+    library: Vec<StreamLibrarySource>,
+    max: usize,
+) -> Vec<StreamLibrarySource> {
+    let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for d in mentioned {
+        if !seen_paths.insert(d.path.clone()) {
+            continue;
+        }
+        out.push(StreamLibrarySource {
+            file_path: d.path.clone(),
+            display_title: d.display_title.clone().unwrap_or_else(|| d.name.clone()),
+            page_number: None,
+        });
+        if out.len() >= max {
+            return out;
+        }
+    }
+    for c in library {
+        if !seen_paths.insert(c.file_path.clone()) {
+            continue;
+        }
+        out.push(c);
+        if out.len() >= max {
+            break;
+        }
+    }
+    out
+}
+
 
 const KIWIX_PROGRESS_EVENT: &str = "athena:kiwix-progress";
 const KIWIX_DONE_EVENT: &str = "athena:kiwix-done";
@@ -2443,15 +3307,15 @@ const KIWIX_ERROR_EVENT: &str = "athena:kiwix-error";
 
 #[tauri::command]
 fn scan_kiwix_zim_files(app: tauri::AppHandle) -> Result<Vec<DiscoveredZim>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
-    let root: std::path::PathBuf = config
-        .watch_folder
-        .as_deref()
-        .filter(|p| std::path::Path::new(p).is_dir())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| kiwix_downloads_dir(&app_data_dir));
-    kiwix_scan_zim_files(&root)
+    let state = app.state::<AppState>();
+    let folders = {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        compute_watcher_folders(&*g, &app_data_dir, &config)?
+    };
+    let roots: Vec<std::path::PathBuf> = folders.into_iter().map(std::path::PathBuf::from).collect();
+    kiwix_scan_zim_files_multi(&roots)
 }
 
 #[derive(serde::Serialize)]
@@ -2459,43 +3323,77 @@ pub struct LibraryFile {
     pub path: String,
     pub name: String,
     pub size_bytes: u64,
+    pub exists_on_disk: bool,
 }
 
 #[tauri::command]
 fn list_library_contents(app: tauri::AppHandle) -> Result<Vec<LibraryFile>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
-    let kiwix_dir = kiwix_downloads_dir(&app_data_dir);
-    let mut out = Vec::new();
-    let mut add_dir = |dir: &std::path::Path| {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries.flatten() {
-                let path = e.path();
-                if path.is_file() {
-                    let path_str = path.to_string_lossy().to_string();
-                    let name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    out.push(LibraryFile {
-                        path: path_str,
-                        name,
-                        size_bytes,
-                    });
-                }
+    let state = app.state::<AppState>();
+    let (folders, indexed_under) = {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        let folders = compute_watcher_folders(&*g, &app_data_dir, &config)?;
+        let roots_for_index = folders.clone();
+        let idx = g.list_indexed_paths_under_roots(&roots_for_index)?;
+        (folders, idx)
+    };
+    let mut on_disk: HashSet<String> = HashSet::new();
+    let mut out: Vec<LibraryFile> = Vec::new();
+    for folder in &folders {
+        let root = std::path::Path::new(folder);
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|s| s.starts_with('.'))
+            {
+                continue;
+            }
+            let path_str = path.to_string_lossy().to_string();
+            if on_disk.insert(path_str.clone()) {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                out.push(LibraryFile {
+                    path: path_str,
+                    name,
+                    size_bytes,
+                    exists_on_disk: true,
+                });
             }
         }
-    };
-    if let Some(ref folder) = config.watch_folder {
-        add_dir(std::path::Path::new(folder));
     }
-    let kiwix_str = kiwix_dir.to_string_lossy();
-    if kiwix_dir.exists() && config.watch_folder.as_deref() != Some(kiwix_str.as_ref()) {
-        add_dir(&kiwix_dir);
+    for (path_str, name) in indexed_under {
+        if std::path::Path::new(&path_str).exists() {
+            continue;
+        }
+        if on_disk.contains(&path_str) {
+            continue;
+        }
+        on_disk.insert(path_str.clone());
+        out.push(LibraryFile {
+            path: path_str,
+            name,
+            size_bytes: 0,
+            exists_on_disk: false,
+        });
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
 
@@ -2534,7 +3432,7 @@ fn restore_database(
     }
     rusqlite::Connection::open(&src)
         .map_err(|e| format!("Selected file is not a valid SQLite database: {e}"))?;
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let db_path = app_data_dir.join("athena_index.db");
     let mut guard = state.db.lock().map_err(|e| e.to_string())?;
     let _old = std::mem::replace(&mut *guard, Database::new_in_memory_placeholder()?);
@@ -2548,7 +3446,7 @@ fn restore_database(
 
 #[tauri::command]
 fn get_map_catalog(app: tauri::AppHandle) -> Result<Vec<maps::MapCatalogEntry>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let location_enabled = config.feature_map_enabled.unwrap_or(false);
     let address = config.user_location_address.as_deref();
@@ -2561,7 +3459,7 @@ fn get_map_catalog(app: tauri::AppHandle) -> Result<Vec<maps::MapCatalogEntry>, 
 
 #[tauri::command]
 fn get_downloaded_maps(app: tauri::AppHandle) -> Result<Vec<maps::DownloadedMap>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(maps::get_downloaded_maps(&app_data_dir))
 }
 
@@ -2574,7 +3472,7 @@ fn get_offline_map_manager_catalog(
 
 #[tauri::command]
 fn list_downloaded_offline_map_ids(app: tauri::AppHandle) -> Result<Vec<String>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     map_manager_download::list_downloaded_offline_map_ids(&app_data_dir)
 }
 
@@ -2600,7 +3498,7 @@ async fn download_offline_map(
         return Err("Download URL must use http or https.".to_string());
     }
 
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     map_manager_download::ensure_offline_maps_directory(&app_data_dir)?;
 
     let (final_path, part_path) =
@@ -2677,6 +3575,7 @@ fn network_probe_ok_msft(status: u16) -> bool {
 
 /// Best-effort internet check: HTTP probes used by major OS captive-portal detection (no auth).
 #[tauri::command]
+#[allow(clippy::type_complexity)]
 fn check_network_reachable() -> bool {
     let probes: [(&str, fn(u16) -> bool); 3] = [
         (
@@ -2709,7 +3608,7 @@ fn check_network_reachable() -> bool {
 fn get_smallest_kiwix_map_suggestion(
     app: tauri::AppHandle,
 ) -> Result<Option<maps::MapCatalogEntry>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let Some(addr) = config
         .user_location_address
@@ -2729,7 +3628,7 @@ fn geocode_place_query(query: String) -> Result<(f64, f64), String> {
 
 #[tauri::command]
 fn list_tile_packs_cmd(app: tauri::AppHandle) -> Result<Vec<tile_pack::TilePackInfo>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(tile_pack::list_tile_packs(&app_data_dir))
 }
 
@@ -2737,7 +3636,7 @@ fn list_tile_packs_cmd(app: tauri::AppHandle) -> Result<Vec<tile_pack::TilePackI
 fn offline_basemap_paths_cmd(
     app: tauri::AppHandle,
 ) -> Result<tile_pack::OfflineBasemapPaths, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(tile_pack::offline_basemap_paths(&app_data_dir))
 }
 
@@ -2836,11 +3735,12 @@ fn start_pmtiles_import(
 
 #[tauri::command]
 fn remove_tile_pack_cmd(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     tile_pack::remove_tile_pack(&app_data_dir, &id)
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn start_tile_pack_download(
     app: tauri::AppHandle,
     source: String,
@@ -2887,10 +3787,10 @@ fn download_map(
     if url.is_empty() {
         return Err("URL is required".to_string());
     }
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let dest_dir = maps::map_downloads_dir(&app_data_dir);
     std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
-    let filename = url.split('/').last().unwrap_or("download.zim");
+    let filename = url.split('/').next_back().unwrap_or("download.zim");
     let dest_path = dest_dir.join(filename);
 
     let app_emit = app.clone();
@@ -2906,7 +3806,7 @@ fn download_map(
         match kiwix::download_zim(&url_clone, &dest_path, &mut on_progress) {
             Ok(()) => {
                 let path_str = dest_path.to_string_lossy().to_string();
-                if let Ok(app_data) = app_emit.path().app_data_dir() {
+                if let Ok(app_data) = crate::portable::resolved_app_data_dir(&app_emit) {
                     let _ = maps::add_downloaded_map(
                         &app_data,
                         path_str.clone(),
@@ -2933,7 +3833,7 @@ fn download_map(
 
 #[tauri::command]
 fn remove_downloaded_map(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     maps::remove_downloaded_map(&app_data_dir, &path)?;
     if std::path::Path::new(&path).exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -2943,7 +3843,7 @@ fn remove_downloaded_map(app: tauri::AppHandle, path: String) -> Result<(), Stri
 
 #[tauri::command]
 fn get_pois(app: tauri::AppHandle) -> Result<Vec<maps::Poi>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     Ok(maps::get_pois(&app_data_dir))
 }
 
@@ -2955,13 +3855,13 @@ fn add_poi(
     lon: f64,
     notes: String,
 ) -> Result<maps::Poi, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     maps::add_poi(&app_data_dir, name, lat, lon, notes)
 }
 
 #[tauri::command]
 fn remove_poi(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     maps::remove_poi(&app_data_dir, &id)
 }
 
@@ -2974,7 +3874,7 @@ fn update_poi(
     lon: Option<f64>,
     notes: Option<String>,
 ) -> Result<maps::Poi, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     maps::update_poi(&app_data_dir, &id, name, lat, lon, notes)
 }
 
@@ -2985,14 +3885,16 @@ fn help_assistant_ask(app: tauri::AppHandle, question: String) -> Result<String,
     if q.is_empty() {
         return Err("Type a question first.".to_string());
     }
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
-    let mut system = "You are Athena's in-app help assistant. Answer ONLY about the Athena desktop application: chat, library, maps and tactical pins, mesh/Meshtastic, serial radio, Comms, settings, themes, Ollama, offline data, knowledge catalog, dashboard, and similar features. \
-If the user asks about anything else (general homework, unrelated topics), reply in one or two sentences that you only explain how to use Athena, and suggest what they could ask instead. \
-Be concise (under 8 short paragraphs). Do not invent features."
-        .to_string();
+    let mut system = format!(
+        "You are Athena's in-app help assistant for {}. Answer ONLY about this desktop application (users call it \"Athena\"): chat, library, maps and tactical pins, mesh/Meshtastic, serial radio, Comms, settings, themes, Ollama, offline data, knowledge catalog, dashboard, and similar features. \
+If the user asks about anything else (general homework, unrelated topics), reply in one or two sentences that you only explain how to use ATHENA, and suggest what they could ask instead. \
+Be concise (under 8 short paragraphs). Do not invent features.",
+        ATHENA_FULL_NAME
+    );
     system.push_str(&user_profile::line_display_name_for_prompt(
         config.user_display_name.as_deref(),
     ));
@@ -3023,14 +3925,14 @@ fn send_message_stream(
     chat_id: Option<String>,
     model_options: Option<ModelOptions>,
 ) -> Result<(), String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
 
     let state = app.state::<AppState>();
     let db_arc = Arc::clone(&state.db);
-    let model_opts_for_stream = model_options.clone();
+    let model_opts_for_stream = model_options;
     let app_emit = app.clone();
     let history_clone = history;
     let app_data_dir_clone = app_data_dir.clone();
@@ -3044,47 +3946,60 @@ fn send_message_stream(
 
         // Build retrieval query and conversation prompt. Prefer full saved messages over context_summary
         // so we get maximum keyword signal (exact address, names) for follow-ups.
-        let (retrieval_query, conversation_context_prompt) = if let Some(ref cid) = chat_id_clone {
-            if let Ok(Some(chat)) = get_saved_chat(&app_data_dir, cid.clone()) {
-                if chat.messages.len() >= 2 {
-                    build_retrieval_from_saved_messages(&chat.messages, &message_for_model)
-                } else {
-                    let summary = chat.context_summary.unwrap_or_default();
-                    if !summary.trim().is_empty() {
-                        let retrieval_query = format!("{} {}", summary, message_for_model);
-                        let conversation_context_prompt = format!(
-                            "\n\nConversation context (use to resolve \"it\"/\"that\" and what the user is referring to): {}",
-                            summary
-                        );
-                        (retrieval_query, conversation_context_prompt)
+        // `library_lookup_query` is for BM25 / vectors / rerank only: avoid assistant-turn text (and put
+        // the current user message before stale summary) so one document does not dominate every turn.
+        let (retrieval_query, conversation_context_prompt, library_lookup_query) =
+            if let Some(ref cid) = chat_id_clone {
+                if let Ok(Some(chat)) = get_saved_chat(&app_data_dir, cid.clone()) {
+                    if chat.messages.len() >= 2 {
+                        let (rq, cp) =
+                            build_retrieval_from_saved_messages(&chat.messages, &message_for_model);
+                        let lq = rq.clone();
+                        (rq, cp, lq)
                     } else {
-                        (message_for_model.clone(), String::new())
+                        let summary = chat.context_summary.unwrap_or_default();
+                        if !summary.trim().is_empty() {
+                            let retrieval_query = format!("{} {}", summary, message_for_model);
+                            let conversation_context_prompt = format!(
+                                "\n\nConversation context (use to resolve \"it\"/\"that\" and what the user is referring to): {}",
+                                summary
+                            );
+                            let library_lookup_query =
+                                format!("{} {}", message_for_model, summary);
+                            (retrieval_query, conversation_context_prompt, library_lookup_query)
+                        } else {
+                            let m = message_for_model.clone();
+                            (m.clone(), String::new(), m)
+                        }
                     }
+                } else {
+                    let (rq, cp) = build_retrieval_from_history(history_ref, &message_for_model);
+                    let lq = rq.clone();
+                    (rq, cp, lq)
                 }
             } else {
-                build_retrieval_from_history(history_ref, &message_for_model)
-            }
-        } else {
-            build_retrieval_from_history(history_ref, &message_for_model)
-        };
+                let (rq, cp) = build_retrieval_from_history(history_ref, &message_for_model);
+                let lq = rq.clone();
+                (rq, cp, lq)
+            };
 
-        let (messages, all_sources) = {
+        let (messages, stream_citations) = {
             let db = match db_arc.lock() {
                 Ok(g) => g,
                 Err(e) => {
-                    let _ = app_emit.emit(
-                        STREAM_ERROR_EVENT,
-                        format!("Database lock failed: {e}"),
-                    );
+                    let _ = app_emit.emit(STREAM_ERROR_EVENT, format!("Database lock failed: {e}"));
                     return;
                 }
             };
 
-            let (context_section, library_rule, all_sources) = if athena_ref_mode {
-                (String::new(), LIBRARY_RULE_ATHENA_REF_MODE, Vec::new())
+            let (context_section, library_rule, stream_citations) = if athena_ref_mode {
+                (String::new(), LIBRARY_RULE_ATHENA_REF_MODE, Vec::<StreamLibrarySource>::new())
             } else {
                 let mentioned = db
-                    .get_indexed_files_by_name_mentioned(&retrieval_query)
+                    .get_indexed_files_by_name_mentioned(&format!(
+                        "{} {}",
+                        retrieval_query, message_for_model
+                    ))
                     .unwrap_or_default();
                 let mentioned_section = if mentioned.is_empty() {
                     String::new()
@@ -3107,52 +4022,145 @@ fn send_message_stream(
                 } else {
                     RRF_SEMANTIC_LIMIT
                 };
-                let mut docs = db
-                    .search_text_content(&retrieval_query, keyword_limit)
-                    .unwrap_or_default();
-                sort_docs_learned_first(&mut docs);
-                let query_vec = embeddings::embed_text(&retrieval_query);
-                let semantic_chunks = db
-                    .search_similar_chunks(&query_vec, semantic_limit)
-                    .unwrap_or_default();
 
-                let (rrf_context, source_names) = build_context_rrf(
-                    &docs,
-                    &semantic_chunks,
-                    &retrieval_query,
-                    has_conversation_context,
-                );
-
-                let keyword_semantic_section = if rrf_context.is_empty() {
-                    let recent = db.get_recent_text_files(3).unwrap_or_default();
-                    let fallback = build_recent_docs_context(&recent, 600, 2000);
-                    if fallback.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
-                            fallback
-                        )
-                    }
-                } else {
-                    format!(
-                        "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below). Addresses and property details here are from the user's Library—cite them as such. The \"current location\" line elsewhere is from Settings for general area only.\n{}",
-                        rrf_context
-                    )
-                };
+                let (keyword_semantic_section, library_citations) =
+                    match db.hybrid_search(&library_lookup_query) {
+                        Ok(hits) if !hits.is_empty() => {
+                            let mut cites: Vec<StreamLibrarySource> = hits
+                                .iter()
+                                .map(hybrid_hit_to_stream_source)
+                                .collect();
+                            let mut cite_paths: std::collections::HashSet<String> =
+                                cites.iter().map(|c| c.file_path.clone()).collect();
+                            if let Ok(extra) =
+                                db.distinct_library_source_paths(&library_lookup_query, 12)
+                            {
+                                for (path, title) in extra {
+                                    if cites.len() >= 12 {
+                                        break;
+                                    }
+                                    if !cite_paths.insert(path.clone()) {
+                                        continue;
+                                    }
+                                    cites.push(StreamLibrarySource {
+                                        file_path: path.clone(),
+                                        display_title: title.unwrap_or_else(|| {
+                                            std::path::Path::new(&path)
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or("Library")
+                                                .to_string()
+                                        }),
+                                        page_number: None,
+                                    });
+                                }
+                            }
+                            if cite_paths.len() < 3 && cites.len() < 12 {
+                                if let Ok(more) = db.distinct_child_chunk_file_paths_breadth(
+                                    &cite_paths,
+                                    (12 - cites.len()).min(8),
+                                ) {
+                                    for (path, title) in more {
+                                        if cites.len() >= 12 {
+                                            break;
+                                        }
+                                        if !cite_paths.insert(path.clone()) {
+                                            continue;
+                                        }
+                                        cites.push(StreamLibrarySource {
+                                            file_path: path.clone(),
+                                            display_title: title.unwrap_or_else(|| {
+                                                std::path::Path::new(&path)
+                                                    .file_name()
+                                                    .and_then(|n| n.to_str())
+                                                    .unwrap_or("Library")
+                                                    .to_string()
+                                            }),
+                                            page_number: None,
+                                        });
+                                    }
+                                }
+                            }
+                            let mut body = format_hybrid_library_context(&hits);
+                            let distinct_hit_files: std::collections::HashSet<&str> =
+                                hits.iter().map(|h| h.file_path.as_str()).collect();
+                            if distinct_hit_files.len() == 1 {
+                                let exclude: std::collections::HashSet<String> =
+                                    hits.iter().map(|h| h.file_path.clone()).collect();
+                                if let Ok(others) = db.distinct_child_chunk_file_paths_breadth(&exclude, 2)
+                                {
+                                    for (path, title) in others {
+                                        match db.first_child_chunk_text_preview(&path, 650) {
+                                            Ok(snip) if !snip.trim().is_empty() => {
+                                                let label = title.unwrap_or_else(|| {
+                                                    std::path::Path::new(&path)
+                                                        .file_name()
+                                                        .and_then(|n| n.to_str())
+                                                        .unwrap_or("Document")
+                                                        .to_string()
+                                                });
+                                                body.push_str(&format!(
+                                                    "\n---\nOther indexed library document: {}.\nExcerpt:\n{}\n",
+                                                    label, snip
+                                                ));
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                            (
+                                format!(
+                                    "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below). Addresses and property details here are from the user's Library—cite them as such. The \"current location\" line elsewhere is from Settings for general area only.\n{}",
+                                    body
+                                ),
+                                cites,
+                            )
+                        }
+                        _ => {
+                            let mut docs = db
+                                .search_text_content(&library_lookup_query, keyword_limit)
+                                .unwrap_or_default();
+                            sort_docs_learned_first(&mut docs);
+                            let semantic_chunks = db
+                                .search_similar_chunks(&library_lookup_query, semantic_limit)
+                                .unwrap_or_default();
+                            let (rrf_context, source_names) = build_context_rrf(
+                                &docs,
+                                &semantic_chunks,
+                                &library_lookup_query,
+                                has_conversation_context,
+                            );
+                            let cites = stream_sources_from_rrf(&docs, &semantic_chunks, &source_names);
+                            let section = if rrf_context.is_empty() {
+                                let recent = db.get_recent_text_files(3).unwrap_or_default();
+                                let fallback = build_recent_docs_context(&recent, 600, 2000);
+                                if fallback.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(
+                                        "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
+                                        fallback
+                                    )
+                                }
+                            } else {
+                                format!(
+                                    "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below). Addresses and property details here are from the user's Library—cite them as such. The \"current location\" line elsewhere is from Settings for general area only.\n{}",
+                                    rrf_context
+                                )
+                            };
+                            (section, cites)
+                        }
+                    };
 
                 let context_section = format!("{}{}", mentioned_section, keyword_semantic_section);
 
-                let mut all_sources: Vec<String> = mentioned.iter().map(|d| d.name.clone()).collect();
-                for n in &source_names {
-                    if !all_sources.contains(n) {
-                        all_sources.push(n.clone());
-                    }
-                }
                 const MAX_SOURCES_EMIT: usize = 12;
-                if all_sources.len() > MAX_SOURCES_EMIT {
-                    all_sources.truncate(MAX_SOURCES_EMIT);
-                }
+                let stream_citations = merge_mentioned_and_library_citations(
+                    &mentioned,
+                    library_citations,
+                    MAX_SOURCES_EMIT,
+                );
 
                 let library_rule = if context_section.trim().is_empty() {
                     "When the user asks about something that might be in their Library (e.g. their house, notes), say you don't have that information and suggest they add or place a relevant document in their Library folder, then try again."
@@ -3160,12 +4168,12 @@ fn send_message_stream(
                     LIBRARY_RULE_WITH_CONTEXT
                 };
 
-                (context_section, library_rule, all_sources)
+                (context_section, library_rule, stream_citations)
             };
 
             let athena_ref_section = if athena_ref_mode {
                 format!(
-                    "\n\n---\nAthena application reference (authoritative for questions about the Athena app):\n{}\n---\n",
+                    "\n\n---\nATHENA application reference (authoritative for questions about the app):\n{}\n---\n",
                     ATHENA_PROJECT_REFERENCE
                 )
             } else {
@@ -3179,7 +4187,8 @@ fn send_message_stream(
             let personality_section = build_personality_section(&config);
             let user_profile_section = build_user_profile_section(&config);
             let system_content = format!(
-                "You are Athena, a local offline survival and repair assistant. You help with practical skills, first aid, repair, and survival knowledge. Answer concisely and clearly.\n\nCritical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
+                "You are Athena, the assistant for {}. You are a local offline survival and repair assistant. You help with practical skills, first aid, repair, and survival knowledge. Answer concisely and clearly.\n\nCritical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
+                ATHENA_FULL_NAME,
                 library_rule,
                 conversation_context_prompt,
                 persistent_knowledge_section,
@@ -3202,7 +4211,7 @@ fn send_message_stream(
                     && crate::spatial::user_query_suggests_spatial_context(&message_for_model)
                 {
                     if let Ok(spatial_block) =
-                        crate::spatial::build_spatial_context(&*db, lat, lon, &message_for_model)
+                        crate::spatial::build_spatial_context(&db, lat, lon, &message_for_model)
                     {
                         messages =
                             insert_spatial_system_before_last_user_message(messages, spatial_block);
@@ -3210,11 +4219,11 @@ fn send_message_stream(
                 }
             }
 
-            (messages, all_sources)
+            (messages, stream_citations)
         };
 
-        if !all_sources.is_empty() {
-            let _ = app_emit.emit(STREAM_SOURCES_EVENT, &all_sources);
+        if !stream_citations.is_empty() {
+            let _ = app_emit.emit(STREAM_SOURCES_EVENT, &stream_citations);
         }
 
         let models = load_models_for_inference(&config);
@@ -3224,6 +4233,32 @@ fn send_message_stream(
         let on_done = || {
             let _ = app_emit.emit(STREAM_DONE_EVENT, ());
         };
+        let cluster_model = inference::resolve_model_name(&config, &models);
+        if let Ok(ref m) = cluster_model {
+            if crate::lan_cluster::should_attempt_cluster(&config, &models, &messages, m) {
+                let app_c = app_emit.clone();
+                let model_s = m.clone();
+                let messages_c = messages.clone();
+                let opts_c = model_opts_for_stream;
+                let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+                tauri::async_runtime::spawn(async move {
+                    let r = crate::lan_cluster::run_cluster_stream(
+                        app_c.clone(),
+                        model_s,
+                        messages_c,
+                        opts_c,
+                    )
+                    .await;
+                    if let Err(e) = r {
+                        let _ = app_c.emit(STREAM_ERROR_EVENT, e);
+                        let _ = app_c.emit(STREAM_DONE_EVENT, ());
+                    }
+                    let _ = tx.send(());
+                });
+                let _ = rx.recv();
+                return;
+            }
+        }
         if let Err(e) = chat_stream_unified(
             &config,
             &models,
@@ -3251,7 +4286,7 @@ pub fn run() {
     builder.setup(|app| {
             // Ensure the native window always has a non-empty title (avoids macOS fullscreen crash when title is null).
             if let Some(w) = app.get_webview_window("main") {
-                let _ = w.set_title("Athena");
+                let _ = w.set_title("ATHENA");
                 #[cfg(target_os = "macos")]
                 {
                     if let Err(e) = macos_window::apply_native_fullscreen_mitigation(&w) {
@@ -3284,46 +4319,117 @@ pub fn run() {
                     )));
                 }
             }
-            let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            ocr::init_ocr_environment(app.handle());
+            let app_data_dir = crate::portable::resolved_app_data_dir(&app.handle())?;
             std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+            let model_paths = ensure_model_directories(&app_data_dir)?;
             let _ = map_manager_download::ensure_offline_maps_directory(&app_data_dir);
             let _ = map_manager_download::cleanup_stale_part_files(&app_data_dir);
             let db_path = app_data_dir.join("athena_index.db");
             let db = Arc::new(Mutex::new(Database::new(&db_path)?));
+            {
+                let g = db.lock().map_err(|e| e.to_string())?;
+                g.migrate_archive_watch_roots_from_config(&app_data_dir)?;
+            }
+            let startup_cfg = load_config(&app_data_dir);
+            let embedding_dir_active = model_paths
+                .embeddings_root
+                .join(effective_embedding_folder(&startup_cfg));
+            let reranker_dir_active = model_paths
+                .rerankers_root
+                .join(effective_reranker_folder(&startup_cfg));
+            let embedding_resource_dir = app
+                .path()
+                .resolve("embedding", tauri::path::BaseDirectory::Resource)
+                .ok()
+                .map(|p| p.to_path_buf());
+            let neural_embedder = Arc::new(neural_embed::NeuralEmbedder::load(
+                Some(embedding_dir_active.as_path()),
+                embedding_resource_dir.as_deref(),
+            ));
+            neural_embed::init_global(neural_embedder)?;
+            let reranker_resource_dir = app
+                .path()
+                .resolve("reranker", tauri::path::BaseDirectory::Resource)
+                .ok()
+                .map(|p| p.to_path_buf());
+            let reranker = Arc::new(rerank::Reranker::load(
+                Some(reranker_dir_active.as_path()),
+                reranker_resource_dir.as_deref(),
+            ));
+            rerank::init_global(reranker)?;
+            {
+                let paths_for_bootstrap = model_paths.clone();
+                let bundle_emb = embedding_resource_dir.clone();
+                let bundle_rr = reranker_resource_dir.clone();
+                let app_data_for_bootstrap = app_data_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    match downloader::bootstrap_models(&paths_for_bootstrap).await {
+                        Ok(()) => {
+                            let cfg = load_config(&app_data_for_bootstrap);
+                            let emb_path = paths_for_bootstrap
+                                .embeddings_root
+                                .join(effective_embedding_folder(&cfg));
+                            let rr_path = paths_for_bootstrap
+                                .rerankers_root
+                                .join(effective_reranker_folder(&cfg));
+                            let bundle_emb = bundle_emb.clone();
+                            let bundle_rr = bundle_rr.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                let new_emb = Arc::new(neural_embed::NeuralEmbedder::load(
+                                    Some(emb_path.as_path()),
+                                    bundle_emb.as_deref(),
+                                ));
+                                neural_embed::replace_global(Arc::clone(&new_emb));
+                                let new_rr = Arc::new(rerank::Reranker::load(
+                                    Some(rr_path.as_path()),
+                                    bundle_rr.as_deref(),
+                                ));
+                                rerank::replace_global(Arc::clone(&new_rr));
+                                eprintln!(
+                                    "[athena] post-bootstrap: embedder ONNX = {}, reranker ONNX = {}",
+                                    new_emb.is_onnx_loaded(),
+                                    new_rr.is_onnx_loaded()
+                                );
+                            })
+                            .await
+                            {
+                                Ok(()) => {}
+                                Err(e) => eprintln!("[athena] post-bootstrap reload: {e}"),
+                            }
+                        }
+                        Err(e) => eprintln!("[athena] model bootstrap failed: {e}"),
+                    }
+                });
+            }
             let mesh_control = mesh_listener::spawn_mesh_radio_listener(
                 app.handle().clone(),
                 app_data_dir.clone(),
                 Arc::clone(&db),
             );
+            let mesh_control_for_lan = mesh_control.clone();
             app.manage(mesh_control);
+            lan_sync::spawn_lan_sync(
+                app.handle().clone(),
+                app_data_dir.clone(),
+                Arc::clone(&db),
+                mesh_control_for_lan,
+            );
             let (watcher_tx, watcher_rx) = crossbeam_channel::unbounded();
             run_watcher_loop(Arc::clone(&db), watcher_rx, app_data_dir.clone(), app.handle().clone());
+            let config = load_config(&app_data_dir);
+            let folders = {
+                let g = db.lock().map_err(|e| e.to_string())?;
+                compute_watcher_folders(&*g, &app_data_dir, &config)?
+            };
             app.manage(AppState {
                 db,
+                model_paths,
                 watcher_tx: watcher_tx.clone(),
                 active_offline_map_downloads: Arc::new(Mutex::new(HashSet::new())),
+                active_package_downloads: Arc::new(Mutex::new(HashMap::new())),
+                config_lock: Arc::new(Mutex::new(())),
             });
-            let config = load_config(&app_data_dir);
-            let kiwix_dir = app_data_dir.join("kiwix_downloads");
-            std::fs::create_dir_all(&kiwix_dir).map_err(|e| e.to_string())?;
-            let kiwix_dir_str = kiwix_dir.to_string_lossy().to_string();
-            let folders: Vec<String> = match &config.watch_folder {
-                Some(folder) => {
-                    let norm = folder.trim();
-                    if norm.is_empty() {
-                        vec![kiwix_dir_str]
-                    } else if let Ok(canon) = std::path::Path::new(norm).canonicalize() {
-                        if canon == app_data_dir {
-                            vec![kiwix_dir_str]
-                        } else {
-                            vec![folder.clone(), kiwix_dir_str]
-                        }
-                    } else {
-                        vec![folder.clone(), kiwix_dir_str]
-                    }
-                }
-                None => vec![kiwix_dir_str],
-            };
             let _ = watcher_tx.send(WatchCommand::SetFolders(folders));
 
             #[cfg(not(mobile))]
@@ -3432,24 +4538,37 @@ pub fn run() {
                     }
                 });
             }
+            let app_data_default_ollama = app_data_dir.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(18));
+                maybe_ensure_default_ollama_model(&app_data_default_ollama);
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            scan_chat_models,
+            scan_embedding_models,
+            scan_reranker_models,
             get_watch_folder,
             set_watch_folder,
+            list_archive_watch_roots,
+            add_archive_watch_root,
+            remove_archive_watch_root,
             get_theme_config,
             set_theme_config,
             get_indexed_files,
             ingest_files,
             get_index_stats,
             get_rag_stats,
+            test_rag_search,
             rebuild_vector_index,
             list_library_contents,
             remove_library_file,
             backup_database,
             restore_database,
             get_system_specs,
+            get_lan_cluster_peers,
             get_battery_state,
             get_ollama_available_models,
             get_local_models,
@@ -3467,8 +4586,13 @@ pub fn run() {
             get_user_and_inference_settings,
             set_user_display_name,
             set_user_birthdate_iso,
+            set_time_format,
+            set_calendar_region,
+            set_calendar_quiet_hours,
             set_inference_backend,
             set_explicit_ollama_model,
+            set_active_embedding_model,
+            set_active_reranker_model,
             set_openai_compatible_base_url,
             set_openai_compatible_api_key,
             set_openai_compatible_model,
@@ -3555,6 +4679,20 @@ pub fn run() {
             build_library_knowledge,
             set_fullscreen,
             is_fullscreen,
+            commands::package::get_library_manifest,
+            commands::package::get_library_installer_location,
+            commands::package::save_library_installer_location_nyc_default,
+            commands::package::save_library_installer_location_geocode,
+            commands::package::clear_library_installer_location,
+            commands::package::get_model_manifest,
+            commands::package::download_package,
+            commands::package::cancel_package_download,
+            commands::package::get_models_dir,
+            commands::package::set_models_dir,
+            commands::chat_console::chat_console_stream,
+            portable::export_athena_to_usb,
+            usb::get_available_usbs,
+            commands::library_source::open_library_source,
             send_mesh_message,
             get_mesh_ai_auto_reply,
             set_mesh_ai_auto_reply,
@@ -3565,6 +4703,16 @@ pub fn run() {
             logbook_broadcast_entry,
             logbook_request_mesh_sync,
             logbook_mesh_max_body_bytes,
+            get_logbook_author_profile,
+            set_logbook_author_profile,
+            academy_get_curriculum,
+            academy_list_completed,
+            academy_mark_lesson_complete,
+            academy_get_lesson_html,
+            calendar_list_events,
+            calendar_upsert_event,
+            calendar_delete_event,
+            calendar_request_mesh_sync,
             rag_indexer::ingest_local_document,
             rag_indexer::search_rag_chunks,
             rag_indexer::download_knowledge_package,
@@ -3581,12 +4729,17 @@ pub fn run() {
             radio_manager::apply_channel_profile,
             radio_manager::set_radio_config,
             radio_manager::export_radio_logs,
+            sdr_manager::sdr_list_devices,
+            sdr_manager::sdr_start,
+            sdr_manager::sdr_stop,
+            sdr_manager::sdr_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
                 kill_ollama_sidecar_if_running(app_handle);
+                sdr_manager::stop_sdr_internal(app_handle);
             }
         });
 }

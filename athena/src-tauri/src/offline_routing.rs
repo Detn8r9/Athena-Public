@@ -32,7 +32,9 @@ mod tests {
     #[test]
     fn straight_line_geojson_has_two_coords() {
         let r = straight_line_route_geojson(0.0, 0.0, 1.0, 1.0);
-        let coords = r.geojson["geometry"]["coordinates"].as_array().expect("coords");
+        let coords = r.geojson["geometry"]["coordinates"]
+            .as_array()
+            .expect("coords");
         assert_eq!(coords.len(), 2);
     }
 }

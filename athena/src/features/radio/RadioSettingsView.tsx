@@ -45,6 +45,7 @@ export function RadioSettingsView() {
   };
 
   return (
+    <div className="radio-settings-view-scroll">
     <section className="glass-panel" style={{ padding: "0.9rem", marginTop: "0.8rem" }}>
       <h4 style={{ margin: "0 0 0.7rem", color: "var(--primary)" }}>Device Configuration</h4>
       <div style={{ display: "grid", gap: "0.75rem" }}>
@@ -130,5 +131,6 @@ export function RadioSettingsView() {
         </p>
       ) : null}
     </section>
+    </div>
   );
 }

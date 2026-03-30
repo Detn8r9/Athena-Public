@@ -1,0 +1,14 @@
+{
+  "name": "project-athena-root",
+  "private": true,
+  "description": "Proxies npm scripts to the athena/ app — run from repo root or cd athena",
+  "scripts": {
+    "dev": "npm --prefix athena run dev",
+    "build": "npm --prefix athena run build",
+    "test": "npm --prefix athena run test",
+    "preview": "npm --prefix athena run preview",
+    "tauri": "npm --prefix athena run tauri --",
+    "tauri:dev": "npm --prefix athena run tauri -- dev",
+    "tauri:build": "npm --prefix athena run tauri -- build"
+  }
+}

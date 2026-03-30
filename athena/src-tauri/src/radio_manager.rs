@@ -4,8 +4,8 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as B64_ENGINE;
@@ -17,6 +17,7 @@ use tauri::Manager;
 use uuid::Uuid;
 
 use crate::db::{MapMarker, RadioChannel, RadioLog};
+use crate::lan_sync;
 use crate::AppState;
 
 pub struct RadioState {
@@ -68,12 +69,15 @@ fn parse_peer_position(line: &str) -> Option<PeerPositionPayload> {
             .expect("node regex must compile")
     });
     let node_alt_re = NODE_ALT_RE.get_or_init(|| {
-        Regex::new(r#"(?i)\bnode\s+([!A-Za-z0-9_-]+)\b"#).expect("alternate node regex must compile")
+        Regex::new(r#"(?i)\bnode\s+([!A-Za-z0-9_-]+)\b"#)
+            .expect("alternate node regex must compile")
     });
-    let lat_re = LAT_RE
-        .get_or_init(|| Regex::new(r#"(?i)(?:lat|latitude)\s*[:=]\s*(-?\d{1,2}(?:\.\d+)?)"#).expect("lat regex"));
+    let lat_re = LAT_RE.get_or_init(|| {
+        Regex::new(r#"(?i)(?:lat|latitude)\s*[:=]\s*(-?\d{1,2}(?:\.\d+)?)"#).expect("lat regex")
+    });
     let lon_re = LON_RE.get_or_init(|| {
-        Regex::new(r#"(?i)(?:lon|lng|longitude)\s*[:=]\s*(-?\d{1,3}(?:\.\d+)?)"#).expect("lon regex")
+        Regex::new(r#"(?i)(?:lon|lng|longitude)\s*[:=]\s*(-?\d{1,3}(?:\.\d+)?)"#)
+            .expect("lon regex")
     });
 
     let node_id = node_re
@@ -106,9 +110,8 @@ fn parse_peer_position(line: &str) -> Option<PeerPositionPayload> {
 /// `ATH:ACK id=<packet_id>`
 fn parse_ath_ack(line: &str) -> Option<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r"(?i)^ATH:ACK\s+id=([^\s]+)\s*$").expect("ATH:ACK regex")
-    });
+    let re =
+        RE.get_or_init(|| Regex::new(r"(?i)^ATH:ACK\s+id=([^\s]+)\s*$").expect("ATH:ACK regex"));
     re.captures(line)
         .and_then(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
         .filter(|s| !s.is_empty())
@@ -118,7 +121,8 @@ fn parse_ath_ack(line: &str) -> Option<String> {
 fn parse_ath_sig(line: &str) -> Option<(i64, f64)> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        Regex::new(r"(?i)^ATH:SIG\s+rssi=(-?\d+)\s+snr=(-?\d+(?:\.\d+)?)\s*$").expect("ATH:SIG regex")
+        Regex::new(r"(?i)^ATH:SIG\s+rssi=(-?\d+)\s+snr=(-?\d+(?:\.\d+)?)\s*$")
+            .expect("ATH:SIG regex")
     });
     let caps = re.captures(line)?;
     let rssi = caps.get(1)?.as_str().parse().ok()?;
@@ -128,7 +132,8 @@ fn parse_ath_sig(line: &str) -> Option<(i64, f64)> {
 
 #[tauri::command]
 pub async fn get_available_ports() -> Result<Vec<String>, String> {
-    let ports = serialport::available_ports().map_err(|e| format!("Could not list serial ports: {e}"))?;
+    let ports =
+        serialport::available_ports().map_err(|e| format!("Could not list serial ports: {e}"))?;
     Ok(ports.into_iter().map(|p| p.port_name).collect())
 }
 
@@ -174,13 +179,25 @@ pub async fn connect_to_radio(
 
                         // Order: ATH:ACK → ATH:SIG → ATK: / peer → generic RX log
                         if let Some(packet_id) = parse_ath_ack(line) {
-                            let delivered = if let Some(state) = app_handle.try_state::<AppState>() {
-                                state
-                                    .db
-                                    .lock()
-                                    .ok()
-                                    .and_then(|g| g.mark_mesh_message_delivered(&packet_id).ok())
-                                    .unwrap_or(false)
+                            let delivered = if let Some(state) = app_handle.try_state::<AppState>()
+                            {
+                                if let Ok(g) = state.db.lock() {
+                                    match g.mark_mesh_message_delivered(&packet_id) {
+                                        Ok(Some(m)) => {
+                                            if let Ok(v) = serde_json::to_value(&m) {
+                                                lan_sync::publish_local_sync_row(
+                                                    lan_sync::LAN_TBL_MESH_MESSAGES,
+                                                    v,
+                                                );
+                                            }
+                                            true
+                                        }
+                                        Ok(None) => false,
+                                        Err(_) => false,
+                                    }
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
                             };
@@ -198,7 +215,18 @@ pub async fn connect_to_radio(
                             let ts = chrono::Utc::now().to_rfc3339();
                             if let Some(state) = app_handle.try_state::<AppState>() {
                                 if let Ok(g) = state.db.lock() {
-                                    let _ = g.insert_radio_telemetry(rssi, snr);
+                                    if let Ok(Some(sample)) = g.insert_radio_telemetry(
+                                        lan_sync::lan_local_node_id(),
+                                        rssi,
+                                        snr,
+                                    ) {
+                                        if let Ok(v) = serde_json::to_value(&sample) {
+                                            lan_sync::publish_local_sync_row(
+                                                lan_sync::LAN_TBL_RADIO_TELEMETRY,
+                                                v,
+                                            );
+                                        }
+                                    }
                                 }
                             }
                             let _ = app_handle.emit(
@@ -216,7 +244,14 @@ pub async fn connect_to_radio(
                             if let Ok(marker) = serde_json::from_str::<MapMarker>(rest) {
                                 if let Some(state) = app_handle.try_state::<AppState>() {
                                     if let Ok(g) = state.db.lock() {
-                                        let _ = g.upsert_map_marker(&marker);
+                                        if g.upsert_map_marker(&marker).is_ok() {
+                                            if let Ok(v) = serde_json::to_value(&marker) {
+                                                lan_sync::publish_local_sync_row(
+                                                    lan_sync::LAN_TBL_MAP_MARKERS,
+                                                    v,
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                                 let _ = app_handle.emit("peer-marker-rx", marker);
@@ -266,11 +301,14 @@ pub async fn send_radio_message(
         return Err("Message is empty.".to_string());
     }
     let packet_id = Uuid::new_v4().to_string();
-    app_state
+    let mesh_row = app_state
         .db
         .lock()
         .map_err(|e| e.to_string())?
         .insert_mesh_message_pending(&packet_id, msg)?;
+    if let Ok(v) = serde_json::to_value(&mesh_row) {
+        lan_sync::publish_local_sync_row(lan_sync::LAN_TBL_MESH_MESSAGES, v);
+    }
 
     let body_b64 = B64_ENGINE.encode(msg.as_bytes());
     let wire = format!("ATH:MSG id={packet_id} body={body_b64}\n");
@@ -339,7 +377,9 @@ pub async fn get_mesh_messages(
 }
 
 #[tauri::command]
-pub async fn list_radio_channels(app_state: tauri::State<'_, AppState>) -> Result<Vec<RadioChannel>, String> {
+pub async fn list_radio_channels(
+    app_state: tauri::State<'_, AppState>,
+) -> Result<Vec<RadioChannel>, String> {
     app_state
         .db
         .lock()
@@ -363,7 +403,10 @@ pub async fn upsert_radio_channel(
 }
 
 #[tauri::command]
-pub async fn delete_radio_channel(id: String, app_state: tauri::State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_radio_channel(
+    id: String,
+    app_state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
     if id.trim().is_empty() {
         return Err("Channel id is required.".to_string());
     }

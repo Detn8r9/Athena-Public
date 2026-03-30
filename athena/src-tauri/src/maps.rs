@@ -138,7 +138,7 @@ pub fn smallest_kiwix_map_for_address(address: &str) -> Option<MapCatalogEntry> 
     let (i, region, url, size_bytes) = best?;
     let id = url
         .split('/')
-        .last()
+        .next_back()
         .unwrap_or("")
         .trim_end_matches(".zim")
         .to_string();
@@ -161,9 +161,7 @@ pub fn get_map_catalog(
     user_address: Option<&str>,
 ) -> Vec<MapCatalogEntry> {
     let user_regions = if location_enabled {
-        user_address
-            .map(|a| regions_for_address(a))
-            .unwrap_or_default()
+        user_address.map(regions_for_address).unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -174,7 +172,7 @@ pub fn get_map_catalog(
         .map(|(i, (region, url, size_bytes))| {
             let id = url
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or("")
                 .trim_end_matches(".zim")
                 .to_string();

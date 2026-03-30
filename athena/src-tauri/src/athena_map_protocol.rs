@@ -333,6 +333,7 @@ fn parse_single_byte_range(header_text: &str, file_length: u64) -> Result<(u64, 
     Ok((start, end_inclusive))
 }
 
+#[allow(clippy::result_large_err)]
 fn resolve_local_archive_path<R: Runtime>(
     application_handle: &AppHandle<R>,
     uri_path: &str,

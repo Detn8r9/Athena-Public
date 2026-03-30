@@ -14,7 +14,7 @@ const PACKS_FILENAME: &str = "athena_tile_packs.json";
 pub const TILE_PACKS_SUBDIR: &str = "tile_packs";
 
 const MAX_TILES_PER_JOB: usize = 8_000;
-const OSM_DELAY_MS: u64 = 75;
+const OSM_DELAY_MS: u64 = 100;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct OfflineBasemapPaths {
@@ -220,6 +220,7 @@ fn count_tiles(
     n
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn download_tile_pack_background(
     app: tauri::AppHandle,
     progress_event: &'static str,

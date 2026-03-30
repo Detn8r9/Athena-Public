@@ -4,13 +4,181 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Athena</title>
+    <title>ATHENA</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
   </head>
 
   <body>
+    <style>
+      body {
+        margin: 0;
+        background: #050505;
+        overflow: hidden;
+      }
+
+      #athena-splash {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        box-sizing: border-box;
+        padding: 0 max(12px, env(safe-area-inset-left, 0px)) 0 max(12px, env(safe-area-inset-right, 0px));
+        background: #050505;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: opacity 0.8s ease-out;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: geometricPrecision;
+      }
+
+      /* Start: cap font so full six words + gaps fit (~50 char widths + letters + flex gaps). End: collapsed A.T.H.E.N.A. */
+      .splash-phrase {
+        --splash-fs-start: max(
+          6px,
+          min(
+            clamp(0.85rem, min(2.8vw, 3.8vmin), 3rem),
+            calc((100vw - 4rem) / 36)
+          )
+        );
+        --splash-fs-end: min(
+          clamp(1.75rem, min(7vw, 9vmin), 5.5rem),
+          calc((100vw - 2.5rem) / 11)
+        );
+        display: flex;
+        flex-direction: row;
+        flex-wrap: nowrap;
+        justify-content: center;
+        align-items: flex-end;
+        gap: min(1.5vw, 0.4rem);
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        font-size: var(--splash-fs-start);
+        font-weight: 300;
+        text-transform: uppercase;
+        color: rgba(0, 255, 255, 0.7);
+        animation: initialReveal 1.5s ease-out forwards, shrinkGapAndZoom 1s ease-in-out 2.5s forwards;
+        backface-visibility: hidden;
+      }
+
+      .word {
+        display: flex;
+        align-items: flex-end;
+        flex-shrink: 0;
+      }
+
+      .letter {
+        font-weight: 800;
+        color: #ffffff;
+        animation: pulseGlow 2s infinite 3.5s;
+      }
+
+      .dot {
+        font-weight: 800;
+        color: rgba(0, 255, 255, 0.9);
+        max-width: 0;
+        opacity: 0;
+        overflow: hidden;
+        animation: revealDot 1s ease-in-out 2.5s forwards, pulseGlow 2s infinite 3.5s;
+      }
+
+      /* Wide enough for longest suffix ("utonomous"); never clip spelled-out words — row fit is handled by --splash-fs-start. */
+      .rest {
+        overflow: hidden;
+        white-space: nowrap;
+        opacity: 1;
+        max-width: 12em;
+        animation: fadeOutText 1s ease-in-out 2.5s forwards, collapseSpace 1s ease-in-out 2.5s forwards;
+      }
+
+      @keyframes initialReveal {
+        0% {
+          opacity: 0;
+          filter: blur(8px);
+          transform: scale(0.95);
+        }
+        100% {
+          opacity: 1;
+          filter: blur(0px);
+          transform: scale(1);
+        }
+      }
+
+      @keyframes fadeOutText {
+        from {
+          opacity: 1;
+        }
+        to {
+          opacity: 0;
+        }
+      }
+
+      @keyframes collapseSpace {
+        to {
+          max-width: 0;
+        }
+      }
+
+      @keyframes revealDot {
+        from {
+          max-width: 0;
+          opacity: 0;
+        }
+        to {
+          max-width: 1.1em;
+          opacity: 1;
+        }
+      }
+
+      /* Zoom via font-size (sharp) instead of transform: scale() (blurry upscaled bitmap). */
+      @keyframes shrinkGapAndZoom {
+        from {
+          gap: min(1.5vw, 0.4rem);
+          font-size: var(--splash-fs-start);
+          transform: translateZ(0) scale(1);
+        }
+        to {
+          gap: min(0.2vw, 0.06rem);
+          font-size: var(--splash-fs-end);
+          transform: translateZ(0) scale(1);
+        }
+      }
+
+      @keyframes pulseGlow {
+        0% {
+          text-shadow: 0 0 10px rgba(0, 255, 255, 0.2);
+        }
+        50% {
+          text-shadow: 0 0 30px rgba(0, 255, 255, 0.9), 0 0 10px #ffffff;
+        }
+        100% {
+          text-shadow: 0 0 10px rgba(0, 255, 255, 0.2);
+        }
+      }
+
+      #athena-splash.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+    </style>
+    <div id="athena-splash">
+      <div class="splash-phrase">
+        <div class="word"><span class="letter">A</span><span class="dot">.</span><span class="rest">utonomous</span></div>
+        <div class="word"><span class="letter">T</span><span class="dot">.</span><span class="rest">actical</span></div>
+        <div class="word"><span class="letter">H</span><span class="dot">.</span><span class="rest">euristic</span></div>
+        <div class="word"><span class="letter">E</span><span class="dot">.</span><span class="rest">mergency</span></div>
+        <div class="word"><span class="letter">N</span><span class="dot">.</span><span class="rest">etwork</span></div>
+        <div class="word"><span class="letter">A</span><span class="dot">.</span><span class="rest">rchive</span></div>
+      </div>
+    </div>
     <!-- SVG filter defs for Survival Manual theme (referenced from App.css via url(#athena-paper-grain)) -->
     <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="0" height="0" style="position: absolute; overflow: hidden; clip: rect(0, 0, 0, 0)">
       <defs>

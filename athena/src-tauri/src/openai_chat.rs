@@ -2,8 +2,8 @@
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
 use std::sync::mpsc::SyncSender;
+use std::time::{Duration, Instant};
 
 use crate::ollama::{ChatMessage, ModelOptions};
 
@@ -100,7 +100,10 @@ pub fn chat_completions_blocking(
     options: Option<ModelOptions>,
 ) -> Result<String, String> {
     if !is_allowed_openai_base_url(base_url) {
-        return Err("Base URL must use http://127.0.0.1 or http://localhost (HTTPS allowed on loopback).".to_string());
+        return Err(
+            "Base URL must use http://127.0.0.1 or http://localhost (HTTPS allowed on loopback)."
+                .to_string(),
+        );
     }
     let base = normalize_base(base_url);
     let url = format!("{}/chat/completions", base);
@@ -129,7 +132,11 @@ pub fn chat_completions_blocking(
     if let Some(k) = api_key.filter(|s| !s.trim().is_empty()) {
         req = req.header("Authorization", format!("Bearer {}", k.trim()));
     }
-    let resp = req.send().map_err(|e| e.to_string())?.error_for_status().map_err(|e| e.to_string())?;
+    let resp = req
+        .send()
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
     let parsed: OpenAiChatResponse = resp.json().map_err(|e| e.to_string())?;
     Ok(parsed
         .choices
@@ -221,7 +228,8 @@ async fn openai_stream_read(
                                 if let Some(d) = c.delta {
                                     if let Some(content) = d.content {
                                         if !content.is_empty() {
-                                            tx.send(Ok(Some(content))).map_err(|_| "channel closed")?;
+                                            tx.send(Ok(Some(content)))
+                                                .map_err(|_| "channel closed")?;
                                         }
                                     }
                                 }

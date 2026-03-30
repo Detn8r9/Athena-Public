@@ -17,7 +17,7 @@ pub const MAP_DOWNLOAD_COMPLETE_EVENT: &str = "map_download_complete";
 pub const MAP_DOWNLOAD_ERROR_EVENT: &str = "map_download_error";
 
 const MAPS_SUBDIR: &str = "maps";
-const PROGRESS_EMIT_MIN_INTERVAL: Duration = Duration::from_millis(120);
+const PROGRESS_EMIT_MIN_INTERVAL: Duration = Duration::from_millis(160);
 
 #[derive(Clone, Serialize)]
 pub struct MapDownloadProgressPayload {

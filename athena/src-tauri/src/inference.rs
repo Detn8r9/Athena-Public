@@ -18,7 +18,10 @@ pub fn is_openai_compatible_backend(config: &AppConfig) -> bool {
 }
 
 /// Returns error if OpenAI-compatible is selected but URL is invalid or unreachable.
-pub fn ensure_inference_ready(config: &AppConfig, ollama_models: &[ModelInfo]) -> Result<(), String> {
+pub fn ensure_inference_ready(
+    config: &AppConfig,
+    ollama_models: &[ModelInfo],
+) -> Result<(), String> {
     if is_openai_compatible_backend(config) {
         let base = config
             .openai_compatible_base_url
@@ -26,12 +29,11 @@ pub fn ensure_inference_ready(config: &AppConfig, ollama_models: &[ModelInfo]) -
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                "Set an OpenAI-compatible base URL (e.g. http://127.0.0.1:1234/v1) in Settings.".to_string()
+                "Set an OpenAI-compatible base URL (e.g. http://127.0.0.1:1234/v1) in Settings."
+                    .to_string()
             })?;
         if !is_allowed_openai_base_url(base) {
-            return Err(
-                "OpenAI-compatible base URL must use 127.0.0.1 or localhost.".to_string(),
-            );
+            return Err("OpenAI-compatible base URL must use 127.0.0.1 or localhost.".to_string());
         }
         if !probe_openai_compatible(base) {
             return Err(
@@ -55,7 +57,10 @@ pub fn ensure_inference_ready(config: &AppConfig, ollama_models: &[ModelInfo]) -
     }
 }
 
-pub fn resolve_model_name(config: &AppConfig, ollama_models: &[ModelInfo]) -> Result<String, String> {
+pub fn resolve_model_name(
+    config: &AppConfig,
+    ollama_models: &[ModelInfo],
+) -> Result<String, String> {
     if is_openai_compatible_backend(config) {
         return config
             .openai_compatible_model
@@ -106,7 +111,7 @@ pub fn load_models_for_inference(config: &AppConfig) -> Vec<ModelInfo> {
     }
 }
 
-/// Title generation using the active inference backend (same trimming rules as `ollama::generate_chat_title`).
+/// Title generation using the active inference backend (same trimming rules as legacy Ollama-only helpers).
 pub fn generate_chat_title_unified(
     config: &AppConfig,
     ollama_models: &[ModelInfo],
@@ -126,7 +131,10 @@ pub fn generate_chat_title_unified(
         },
         ChatMessage {
             role: "user".to_string(),
-            content: format!("Generate a short title for this question or topic:\n\n{}", prompt),
+            content: format!(
+                "Generate a short title for this question or topic:\n\n{}",
+                prompt
+            ),
         },
     ];
     let out = chat_unified(config, ollama_models, messages, None)?;
@@ -178,7 +186,10 @@ pub fn generate_chat_description_unified(
         },
         ChatMessage {
             role: "user".to_string(),
-            content: format!("Summarize this conversation in one short sentence:\n\n{}", combined),
+            content: format!(
+                "Summarize this conversation in one short sentence:\n\n{}",
+                combined
+            ),
         },
     ];
     let out = chat_unified(config, ollama_models, msgs, None)?;

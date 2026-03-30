@@ -1,50 +1,13 @@
-//! Local deterministic embeddings: tokenize text, hash into a fixed-size vector,
-//! L2-normalize. No external model or network; runs entirely in Rust.
+//! Cosine similarity helpers. Embedding dimension matches ONNX sentence models (384).
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+pub use crate::neural_embed::NEURAL_EMBEDDING_DIM as EMBEDDING_DIM;
 
-pub const EMBEDDING_DIM: usize = 256;
-
-fn tokenize(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for c in text.chars() {
-        if c.is_ascii_alphanumeric() || c == '\'' {
-            current.push(c.to_lowercase().next().unwrap_or(c));
-        } else {
-            if current.len() >= 2 {
-                out.push(current.clone());
-            }
-            current.clear();
-        }
-    }
-    if current.len() >= 2 {
-        out.push(current);
-    }
-    out
-}
-
-fn hash_to_bucket(token: &str, dim: usize) -> usize {
-    let mut hasher = DefaultHasher::new();
-    token.hash(&mut hasher);
-    (hasher.finish() as usize) % dim
-}
-
-/// Build a unit-length embedding vector for the given text. Deterministic and offline.
+/// Embed text using the global neural model (ONNX or stub).
 pub fn embed_text(text: &str) -> Vec<f32> {
-    let mut vec = vec![0.0f32; EMBEDDING_DIM];
-    for token in tokenize(text) {
-        let b = hash_to_bucket(&token, EMBEDDING_DIM);
-        vec[b] += 1.0;
-    }
-    let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for x in &mut vec {
-            *x /= norm;
-        }
-    }
-    vec
+    crate::neural_embed::embed_query(text).unwrap_or_else(|e| {
+        eprintln!("[athena] embed_text: {e}");
+        vec![0.0f32; EMBEDDING_DIM]
+    })
 }
 
 /// Cosine similarity of two L2-normalized vectors. Returns a value in [-1, 1] (1 = identical).

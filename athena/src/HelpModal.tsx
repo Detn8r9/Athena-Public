@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { ATHENA_ACRONYM_PARTS, ATHENA_FULL_NAME } from "./shared/branding";
+import { useLexicon } from "./shared/lexicon";
 
 export type HelpSectionId =
   | "overview"
@@ -25,43 +27,6 @@ type SectionDef = {
   keywords?: string[];
 };
 
-const SECTIONS: SectionDef[] = [
-  { id: "overview", label: "Overview", blurb: "What Athena is and how it works", keywords: ["ollama", "local", "offline"] },
-  { id: "home", label: "Home", blurb: "Dashboard, CPU/RAM, quick launch", keywords: ["dashboard", "launcher", "system"] },
-  {
-    id: "tactical_map",
-    label: "Tactical map",
-    blurb: "Pins, layers, mesh, right‑click",
-    keywords: ["map", "pin", "tactical", "poi", "mesh", "leaflet"],
-  },
-  {
-    id: "maps_offline",
-    label: "Maps & offline data",
-    blurb: "Kiwix ZIMs vs MBTiles / archives",
-    keywords: ["kiwix", "zim", "mbtiles", "pmtiles", "download", "basemap", "archive"],
-  },
-  { id: "chat", label: "Chat & composer", blurb: "Sending messages and shortcuts", keywords: ["message", "keyboard"] },
-  { id: "tools", label: "Tools", blurb: "Attachments and the Tools menu", keywords: ["attach", "file", "image"] },
-  { id: "sidebar", label: "Sidebar", blurb: "Chats list and organization", keywords: ["chat list", "pin"] },
-  { id: "header", label: "Top bar", blurb: "Icons across the header", keywords: ["export", "pdf", "triage"] },
-  { id: "library", label: "Library & Kiwix", blurb: "Documents, indexing, offline Wikipedia", keywords: ["index", "rag", "zim"] },
-  { id: "meshtastic", label: "Meshtastic", blurb: "USB LoRa mesh radio", keywords: ["mesh", "lora", "usb"] },
-  {
-    id: "radio_comms",
-    label: "Comms (radio)",
-    blurb: "Serial radio terminal, channels",
-    keywords: ["radio", "serial", "comms", "mesh", "packet"],
-  },
-  { id: "settings", label: "Settings", blurb: "General, AI, location, mesh, appearance", keywords: ["preferences", "theme"] },
-  { id: "replies", label: "Replies & playback", blurb: "TTS, copy, and citations", keywords: ["speech", "copy"] },
-  {
-    id: "help_assistant",
-    label: "Ask Athena",
-    blurb: "AI help for using the app (beta)",
-    keywords: ["ai", "question", "search", "how do i"],
-  },
-];
-
 function sectionMatches(query: string, s: SectionDef): boolean {
   const t = query.trim().toLowerCase();
   if (!t) return true;
@@ -75,10 +40,101 @@ interface HelpModalProps {
 }
 
 export function HelpModal({ open, onClose }: HelpModalProps) {
+  const lx = useLexicon();
   const [active, setActive] = useState<HelpSectionId>("overview");
   const [search, setSearch] = useState("");
 
-  const visibleSections = useMemo(() => SECTIONS.filter((s) => sectionMatches(search, s)), [search]);
+  const sections = useMemo<SectionDef[]>(
+    () => [
+      {
+        id: "overview",
+        label: lx.helpTopicOverviewLabel,
+        blurb: lx.helpTopicOverviewBlurb,
+        keywords: ["ollama", "local", "offline"],
+      },
+      {
+        id: "home",
+        label: lx.helpTopicHomeLabel,
+        blurb: lx.helpTopicHomeBlurb,
+        keywords: ["dashboard", "launcher", "system"],
+      },
+      {
+        id: "tactical_map",
+        label: lx.helpTopicTacticalMapLabel,
+        blurb: lx.helpTopicTacticalMapBlurb,
+        keywords: ["map", "pin", "tactical", "poi", "mesh", "leaflet"],
+      },
+      {
+        id: "maps_offline",
+        label: lx.helpTopicMapsOfflineLabel,
+        blurb: lx.helpTopicMapsOfflineBlurb,
+        keywords: ["kiwix", "zim", "mbtiles", "pmtiles", "download", "basemap", "archive", "installer", "state maps"],
+      },
+      {
+        id: "chat",
+        label: lx.helpTopicChatLabel,
+        blurb: lx.helpTopicChatBlurb,
+        keywords: ["message", "keyboard"],
+      },
+      {
+        id: "tools",
+        label: lx.helpTopicToolsLabel,
+        blurb: lx.helpTopicToolsBlurb,
+        keywords: ["attach", "file", "image"],
+      },
+      {
+        id: "sidebar",
+        label: lx.helpTopicSidebarLabel,
+        blurb: lx.helpTopicSidebarBlurb,
+        keywords: ["chat list", "pin"],
+      },
+      {
+        id: "header",
+        label: lx.helpTopicHeaderLabel,
+        blurb: lx.helpTopicHeaderBlurb,
+        keywords: ["export", "pdf", "triage"],
+      },
+      {
+        id: "library",
+        label: lx.helpTopicLibraryLabel,
+        blurb: lx.helpTopicLibraryBlurb,
+        keywords: ["index", "rag", "zim", "installer", "watch folder", "satchel", "protomaps", "pmtiles"],
+      },
+      {
+        id: "meshtastic",
+        label: lx.helpTopicMeshtasticLabel,
+        blurb: lx.helpTopicMeshtasticBlurb,
+        keywords: ["mesh", "lora", "usb"],
+      },
+      {
+        id: "radio_comms",
+        label: lx.helpTopicRadioCommsLabel,
+        blurb: lx.helpTopicRadioCommsBlurb,
+        keywords: ["radio", "serial", "comms", "mesh", "packet"],
+      },
+      {
+        id: "settings",
+        label: lx.helpTopicSettingsLabel,
+        blurb: lx.helpTopicSettingsBlurb,
+        keywords: ["preferences", "theme", "watch folder", "location", "api key", "usb", "export", "backup"],
+      },
+      {
+        id: "replies",
+        label: lx.helpTopicRepliesLabel,
+        blurb: lx.helpTopicRepliesBlurb,
+        keywords: ["speech", "copy"],
+      },
+      {
+        id: "help_assistant",
+        label: lx.helpTopicHelpAssistantLabel,
+        blurb: lx.helpTopicHelpAssistantBlurb,
+        keywords: ["ai", "question", "search", "how do i"],
+      },
+    ],
+    [lx],
+  );
+
+  const visibleSections = useMemo(() => sections.filter((s) => sectionMatches(search, s)), [sections, search]);
 
   useEffect(() => {
     if (open) {
@@ -100,21 +156,21 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
     <div className="modal-backdrop help-modal-backdrop" onClick={onClose}>
       <div className="library-modal help-modal" onClick={(e) => e.stopPropagation()}>
         <div className="library-header">
-          <h2 id="help-modal-title">Help &amp; features</h2>
-          <button type="button" className="close-btn" onClick={onClose} aria-label="Close help">
+          <h2 id="help-modal-title">{lx.helpModalTitle}</h2>
+          <button type="button" className="close-btn" onClick={onClose} aria-label={lx.helpCloseAria}>
             ×
           </button>
         </div>
 
         <div className="help-modal-search-wrap">
           <label htmlFor="help-modal-search" className="help-modal-search-label">
-            Search topics
+            {lx.helpSearchLabel}
           </label>
           <input
             id="help-modal-search"
             type="search"
             className="help-modal-search-input map-chat-input"
-            placeholder="Filter topics (e.g. map, mesh, library)…"
+            placeholder={lx.helpSearchPlaceholder}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             autoComplete="off"
@@ -123,11 +179,11 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
 
         <div className="help-modal-shell">
           <nav className="help-modal-nav" aria-labelledby="help-modal-title">
-            <p className="help-modal-nav-intro">{search.trim() ? "Matching topics:" : "Choose a topic:"}</p>
+            <p className="help-modal-nav-intro">{search.trim() ? lx.helpNavIntroMatching : lx.helpNavIntroChoose}</p>
             {visibleSections.length === 0 ? (
-              <p className="text-muted small help-modal-no-match">No topics match. Clear the search or try Ask Athena.</p>
+              <p className="text-muted small help-modal-no-match">{lx.helpEmptyNav}</p>
             ) : (
-              <ul className="help-modal-nav-list" role="tablist" aria-label="Help sections">
+              <ul className="help-modal-nav-list" role="tablist" aria-label={lx.helpNavSectionsAria}>
                 {visibleSections.map((s) => (
                   <li key={s.id} role="none">
                     <button
@@ -155,10 +211,7 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
             aria-labelledby={`help-tab-${active}`}
           >
             {visibleSections.length === 0 ? (
-              <p className="help-modal-empty-detail text-muted">
-                No topics match this filter. Clear the search box above, or open <strong>Ask Athena</strong> from the sidebar once
-                it appears again.
-              </p>
+              <p className="help-modal-empty-detail text-muted">{lx.helpEmptyDetail}</p>
             ) : (
               <>
                 {active === "overview" && <OverviewPanel />}
@@ -184,14 +237,35 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
   );
 }
 
+function AthenaAcronymCheatsheet() {
+  return (
+    <ul className="settings-tips-list text-muted" style={{ marginTop: "0.35rem" }}>
+      {ATHENA_ACRONYM_PARTS.map((row, i) => (
+        <li key={`${row.word}-${i}`}>
+          <strong>{row.letter}</strong> — <strong>{row.word}:</strong> {row.meaning}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function OverviewPanel() {
   return (
     <>
       <h3 className="help-detail-title">Overview</h3>
       <p>
-        <strong>Athena</strong> is a local, offline-first survival and repair assistant. It runs a large language model on
-        your machine through <strong>Ollama</strong> and grounds answers in documents you add to your <strong>Library</strong>{" "}
-        (files in a folder you choose). Nothing is sent to the cloud for inference—everything stays on your device.
+        <strong>{ATHENA_FULL_NAME}</strong> — in the UI the product is usually called <strong>Athena</strong> (the assistant). It is
+        a local, offline-first survival and repair assistant: a large language model on your machine through <strong>Ollama</strong>,
+        grounded in documents in your <strong>Library</strong> (a folder you choose as the watch folder). Inference stays on your device;
+        only optional features (geocoding The Archive download-area pin, map tile APIs, etc.) use the network when you trigger them.
+      </p>
+      <h4>What ATHENA stands for</h4>
+      <AthenaAcronymCheatsheet />
+      <h4>Portable install (USB)</h4>
+      <p>
+        If you place a folder named <code>data</code> next to the ATHENA app (for example on a USB stick), the app can run in{" "}
+        <strong>portable mode</strong> and keep settings and indexes on that drive. Use <strong>Settings → Backup &amp; help → USB export</strong>{" "}
+        to copy the app and a full <code>data</code> tree to a flash drive; optional whole-disk formatting is available on macOS when you pick a drive in the export dialog.
       </p>
       <h4>What you need</h4>
       <ul>
@@ -203,8 +277,14 @@ function OverviewPanel() {
           When Ollama isn&apos;t running, a banner appears at the top of the app.
         </li>
         <li>
-          A <strong>Library folder</strong> (optional but recommended): PDFs, text, and Kiwix <code>.zim</code> files are indexed
-          so answers can cite your material.
+          A <strong>watch folder</strong> (Library): set it from the header <strong>Library</strong> sheet or related Settings notes.
+          PDFs, text, and Kiwix <code>.zim</code> files there are indexed so answers can cite your material.
+        </li>
+        <li>
+          <strong>The Archive</strong> (Home → The Archive): downloads bundled <em>tiers</em> (e.g. Wikipedia Simple English
+          plus US state <strong>Protomaps</strong> extracts) into that same watch folder. The first time you open it, set a{" "}
+          <strong>US download-area pin</strong> (default suggestion New York City, or geocode your town). That pin picks your home state
+          map and can add neighboring states when you are near a border—separate from the chat <strong>Location</strong> field in Settings.
         </li>
       </ul>
       <h4>How answers are built</h4>
@@ -218,7 +298,7 @@ function OverviewPanel() {
         Start a message with <strong>
           <code>/athena</code>
         </strong>{" "}
-        (then your question) so the model uses the built-in <strong>Athena project reference</strong> instead of relying on
+        (then your question) so the model uses the built-in <strong>ATHENA project reference</strong> instead of relying on
         random library documents—best for &quot;what can Athena do?&quot;, settings locations, Meshtastic behavior, etc. If you
         send only <code>/athena</code>, you get a short overview of capabilities.
       </p>
@@ -342,8 +422,12 @@ function HeaderPanel() {
           care or 911 when appropriate.
         </li>
         <li>
-          <strong>Library</strong> — Choose your library folder, see indexed files, download more data (opens Kiwix Library in the
-          browser), scan for local ZIM files, and rebuild the vector index when you add many documents.
+          <strong>Library</strong> — Choose your <strong>watch folder</strong>, see indexed files, open offline data links, scan for
+          local ZIM files, and rebuild the vector index when you add many documents.
+        </li>
+        <li>
+          <strong>The Archive</strong> — Opens from <strong>Home</strong>. Download curated tiers into your data sources; set your US
+          regional-maps pin there (not in Settings → Location).
         </li>
         <li>
           <strong>Map</strong> (when enabled) — Tactical map with pins and layers. See <strong>Tactical map</strong> in Help.
@@ -353,8 +437,8 @@ function HeaderPanel() {
           <strong>Meshtastic</strong> topic in this help for detail.
         </li>
         <li>
-          <strong>Settings</strong> — Organized sections: General, AI &amp; models, Location, Mesh &amp; voice, Appearance,
-          Troubleshooting.
+          <strong>Settings</strong> — Organized into profile, AI, maps and devices, look &amp; feel (window, themes), and backup &amp; help
+          (error log, USB export). <strong>General → About ATHENA</strong> spells out the acronym.
         </li>
         <li>
           <strong>Help</strong> — This guide.
@@ -371,11 +455,18 @@ function LibraryPanel() {
   return (
     <>
       <h3 className="help-detail-title">Library &amp; Kiwix</h3>
-      <h4>Library folder</h4>
+      <h4>Watch folder (Library path)</h4>
       <p>
         Open <strong>Library</strong> from the header, then <strong>Choose folder</strong>. Athena watches that folder and indexes
         supported documents so semantic search can find relevant chunks. <strong>Clear</strong> removes the path (not the files on
-        disk).
+        disk). <strong>The Archive</strong> also writes into this folder—pick a disk with enough free space before
+        downloading large tiers.
+      </p>
+      <h4>The Archive vs Library sheet</h4>
+      <p>
+        <strong>The Archive</strong> (from <strong>Home</strong>) is for <em>bundled</em> downloads: Kiwix archives in tiers and US
+        state <strong>Protomaps</strong> <code>.pmtiles</code> chosen from your Archive download-area pin. The header <strong>Library</strong>{" "}
+        sheet is for day-to-day file lists, scanning, and index maintenance. Both use the same watch folder path.
       </p>
       <h4>Kiwix / Wikipedia offline</h4>
       <p>
@@ -385,9 +476,12 @@ function LibraryPanel() {
       </p>
       <h4>Indexing</h4>
       <p>
+        When you add or change files, the app indexes them in the background. Already-indexed files whose size and modification time
+        have not changed are skipped on startup so large libraries load faster. If something still seems out of date, use{" "}
+        <strong>Rebuild vector index</strong> under Vector index (this re-embeds everything and can take a while).
+      </p>
+      <p>
         The <strong>Files in library</strong> list shows detected files; use <strong>View more</strong> when you have many.
-        Under <strong>Vector index</strong>, run <strong>Rebuild vector index</strong> after adding or changing lots of documents
-        so semantic search embeddings stay accurate (can take a while on large libraries).
       </p>
       <h4>Quarantine</h4>
       <p>
@@ -415,7 +509,7 @@ function MeshtasticPanel() {
           <strong>Encrypted</strong> packets are not shown in the log.
         </li>
         <li>
-          In <strong>Settings → Features</strong>, <strong>Auto-reply to mesh</strong> uses Ollama to answer other nodes&apos; Primary
+          In <strong>Settings → Mesh</strong>, <strong>Auto-reply to mesh</strong> uses Ollama to answer other nodes&apos; Primary
           traffic; replies go as <strong>direct messages</strong> to each sender, and a <strong>private chat</strong> per node is
           saved in the sidebar—separate from the public mesh log.
         </li>
@@ -432,12 +526,23 @@ function SettingsPanel() {
     <>
       <h3 className="help-detail-title">Settings</h3>
       <p>
-        Open <strong>Settings</strong> from the gear icon. The first screen lists categories grouped as <strong>Basics</strong>,{" "}
-        <strong>Context &amp; devices</strong>, and <strong>Look &amp; support</strong>:
+        Open <strong>Settings</strong> from the gear icon. The menu is grouped so you can scan top to bottom: <strong>Profile &amp; Calendar</strong>{" "}
+        (who you are and dates), <strong>AI &amp; Knowledge</strong> (models and keys), <strong>Maps, Radio &amp; Devices</strong> (where you are,
+        offline maps, mesh, voice), <strong>Look &amp; feel</strong> (fullscreen, themes), and <strong>Backup &amp; help</strong> (troubleshooting
+        and copying ATHENA to a USB drive).
+      </p>
+      <h4>About ATHENA</h4>
+      <p className="text-muted">
+        Under <strong>General</strong>, see the full product name and a letter-by-letter breakdown of{" "}
+        <strong>{ATHENA_FULL_NAME}</strong> so you know how Autonomous, Tactical, Heuristic, Emergency, Network, and Archive map to
+        features.
       </p>
 
       <h4>General</h4>
       <ul>
+        <li>
+          <strong>About ATHENA</strong> — Official acronym expansion and what each letter emphasizes in this app.
+        </li>
         <li>
           <strong>User profile</strong> — Optional display name (used in AI context) and birthdate (stored only on this device). At age
           18+ you can enable the unrestricted model catalog for <strong>local</strong> uncensored models you install yourself.
@@ -472,7 +577,13 @@ function SettingsPanel() {
       <h4>Location &amp; maps</h4>
       <ul>
         <li>
-          <strong>Location-aware answers</strong> and your <strong>address or area</strong> (stored locally; not live cloud GPS).
+          <strong>Location</strong> — Toggle <strong>location-aware answers</strong> and your <strong>address or area</strong> (stored
+          locally; not live cloud GPS). Used for AI context and the Kiwix “install local data” flow. This is separate from the{" "}
+          <strong>The Archive</strong> regional-maps pin.
+        </li>
+        <li>
+          <strong>Offline maps</strong> — Tactical basemap packs, Kiwix regional map ZIMs, imports. Does not replace Archive tier
+          downloads; use <strong>Home → The Archive</strong> for Satchel / Vault / Alexandria packages.
         </li>
       </ul>
 
@@ -486,18 +597,23 @@ function SettingsPanel() {
         </li>
       </ul>
 
-      <h4>Appearance &amp; theme</h4>
+      <h4>Look &amp; feel</h4>
       <ul>
         <li>
-          <strong>Fullscreen</strong>, <strong>night vision</strong>, theme presets, <strong>personality</strong>, custom themes, and
-          color tuning.
+          <strong>Window &amp; Display</strong> — Fullscreen, night vision, and related display options.
+        </li>
+        <li>
+          <strong>Themes &amp; Colors</strong> — Presets, <strong>personality</strong>, custom themes, and color tuning.
         </li>
       </ul>
 
-      <h4>Troubleshooting</h4>
+      <h4>Backup &amp; help</h4>
       <ul>
         <li>
-          <strong>Error log</strong> — Copy for support; shortcuts to Library and Help; how to open <strong>Developer</strong> tools.
+          <strong>Troubleshooting</strong> — Error log you can copy when reporting a problem; shortcuts to Library and Help.
+        </li>
+        <li>
+          <strong>USB export</strong> — Opens a dialog that lists removable drives detected on this computer. Choose essentials (app + core models) or a full archive (includes database and library copies when available). You can optionally <strong>format</strong> the entire drive first on macOS (erases everything on that disk). <strong>Scorched Earth</strong> in the same dialog wipes local data only after a successful export—read the confirmation text carefully.
         </li>
       </ul>
 
@@ -544,9 +660,13 @@ function HomePanel() {
       <p>
         The <strong>Home</strong> view is the launch pad: system readouts (CPU, RAM, and related stats when available), shortcuts to{" "}
         <strong>Chat</strong>, <strong>Tactical map</strong> (if Maps is on), <strong>Comms</strong>, <strong>Library</strong>,{" "}
-        <strong>Knowledge catalog</strong>, and more.
+        <strong>The Archive</strong> (bundled Wikipedia + US state map tiers into your watch folder), <strong>Knowledge catalog</strong>,
+        and more.
       </p>
       <ul>
+        <li>
+          <strong>Academy</strong> (when shown on your dashboard) opens guided lessons inside the app—work through them at your own pace alongside Chat and the Archive.
+        </li>
         <li>
           On <strong>short or narrow screens</strong>, the page scrolls so nothing is cut off below the header.
         </li>
@@ -598,21 +718,32 @@ function MapsOfflinePanel() {
   return (
     <>
       <h3 className="help-detail-title">Maps &amp; offline data</h3>
-      <p>Athena mixes two different kinds of “offline map” data—each has its own job:</p>
+      <p>Athena uses several kinds of “offline map” data—each has its own job:</p>
       <ul>
         <li>
           <strong>Kiwix / ZIM maps</strong> — Wikipedia‑style <code>.zim</code> files in your Library. Great for place names and
-          reference. Add them via Library → offline data, then index as usual.
+          reference. Add them via Library → offline data, The Archive tiers, or manual download, then index as usual.
         </li>
         <li>
-          <strong>Basemap tiles (MBTiles / PMTiles / archives)</strong> — Raster or vector tiles for the <em>moving map</em>. Pick
-          regions or import files under <strong>Settings → Offline maps</strong> and (when enabled) the Library <strong>Maps</strong>{" "}
-          tab. These are what you pan/zoom on the tactical map—not the ZIM files.
+          <strong>Basemap tiles (MBTiles / PMTiles / archives)</strong> — Raster or vector tiles for the <em>tactical moving map</em>.
+          Pick regions or import files under <strong>Settings → Offline maps</strong> and (when enabled) the Library <strong>Maps</strong>{" "}
+          tab. These are what you pan/zoom in the map viewer—not encyclopedia ZIMs.
+        </li>
+        <li>
+          <strong>The Archive state extracts</strong> — Large US state <code>.pmtiles</code> from Protomaps, saved under{" "}
+          <code>library/maps/</code> inside your watch folder. They are selected from the <strong>Archive download-area pin</strong> (home
+          state plus border‑proximity neighbors). They are <em>not</em> the same as the tactical basemap packs in Settings → Offline
+          maps—both can coexist.
         </li>
       </ul>
       <p>
-        If something looks empty, check that the right tile pack is <strong>enabled</strong> for the main map and that files finished
-        downloading. Satellite or API keys (when used) live under Settings → API keys.
+        <strong>Settings → Location</strong> controls AI place-aware answers and the Kiwix “install local data” sheet—it does{" "}
+        <strong>not</strong> change The Archive’s regional Protomaps list. Change the download-area pin inside{" "}
+        <strong>The Archive</strong> (Change area).
+      </p>
+      <p>
+        If something looks empty, check that the right tile pack is <strong>enabled</strong> for the main map and that downloads
+        finished. Satellite or API keys (when used) live under Settings → API keys.
       </p>
     </>
   );

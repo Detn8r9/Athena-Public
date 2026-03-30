@@ -203,7 +203,7 @@ pub fn read_mbtiles_raster_tile_xyz(
     let x_i = i32::try_from(x).map_err(|_| "Tile column is out of range.".to_string())?;
     let y_i = i32::try_from(y_xyz).map_err(|_| "Tile row is out of range.".to_string())?;
     let nrows = 1i32
-        .checked_shl(z as u32)
+        .checked_shl(z)
         .ok_or_else(|| "Zoom level is too large for tile row conversion.".to_string())?;
     let tile_row = nrows
         .checked_sub(1)

@@ -1,0 +1,44 @@
+{
+  "ageGroups": [
+    {
+      "id": "ms",
+      "label": "Middle School",
+      "subjects": [
+        {
+          "id": "science",
+          "label": "Science",
+          "lessons": [
+            {
+              "id": "ms-sci-main",
+              "title": "Sample: Main Page",
+              "zimNameHint": "",
+              "articleUrl": "A/Main_Page"
+            },
+            {
+              "id": "ms-sci-earth",
+              "title": "Sample: Earth",
+              "zimNameHint": "",
+              "articleUrl": "A/Earth"
+            }
+          ]
+        },
+        {
+          "id": "reading",
+          "label": "Reading & reference",
+          "lessons": []
+        }
+      ]
+    },
+    {
+      "id": "hs",
+      "label": "High School",
+      "subjects": [
+        {
+          "id": "reference",
+          "label": "Reference library",
+          "lessons": []
+        }
+      ]
+    }
+  ]
+}

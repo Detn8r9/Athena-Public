@@ -9,10 +9,11 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { TRIAGE_ITEMS, getTriageItem, TriageId } from "./triageData";
 import { HelpModal } from "./HelpModal";
 import { MeshRadioModal, type MeshRadioMessage } from "./MeshRadioModal";
-import { MapView, type MapBasemap, type TacticalMapMeshNodeLocation, type TacticalMapPointOfInterest } from "./MapView";
-import { defaultTacticalLayerVisibilityState, type TacticalLayerVisibilityState } from "./TacticalSidebar";
+import { UsbExportModal } from "./UsbExportModal";
+import { MapView, type MapBasemap, type TacticalMapMeshNodeLocation, type TacticalMapPointOfInterest } from "./features/map/MapView";
+import { defaultTacticalLayerVisibilityState, type TacticalLayerVisibilityState } from "./features/map/TacticalSidebar";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { OfflineMapManagerDashboard } from "./OfflineMapManagerDashboard";
+import { OfflineMapManagerDashboard } from "./features/map/OfflineMapManagerDashboard";
 import { registerPmtilesMaplibreProtocolOnce } from "./maplibrePmtilesProtocolRegistration";
 import { evaluateMainChatWatchdog } from "./streamWatchdog";
 import { appendMeshMessageCapped } from "./meshMessageLog";
@@ -24,10 +25,14 @@ import { UniversalHeader } from "./UniversalHeader";
 import { DashboardView, type DashboardDestination } from "./DashboardView";
 import { usePageVisible } from "./usePageVisible";
 import { LogbookView } from "./LogbookView";
+import { CalendarView } from "./CalendarView";
 import { AiModelManager } from "./AiModelManager";
-import { RadioView } from "./RadioView";
-import { RadioSettingsView } from "./RadioSettingsView";
-import { KnowledgeCatalogView } from "./KnowledgeCatalogView";
+import { AcademyView } from "./AcademyView";
+import { ArchiveHub, type ArchiveNetworkSubTabId, type ArchivePrimaryTabId } from "./features/library-installer/ArchiveHub";
+import { getLexicon, LexiconProvider, type LexiconThemeId } from "./shared/lexicon";
+import { RadioView } from "./features/radio/RadioView";
+import { RadioSettingsView } from "./features/radio/RadioSettingsView";
+import { ATHENA_ACRONYM_PARTS, ATHENA_FULL_NAME } from "./shared/branding";
 
 type UserAndInferenceSettings = {
   user_display_name: string | null;
@@ -35,14 +40,29 @@ type UserAndInferenceSettings = {
   allow_nsfw_unrestricted_models: boolean;
   is_at_least_18: boolean;
   is_birthday_today: boolean;
+  time_format: string;
+  calendar_region: string | null;
+  calendar_quiet_hours_start: number;
+  calendar_quiet_hours_end: number;
   inference_backend: string | null;
   explicit_ollama_model: string | null;
   openai_compatible_base_url: string | null;
   openai_compatible_model: string | null;
   openai_compatible_api_key_set: boolean;
+  active_embedding_model_folder: string;
+  active_reranker_model_folder: string;
 };
 
 registerPmtilesMaplibreProtocolOnce();
+
+/** Local calendar YYYY-MM-DD — must match Rust `chrono::Local` for birthday + dismiss key. */
+function localDateYYYYMMDD(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 const ATHENA_TACTICAL_MAP_LAYER_VISIBILITY_KEY = "athena-tactical-map-layer-visibility-v3";
 
@@ -223,6 +243,7 @@ interface LibraryFile {
   path: string;
   name: string;
   size_bytes: number;
+  exists_on_disk?: boolean;
 }
 
 interface RagIngestionProgressPayload {
@@ -310,6 +331,24 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+function normalizeLibraryStreamSources(raw: unknown): LibraryStreamSource[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LibraryStreamSource[] = [];
+  for (const item of raw) {
+    if (item == null || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const filePath = typeof o.filePath === "string" ? o.filePath : "";
+    const displayTitle = typeof o.displayTitle === "string" ? o.displayTitle : "";
+    let pageNumber: number | null = null;
+    if (typeof o.pageNumber === "number" && Number.isFinite(o.pageNumber)) {
+      pageNumber = o.pageNumber;
+    }
+    if (!displayTitle && !filePath) continue;
+    out.push({ filePath, displayTitle: displayTitle || filePath || "Source", pageNumber });
+  }
+  return out;
+}
+
 function isTileCountProgressJob(id: string): boolean {
   return (
     id.startsWith("tiles:") || id.startsWith("import:") || id.startsWith("mbtiles_export:")
@@ -324,13 +363,19 @@ interface Poi {
   notes: string;
 }
 
+interface LibraryStreamSource {
+  filePath: string;
+  displayTitle: string;
+  pageNumber: number | null;
+}
+
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   /** Optional timestamp (ms) when message was added; used for display */
   timestamp?: number;
-  /** Library doc names used to answer (citations) */
-  sources?: string[];
+  /** Library citations (paths + titles + optional page) */
+  sources?: LibraryStreamSource[];
 }
 
 interface RagSearchChunk {
@@ -415,26 +460,6 @@ const VOICE_PRESET_LABELS: Record<VoicePresetId, string> = {
 
 /** When true, voice (TTS) and microphone (conversation / speak-to-type) UI are hidden. Code remains in place. */
 const VOICE_AND_MIC_FEATURES_HIDDEN = true;
-
-const SURVIVAL_TIPS = [
-  "In cold weather, keep your head covered—you lose a lot of heat through your scalp.",
-  "When lost, stay put if you have shelter and water; moving without a plan can make rescue harder.",
-  "A simple way to purify water is to boil it for at least one minute at a rolling boil.",
-  "Duct tape can patch gear, secure splints, and even help with blisters—keep a small roll in your kit.",
-  "If someone is bleeding heavily, apply firm, direct pressure with a clean cloth; don’t remove it to peek.",
-  "In a power outage, keep the fridge and freezer closed so food stays cold longer.",
-  "Know how to turn off gas and water at the main shutoff in case of emergency.",
-  "When using a fire extinguisher, remember PASS: Pull pin, Aim at base, Squeeze, Sweep.",
-  "For minor burns, run cool (not ice) water for several minutes and cover with a clean, dry dressing.",
-  "A whistle carries much farther than your voice and uses less energy if you need to signal for help.",
-];
-
-function getTipOfTheDay(): string {
-  const start = new Date(new Date().getFullYear(), 0, 0);
-  const now = new Date();
-  const dayOfYear = Math.floor((now.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
-  return SURVIVAL_TIPS[dayOfYear % SURVIVAL_TIPS.length];
-}
 
 /** Renders basic markdown in message text: **bold**, *italic*, `code` */
 function formatMessageText(text: string): React.ReactNode {
@@ -705,15 +730,32 @@ function App() {
   const [streamStallMessage, setStreamStallMessage] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [libraryOpen, setLibraryOpen] = useState(false);
   const [offlineMapManagerOpen, setOfflineMapManagerOpen] = useState(false);
-  type LibraryTabId = "documents" | "maps";
-  const [libraryActiveTab, setLibraryActiveTab] = useState<LibraryTabId>("documents");
+  useEffect(() => {
+    let removeTimer: ReturnType<typeof setTimeout> | undefined;
+    const hideTimer = window.setTimeout(() => {
+      const el = document.getElementById("athena-splash");
+      if (el) {
+        el.classList.add("hidden");
+        removeTimer = window.setTimeout(() => el.remove(), 800);
+      }
+    }, 5000);
+    return () => {
+      window.clearTimeout(hideTimer);
+      if (removeTimer !== undefined) window.clearTimeout(removeTimer);
+    };
+  }, []);
+  const [archivePrimaryTab, setArchivePrimaryTab] = useState<ArchivePrimaryTabId>("local");
+  const [archiveNetworkSubTab, setArchiveNetworkSubTab] = useState<ArchiveNetworkSubTabId>("packages");
   const [meshOpen, setMeshOpen] = useState(false);
   const [meshMessages, setMeshMessages] = useState<MeshRadioMessage[]>([]);
   const [kiwixSearchOpen, setKiwixSearchOpen] = useState(false);
   const [chatsOpen, setChatsOpen] = useState(true);
   const [watchFolder, setWatchFolder] = useState<string | null>(null);
+  const [ingestionState, setIngestionState] = useState<{
+    isIngesting: boolean;
+    currentFile: string | null;
+  }>({ isIngesting: false, currentFile: null });
   const [libraryFiles, setLibraryFiles] = useState<LibraryFile[]>([]);
   const [libraryFilesModalOpen, setLibraryFilesModalOpen] = useState(false);
   const [stats, setStats] = useState<IndexStats | null>(null);
@@ -736,12 +778,24 @@ function App() {
   const [userBirthdateIso, setUserBirthdateIso] = useState("");
   const [allowNsfwCatalog, setAllowNsfwCatalog] = useState(false);
   const [userIs18, setUserIs18] = useState(false);
-  const [birthdayBannerVisible, setBirthdayBannerVisible] = useState(false);
+  const [birthdayModalVisible, setBirthdayModalVisible] = useState(false);
+  const [timeFormat, setTimeFormat] = useState<"12" | "24">("12");
+  const [calendarRegion, setCalendarRegion] = useState("US");
+  const [calendarQuietHoursStart, setCalendarQuietHoursStart] = useState(22);
+  const [calendarQuietHoursEnd, setCalendarQuietHoursEnd] = useState(7);
+  const [clockNow, setClockNow] = useState(() => Date.now());
   const [inferenceBackendMode, setInferenceBackendMode] = useState<"ollama" | "openai_compatible">("ollama");
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("http://127.0.0.1:1234/v1");
   const [openaiModelId, setOpenaiModelId] = useState("");
   const [openaiApiKeyLocal, setOpenaiApiKeyLocal] = useState("");
   const [aiInferenceReady, setAiInferenceReady] = useState(false);
+  const [availableChatModels, setAvailableChatModels] = useState<string[]>([]);
+  const [availableEmbeddingModels, setAvailableEmbeddingModels] = useState<string[]>([]);
+  const [availableRerankerModels, setAvailableRerankerModels] = useState<string[]>([]);
+  const [modelScannerPathsLoading, setModelScannerPathsLoading] = useState(false);
+  const [selectedChatModelPath, setSelectedChatModelPath] = useState("");
+  const [selectedEmbeddingModelId, setSelectedEmbeddingModelId] = useState("");
+  const [selectedRerankerModelId, setSelectedRerankerModelId] = useState("");
   const [quarantineAlert, setQuarantineAlert] = useState<{ path: string; reason: string } | null>(null);
   const [modelOverride, setModelOverride] = useState<ModelTier>("auto");
   const [memoryMessages, setMemoryMessages] = useState(20);
@@ -787,6 +841,11 @@ function App() {
     });
   }
   const [errorLog, setErrorLog] = useState<string>("");
+  const [usbExportBusy, setUsbExportBusy] = useState(false);
+  const [usbExportStatus, setUsbExportStatus] = useState<string | null>(null);
+  const [usbScorchedEarth, setUsbScorchedEarth] = useState(false);
+  const [usbExportModalOpen, setUsbExportModalOpen] = useState(false);
+  const [usbExportModalKind, setUsbExportModalKind] = useState<"essentials" | "complete">("essentials");
   type SettingsPanel =
     | "menu"
     | "general"
@@ -796,9 +855,12 @@ function App() {
     | "maps"
     | "mesh"
     | "voice"
+    | "calendar"
+    | "dateTime"
     | "appearance"
     | "themes"
     | "troubleshooting"
+    | "usbExport"
     | "developer";
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>("menu");
   const settingsBodyRef = useRef<HTMLDivElement>(null);
@@ -810,6 +872,42 @@ function App() {
       menuScrollPosRef.current = settingsBodyRef.current.scrollTop;
     }
     setSettingsPanel(panel);
+  }
+
+  async function executeUsbExportFromModal(args: {
+    destinationPath: string;
+    devicePath: string | null;
+    formatFirst: boolean;
+  }) {
+    if (usbExportBusy) return;
+    const exportType = usbExportModalKind;
+    setUsbExportBusy(true);
+    setUsbExportStatus(
+      usbScorchedEarth
+        ? exportType === "essentials"
+          ? "Copying app and core models, then verifying…"
+          : "Copying app, models, database, and library, then verifying…"
+        : exportType === "essentials"
+          ? "Copying app and core models…"
+          : "Copying app, models, database, and library…",
+    );
+    try {
+      await invoke("export_athena_to_usb", {
+        destinationPath: args.destinationPath,
+        exportType,
+        wipeAfter: usbScorchedEarth,
+        formatFirst: args.formatFirst,
+        devicePath: args.devicePath,
+      });
+      setUsbExportStatus(usbScorchedEarth ? "Finished. Local data was erased." : "Finished.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setUsbExportStatus(`Error: ${msg}`);
+      void invoke("append_error_log", { message: `USB export: ${msg}` }).catch(() => {});
+    } finally {
+      setUsbExportBusy(false);
+      window.setTimeout(() => setUsbExportStatus(null), 6000);
+    }
   }
   const [settingsTitleClickCount, setSettingsTitleClickCount] = useState(0);
   const [activeThemeId, setActiveThemeId] = useState<string>("default");
@@ -846,6 +944,18 @@ function App() {
     net_tx_bytes: number;
     disk_read_bytes_total: number;
     disk_write_bytes_total: number;
+    logical_cpus: number;
+    physical_cores?: number | null;
+    uptime_secs: number;
+    load_one: number;
+    load_five: number;
+    load_fifteen: number;
+    host_name?: string | null;
+    os_name?: string | null;
+    kernel_version?: string | null;
+    long_os_version?: string | null;
+    cpu_arch?: string | null;
+    cpu_brand?: string | null;
     cpu_temp_c?: number | null;
     gpu_usage_pct?: number | null;
     battery_pct?: number | null;
@@ -1187,7 +1297,8 @@ function App() {
         }
       }
     };
-    const id = window.setInterval(tick, 1000);
+    /* 2s tick is enough for 30s/120s stall thresholds; halves wakeups vs 1s. */
+    const id = window.setInterval(tick, 2000);
     return () => window.clearInterval(id);
   }, [sending, mapChatSending]);
 
@@ -1905,15 +2016,60 @@ function App() {
   }
 
   async function loadModelSettings() {
+    /* Profile + birthday first: must not be skipped if Ollama/specs calls fail (Promise.all short-circuit). */
     try {
-      const [specs, available, sidecarManaged, override, mem, estimate, uis, inferReady] = await Promise.all([
+      const uis = await invoke<UserAndInferenceSettings>("get_user_and_inference_settings");
+      setUserDisplayName(uis.user_display_name ?? "");
+      setUserBirthdateIso(uis.user_birthdate_iso ?? "");
+      setAllowNsfwCatalog(uis.allow_nsfw_unrestricted_models);
+      setUserIs18(uis.is_at_least_18);
+      setTimeFormat(uis.time_format === "24" ? "24" : "12");
+      setCalendarRegion((uis.calendar_region ?? "US").toUpperCase());
+      setCalendarQuietHoursStart(
+        Number.isFinite(uis.calendar_quiet_hours_start) ? Math.max(0, Math.min(23, uis.calendar_quiet_hours_start)) : 22,
+      );
+      setCalendarQuietHoursEnd(
+        Number.isFinite(uis.calendar_quiet_hours_end) ? Math.max(0, Math.min(23, uis.calendar_quiet_hours_end)) : 7,
+      );
+      setInferenceBackendMode(uis.inference_backend === "openai_compatible" ? "openai_compatible" : "ollama");
+      setOpenaiBaseUrl(uis.openai_compatible_base_url?.trim() || "http://127.0.0.1:1234/v1");
+      setOpenaiModelId(uis.openai_compatible_model ?? "");
+      setActiveEngineModel(uis.explicit_ollama_model ?? "");
+      setSelectedEmbeddingModelId(uis.active_embedding_model_folder ?? "");
+      setSelectedRerankerModelId(uis.active_reranker_model_folder ?? "");
+      {
+        const om = uis.explicit_ollama_model?.trim() ?? "";
+        if (om) {
+          setSelectedChatModelPath(om.toLowerCase().endsWith(".gguf") ? om : `${om}.gguf`);
+        } else {
+          setSelectedChatModelPath("");
+        }
+      }
+      if (!uis.openai_compatible_api_key_set) {
+        setOpenaiApiKeyLocal("");
+      }
+      const dismissKey = `athena_birthday_modal_dismissed_${localDateYYYYMMDD()}`;
+      try {
+        if (uis.is_birthday_today && !localStorage.getItem(dismissKey)) {
+          setBirthdayModalVisible(true);
+        } else {
+          setBirthdayModalVisible(false);
+        }
+      } catch {
+        setBirthdayModalVisible(Boolean(uis.is_birthday_today));
+      }
+    } catch {
+      /* keep existing profile state */
+    }
+
+    try {
+      const [specs, available, sidecarManaged, override, mem, estimate, inferReady] = await Promise.all([
         invoke<SystemSpecs>("get_system_specs"),
         invoke<boolean>("is_ollama_available"),
         invoke<boolean>("get_sidecar_status"),
         invoke<string | null>("get_model_override"),
         invoke<number>("get_memory_messages"),
         invoke<MemoryEstimate>("get_memory_estimate"),
-        invoke<UserAndInferenceSettings>("get_user_and_inference_settings").catch(() => null),
         invoke<boolean>("is_inference_ready").catch(() => false),
       ]);
       setSystemSpecs(specs);
@@ -1929,25 +2085,6 @@ function App() {
       }
       setMemoryMessages(mem);
       setMemoryEstimate(estimate);
-      if (uis) {
-        setUserDisplayName(uis.user_display_name ?? "");
-        setUserBirthdateIso(uis.user_birthdate_iso ?? "");
-        setAllowNsfwCatalog(uis.allow_nsfw_unrestricted_models);
-        setUserIs18(uis.is_at_least_18);
-        setInferenceBackendMode(uis.inference_backend === "openai_compatible" ? "openai_compatible" : "ollama");
-        setOpenaiBaseUrl(uis.openai_compatible_base_url?.trim() || "http://127.0.0.1:1234/v1");
-        setOpenaiModelId(uis.openai_compatible_model ?? "");
-        setActiveEngineModel(uis.explicit_ollama_model ?? "");
-        if (!uis.openai_compatible_api_key_set) {
-          setOpenaiApiKeyLocal("");
-        }
-        const todayKey = `athena_birthday_shown_${new Date().toISOString().slice(0, 10)}`;
-        if (uis.is_birthday_today && !sessionStorage.getItem(todayKey)) {
-          setBirthdayBannerVisible(true);
-        } else {
-          setBirthdayBannerVisible(false);
-        }
-      }
     } catch (_) {
       setSystemSpecs(null);
       setOllamaAvailable(false);
@@ -1955,6 +2092,36 @@ function App() {
       setMemoryEstimate(null);
       setAiInferenceReady(false);
     }
+  }
+
+  const refreshLocalModelPathLists = useCallback(async () => {
+    setModelScannerPathsLoading(true);
+    try {
+      const [c, e, r] = await Promise.all([
+        invoke<string[]>("scan_chat_models"),
+        invoke<string[]>("scan_embedding_models"),
+        invoke<string[]>("scan_reranker_models"),
+      ]);
+      setAvailableChatModels(Array.isArray(c) ? c : []);
+      setAvailableEmbeddingModels(Array.isArray(e) ? e : []);
+      setAvailableRerankerModels(Array.isArray(r) ? r : []);
+    } catch {
+      setAvailableChatModels([]);
+      setAvailableEmbeddingModels([]);
+      setAvailableRerankerModels([]);
+    } finally {
+      setModelScannerPathsLoading(false);
+    }
+  }, []);
+
+  function dismissBirthdayModal() {
+    const key = `athena_birthday_modal_dismissed_${localDateYYYYMMDD()}`;
+    try {
+      localStorage.setItem(key, "1");
+    } catch {
+      /* ignore */
+    }
+    setBirthdayModalVisible(false);
   }
 
   async function handleMemoryMessagesChange(value: number) {
@@ -2172,28 +2339,6 @@ function App() {
       arr.push(entry);
       localStorage.setItem("athena_last_errors", JSON.stringify(arr.slice(-5)));
     } catch (_) {}
-    // #region agent log
-    try {
-      fetch("http://127.0.0.1:7625/ingest/8fd099f6-5880-4d68-82fc-1df05f97fa81", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "035879",
-        },
-        body: JSON.stringify({
-          sessionId: "035879",
-          runId: "pre-fix",
-          hypothesisId: "H-general",
-          location: "App.tsx:logError",
-          message: "logError invoked",
-          data: { message },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-    } catch {
-      // ignore instrumentation failures
-    }
-    // #endregion agent log
   }
 
   async function handleScanKiwixZim() {
@@ -2724,6 +2869,18 @@ function App() {
         net_tx_bytes: number;
         disk_read_bytes_total: number;
         disk_write_bytes_total: number;
+        logical_cpus: number;
+        physical_cores?: number | null;
+        uptime_secs: number;
+        load_one: number;
+        load_five: number;
+        load_fifteen: number;
+        host_name?: string | null;
+        os_name?: string | null;
+        kernel_version?: string | null;
+        long_os_version?: string | null;
+        cpu_arch?: string | null;
+        cpu_brand?: string | null;
         cpu_temp_c?: number | null;
         gpu_usage_pct?: number | null;
         battery_pct?: number | null;
@@ -2765,7 +2922,7 @@ function App() {
         .catch(() => setDeviceStats(null));
     };
     fetchStats();
-    const pollMs = pageVisible ? 2000 : 20000;
+    const pollMs = pageVisible ? 1000 : 20000;
     const interval = setInterval(fetchStats, pollMs);
     return () => clearInterval(interval);
   }, [deviceOverlayEnabled, pageVisible]);
@@ -2773,6 +2930,63 @@ function App() {
   useEffect(() => {
     loadChatList();
   }, []);
+
+  /** Load profile + inference prefs on boot so birthday modal and AI state work before opening Settings. */
+  useEffect(() => {
+    void loadModelSettings();
+  }, []);
+
+  useEffect(() => {
+    void refreshLocalModelPathLists();
+  }, [refreshLocalModelPathLists]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    void refreshLocalModelPathLists();
+  }, [settingsOpen, refreshLocalModelPathLists]);
+
+  useEffect(() => {
+    setSelectedChatModelPath((cur) =>
+      availableChatModels.length === 0 ? "" : availableChatModels.includes(cur) ? cur : availableChatModels[0],
+    );
+  }, [availableChatModels]);
+
+  useEffect(() => {
+    setSelectedEmbeddingModelId((cur) =>
+      availableEmbeddingModels.length === 0 ? "" : availableEmbeddingModels.includes(cur) ? cur : availableEmbeddingModels[0],
+    );
+  }, [availableEmbeddingModels]);
+
+  useEffect(() => {
+    setSelectedRerankerModelId((cur) =>
+      availableRerankerModels.length === 0 ? "" : availableRerankerModels.includes(cur) ? cur : availableRerankerModels[0],
+    );
+  }, [availableRerankerModels]);
+
+  /* Header clock is minute-granularity; no need for 1 Hz updates. Slow further when backgrounded. */
+  useEffect(() => {
+    const tick = () => setClockNow(Date.now());
+    tick();
+    const ms = pageVisible ? 30_000 : 120_000;
+    const timer = setInterval(tick, ms);
+    return () => clearInterval(timer);
+  }, [pageVisible]);
+
+  useEffect(() => {
+    if (!birthdayModalVisible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const key = `athena_birthday_modal_dismissed_${localDateYYYYMMDD()}`;
+      try {
+        localStorage.setItem(key, "1");
+      } catch {
+        /* ignore */
+      }
+      setBirthdayModalVisible(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [birthdayModalVisible]);
 
   useEffect(() => {
     const unlisten = listen("athena:mesh-chats-updated", () => {
@@ -2838,6 +3052,25 @@ function App() {
     );
     return () => {
       unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<{ isIngesting?: boolean; filename?: string | null }>(
+      "athena:ingestion-status",
+      (event) => {
+        const p = event.payload;
+        if (!p || typeof p.isIngesting !== "boolean") return;
+        const currentFile =
+          typeof p.filename === "string" && p.filename.length > 0 ? p.filename : null;
+        setIngestionState({
+          isIngesting: p.isIngesting,
+          currentFile: p.isIngesting ? currentFile : null,
+        });
+      },
+    );
+    return () => {
+      void unlisten.then((fn) => fn());
     };
   }, []);
 
@@ -2909,17 +3142,17 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (libraryOpen) {
+    if (currentView === "archive") {
       setLibraryError(null);
       loadWatchFolder();
       loadStats();
       loadLibraryFiles();
       invoke<DownloadedMap[]>("get_downloaded_maps").then(setDownloadedMaps).catch(() => {});
     }
-  }, [libraryOpen]);
+  }, [currentView]);
 
   useEffect(() => {
-    if (!libraryOpen || libraryActiveTab !== "maps") return;
+    if (currentView !== "archive" || archivePrimaryTab !== "network" || archiveNetworkSubTab !== "maps") return;
     invoke<MapCatalogEntry[]>("get_map_catalog")
       .then(setMapCatalog)
       .catch(() => setMapCatalog([]));
@@ -2929,7 +3162,7 @@ function App() {
     void invoke<MapCatalogEntry | null>("get_smallest_kiwix_map_suggestion")
       .then((s) => setMapsSuggestion(s ?? null))
       .catch(() => setMapsSuggestion(null));
-  }, [libraryOpen, libraryActiveTab, featureMapEnabled, userLocationAddress]);
+  }, [currentView, archivePrimaryTab, archiveNetworkSubTab, featureMapEnabled, userLocationAddress]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2975,12 +3208,13 @@ function App() {
     }
 
     refresh();
-    const id = window.setInterval(refresh, 10 * 60 * 1000);
+    const intervalMs = pageVisible ? 10 * 60 * 1000 : 30 * 60 * 1000;
+    const id = window.setInterval(refresh, intervalMs);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [nightVisionMode]);
+  }, [nightVisionMode, pageVisible]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2998,12 +3232,13 @@ function App() {
     }
 
     fetchBattery();
-    const id = window.setInterval(fetchBattery, 3 * 60 * 1000);
+    const pollMs = pageVisible ? 3 * 60 * 1000 : 15 * 60 * 1000;
+    const id = window.setInterval(fetchBattery, pollMs);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, []);
+  }, [pageVisible]);
 
   useEffect(() => {
     if (!batteryState || lowBatteryDismissed) {
@@ -3116,123 +3351,137 @@ function App() {
 
   useEffect(() => {
     const run = { cancelled: false };
-    const pushUnlisten = (u: () => void) => {
+
+    const register = async (p: Promise<() => void>) => {
+      const u = await p;
       if (run.cancelled) {
         u();
-        return;
+      } else {
+        streamUnlistenRef.current.push(u);
       }
-      streamUnlistenRef.current.push(u);
     };
-    listen<string>("athena:stream-chunk", (e) => {
-      const now = Date.now();
-      if (mapStreamActiveRef.current) {
-        mapStreamContentRef.current += e.payload ?? "";
-        mapStreamLastChunkAtRef.current = now;
-        mapStreamGotFirstChunkRef.current = true;
-      } else {
-        const chunk = e.payload ?? "";
-        streamLastChunkAtRef.current = now;
-        streamGotFirstChunkRef.current = true;
-        streamAssistantContentRef.current += chunk;
-        setMessages((prev) => {
-          const next = [...prev];
-          const i = next.length - 1;
-          if (i >= 0 && next[i].role === "assistant") {
-            next[i] = { ...next[i], content: streamAssistantContentRef.current };
-          }
-          return next;
-        });
-      }
-    }).then(pushUnlisten);
-    listen<string[]>("athena:stream-sources", (e) => {
-      const sources = e.payload;
-      if (Array.isArray(sources) && sources.length > 0 && !mapStreamActiveRef.current) {
-        setMessages((prev) => {
-          const next = [...prev];
-          const i = next.length - 1;
-          if (i >= 0 && next[i].role === "assistant") {
-            next[i] = { ...next[i], sources };
-          }
-          return next;
-        });
-      }
-    }).then(pushUnlisten);
-    listen("athena:stream-done", () => {
-      if (mapStreamActiveRef.current) {
-        mapStreamActiveRef.current = false;
-        const content = mapStreamContentRef.current;
-        mapStreamContentRef.current = "";
-        setMapChatHistory((prev) => [...prev, { role: "assistant", content }]);
-        setMapChatLastMessage(content);
-        setMapChatSending(false);
-      } else {
-        setStreamStallMessage(null);
-        setSending(false);
-        setTimeout(() => {
-          if (temporaryChatRef.current) return;
-          const latest = messagesRef.current;
-          if (latest.length > 0) {
-            saveCurrentChat(latest).then(async (id) => {
-              if (id && latest.length >= 2) {
-                const lastUser = latest.filter((m) => m.role === "user").pop()?.content ?? "";
-                const lastAssistant = latest.filter((m) => m.role === "assistant").pop()?.content ?? "";
-                if (lastUser || lastAssistant) {
-                  await invoke("update_chat_context_summary", {
-                    id,
-                    lastUserMsg: lastUser,
-                    lastAssistantMsg: lastAssistant,
-                  }).catch(() => {});
-                }
+
+    void (async () => {
+      await register(
+        listen<string>("athena:stream-chunk", (e) => {
+          const now = Date.now();
+          if (mapStreamActiveRef.current) {
+            mapStreamContentRef.current += e.payload ?? "";
+            mapStreamLastChunkAtRef.current = now;
+            mapStreamGotFirstChunkRef.current = true;
+          } else {
+            const chunk = e.payload ?? "";
+            streamLastChunkAtRef.current = now;
+            streamGotFirstChunkRef.current = true;
+            streamAssistantContentRef.current += chunk;
+            setMessages((prev) => {
+              const next = [...prev];
+              const i = next.length - 1;
+              if (i >= 0 && next[i].role === "assistant") {
+                next[i] = { ...next[i], content: streamAssistantContentRef.current };
               }
+              return next;
             });
           }
-        }, 0);
-        inputRef.current?.focus();
-        if (conversationModeRef.current) {
-          setTimeout(() => {
-            if (!conversationModeRef.current) return;
-            const lastIndex = messagesRef.current.length - 1;
-            if (lastIndex >= 0) {
-              const lastMsg = messagesRef.current[lastIndex];
-              if (lastMsg?.role === "assistant" && lastMsg.content?.trim()) {
-                speakMessageAtIndexRef.current?.(lastIndex, () => {
-                  if (conversationModeRef.current) startConversationListeningRef.current?.();
-                });
-              } else {
-                startConversationListeningRef.current?.();
+        }),
+      );
+      await register(
+        listen<unknown>("athena:stream-sources", (e) => {
+          const sources = normalizeLibraryStreamSources(e.payload);
+          if (sources.length > 0 && !mapStreamActiveRef.current) {
+            setMessages((prev) => {
+              const next = [...prev];
+              const i = next.length - 1;
+              if (i >= 0 && next[i].role === "assistant") {
+                next[i] = { ...next[i], sources };
               }
-            } else {
-              startConversationListeningRef.current?.();
-            }
-          }, 150);
-        }
-      }
-    }).then(pushUnlisten);
-    listen<string>("athena:stream-error", (e) => {
-      const errMsg = e.payload ?? "Unknown error";
-      logErrorRef.current(`Stream error: ${errMsg}`);
-      if (mapStreamActiveRef.current) {
-        mapStreamActiveRef.current = false;
-        mapStreamContentRef.current = "";
-        setMapChatLastMessage(`Error: ${errMsg}`);
-        setMapChatSending(false);
-      } else {
-        setStreamStallMessage(null);
-        setMessages((prev) => {
-          const next = [...prev];
-          const i = next.length - 1;
-          if (i >= 0 && next[i].role === "assistant") {
-            next[i] = { ...next[i], content: `Error: ${errMsg}` };
+              return next;
+            });
           }
-          return next;
-        });
-        setSending(false);
-      }
-      inputRef.current?.focus();
-      if (conversationModeRef.current) {
-        setTimeout(() => startConversationListeningRef.current?.(), 500);
-      }
-    }).then(pushUnlisten);
+        }),
+      );
+      await register(
+        listen("athena:stream-done", () => {
+          if (mapStreamActiveRef.current) {
+            mapStreamActiveRef.current = false;
+            const content = mapStreamContentRef.current;
+            mapStreamContentRef.current = "";
+            setMapChatHistory((prev) => [...prev, { role: "assistant", content }]);
+            setMapChatLastMessage(content);
+            setMapChatSending(false);
+          } else {
+            setStreamStallMessage(null);
+            setSending(false);
+            setTimeout(() => {
+              if (temporaryChatRef.current) return;
+              const latest = messagesRef.current;
+              if (latest.length > 0) {
+                saveCurrentChat(latest).then(async (id) => {
+                  if (id && latest.length >= 2) {
+                    const lastUser = latest.filter((m) => m.role === "user").pop()?.content ?? "";
+                    const lastAssistant = latest.filter((m) => m.role === "assistant").pop()?.content ?? "";
+                    if (lastUser || lastAssistant) {
+                      await invoke("update_chat_context_summary", {
+                        id,
+                        lastUserMsg: lastUser,
+                        lastAssistantMsg: lastAssistant,
+                      }).catch(() => {});
+                    }
+                  }
+                });
+              }
+            }, 0);
+            inputRef.current?.focus();
+            if (conversationModeRef.current) {
+              setTimeout(() => {
+                if (!conversationModeRef.current) return;
+                const lastIndex = messagesRef.current.length - 1;
+                if (lastIndex >= 0) {
+                  const lastMsg = messagesRef.current[lastIndex];
+                  if (lastMsg?.role === "assistant" && lastMsg.content?.trim()) {
+                    speakMessageAtIndexRef.current?.(lastIndex, () => {
+                      if (conversationModeRef.current) startConversationListeningRef.current?.();
+                    });
+                  } else {
+                    startConversationListeningRef.current?.();
+                  }
+                } else {
+                  startConversationListeningRef.current?.();
+                }
+              }, 150);
+            }
+          }
+        }),
+      );
+      await register(
+        listen<string>("athena:stream-error", (e) => {
+          const errMsg = e.payload ?? "Unknown error";
+          logErrorRef.current(`Stream error: ${errMsg}`);
+          if (mapStreamActiveRef.current) {
+            mapStreamActiveRef.current = false;
+            mapStreamContentRef.current = "";
+            setMapChatLastMessage(`Error: ${errMsg}`);
+            setMapChatSending(false);
+          } else {
+            setStreamStallMessage(null);
+            setMessages((prev) => {
+              const next = [...prev];
+              const i = next.length - 1;
+              if (i >= 0 && next[i].role === "assistant") {
+                next[i] = { ...next[i], content: `Error: ${errMsg}` };
+              }
+              return next;
+            });
+            setSending(false);
+          }
+          inputRef.current?.focus();
+          if (conversationModeRef.current) {
+            setTimeout(() => startConversationListeningRef.current?.(), 500);
+          }
+        }),
+      );
+    })();
+
     return () => {
       run.cancelled = true;
       streamUnlistenRef.current.forEach((u) => u());
@@ -3247,7 +3496,7 @@ function App() {
       if (p == null || typeof p.id !== "string") return;
       setDownloadJobs((prev) => {
         const cur = prev[p.id];
-        const label = cur?.label ?? p.id.split("/").pop() ?? "Download";
+        const label = cur?.label ?? p.id.split(/[/\\]/).pop() ?? "Download";
         const total = p.total_bytes ?? cur?.total ?? null;
         return {
           ...prev,
@@ -3437,13 +3686,25 @@ function App() {
       pinLayer: "resource" | "network";
       lat: number;
       lng: number;
+      coverageRadiusMeters?: number | null;
     }) => {
+      let desc = payload.description.trim();
+      if (
+        payload.pinLayer === "network" &&
+        payload.coverageRadiusMeters != null &&
+        Number.isFinite(payload.coverageRadiusMeters) &&
+        payload.coverageRadiusMeters > 0
+      ) {
+        const tag = `@range_m:${Math.round(payload.coverageRadiusMeters)}`;
+        desc = desc.length > 0 ? `${desc}
+${tag}` : tag;
+      }
       await invoke<TacticalMapPointOfInterest>("add_tactical_poi", {
         name: payload.name,
         lat: payload.lat,
         lon: payload.lng,
         lucideIconName: payload.lucideIconName.trim().length > 0 ? payload.lucideIconName : null,
-        description: payload.description.trim().length > 0 ? payload.description : null,
+        description: desc.length > 0 ? desc : null,
         pinLayer: payload.pinLayer,
       });
       reloadTacticalMapLayers();
@@ -3672,11 +3933,11 @@ function App() {
         ? `Use the following document context, spatial map context, and recent radio traffic context to answer the user's question.\n\nDocument Context: ${ragContextString || "(none)"}\n\nSpatial Map Context: ${spatialContextString || "(none)"}\n\nRecent Radio Traffic Context: ${radioTrafficContextString || "(none)"}\n\nQuestion: ${text}`
         : text;
 
-    const localSourcesLabel =
+    const localSourcesLabel: LibraryStreamSource[] =
       ragSources.length > 0
-        ? ragSources
+        ? ragSources.map((s) => ({ filePath: "", displayTitle: s, pageNumber: null }))
         : ragContextString || spatialContextString || radioTrafficContextString
-          ? ["Local Library"]
+          ? [{ filePath: "", displayTitle: "Local Library", pageNumber: null }]
           : [];
     const userMessage: ChatMessage = {
       role: "user",
@@ -4050,6 +4311,19 @@ function App() {
   const customThemeForFx: BackendCustomTheme | null = previewThemeStudio && studioDraft
     ? studioDraft
     : activeCustomTheme;
+  const headerClockLabel = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: timeFormat === "12",
+      }).format(new Date(clockNow));
+    } catch {
+      return new Date(clockNow).toLocaleString();
+    }
+  }, [clockNow, timeFormat]);
 
   const appStyle: (React.CSSProperties & Record<string, string>) =
     displayTheme === "custom"
@@ -4075,7 +4349,10 @@ function App() {
     appStyle["--fx-grain"] = String(customThemeForFx.film_grain);
   }
 
+  const lexiconThemeId: LexiconThemeId = activeThemeId === "fallout" ? "fallout" : "survival";
+  const lx = useMemo(() => getLexicon(lexiconThemeId), [lexiconThemeId]);
   return (
+    <LexiconProvider themeId={lexiconThemeId}>
     <div
       ref={appRef}
       className="app"
@@ -4093,12 +4370,19 @@ function App() {
           setCurrentView={setCurrentView}
           featureMapEnabled={featureMapEnabled}
           meshRadioConnected={meshRadioConnected === true}
-          onOpenLibrary={() => setLibraryOpen(true)}
+          onOpenArchive={() => {
+            setCurrentView("archive");
+            setArchivePrimaryTab("local");
+            setArchiveNetworkSubTab("packages");
+          }}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenHelp={() => setHelpOpen(true)}
           onOpenMesh={() => setMeshOpen(true)}
+          onOpenCalendar={() => setCurrentView("calendar")}
+          calendarDateTimeLabel={headerClockLabel}
           batteryState={batteryState}
           headerDownloadBar={headerDownloadBar}
+          ingestionState={ingestionState}
         />
         {(triageMenuOpen || activeTriageId) &&
           createPortal(
@@ -4187,7 +4471,9 @@ function App() {
                 onOpenTriage={() => setTriageMenuOpen(true)}
                 onNavigate={(destination: DashboardDestination) => {
                   if (destination === "library") {
-                    setLibraryOpen(true);
+                    setCurrentView("archive");
+                    setArchivePrimaryTab("network");
+                    setArchiveNetworkSubTab("documents");
                     return;
                   }
                   if (destination === "settings") {
@@ -4439,12 +4725,10 @@ function App() {
                 Install from ollama.com
               </a>
             </span>
-            {ollamaSetupStatus?.unconventional_ollama_path &&
-            !ollamaCopyPromptDismissed &&
-            !ollamaSidecarManaged ? (
+            {ollamaSetupStatus?.unconventional_ollama_path && !ollamaCopyPromptDismissed && !ollamaSidecarManaged ? (
               <div className="ollama-unconventional-prompt" role="region" aria-label="Ollama location">
                 <p className="ollama-unconventional-text">
-                  Ollama was found at <code>{ollamaSetupStatus.unconventional_ollama_path}</code>, which is outside a
+                  Ollama was found at <code>{ollamaSetupStatus?.unconventional_ollama_path}</code>, which is outside a
                   typical install location. Copy it into Athena&apos;s managed folder so the app can run{" "}
                   <code>ollama serve</code> reliably? Your original file stays untouched.
                 </p>
@@ -4454,7 +4738,7 @@ function App() {
                     className="ollama-unconventional-copy"
                     disabled={ollamaCopyBusy}
                     onClick={async () => {
-                      const src = ollamaSetupStatus.unconventional_ollama_path;
+                      const src = ollamaSetupStatus?.unconventional_ollama_path;
                       if (!src) return;
                       setOllamaCopyBusy(true);
                       try {
@@ -4530,35 +4814,12 @@ function App() {
             )}
           </div>
         )}
-        {birthdayBannerVisible && (
-          <div className="ollama-not-running-banner" role="status" style={{ background: "var(--surface-solid)" }}>
-            <span className="ollama-not-running-message">
-              Happy birthday{userDisplayName.trim() ? `, ${userDisplayName.trim()}` : ""} — glad you&apos;re here.
-            </span>
-            <div className="ollama-not-running-actions">
-              <button
-                type="button"
-                className="ollama-not-running-dismiss"
-                onClick={() => {
-                  const todayKey = `athena_birthday_shown_${new Date().toISOString().slice(0, 10)}`;
-                  try {
-                    sessionStorage.setItem(todayKey, "1");
-                  } catch {
-                    /* ignore */
-                  }
-                  setBirthdayBannerVisible(false);
-                }}
-                aria-label="Dismiss birthday message"
-              >
-                Thanks
-              </button>
-            </div>
-          </div>
-        )}
         {quarantineAlert && (
           <div className="quarantine-banner" role="alert" aria-live="polite">
             <span className="quarantine-message">
-              A file could not be indexed and was moved to quarantine: <strong>{quarantineAlert.path.split(/[/\\]/).pop() ?? quarantineAlert.path}</strong>. {quarantineAlert.reason}
+              A file could not be indexed and was moved to quarantine:{" "}
+              <strong>{quarantineAlert?.path.split(/[/\\]/).pop() ?? quarantineAlert?.path ?? ""}</strong>.{" "}
+              {quarantineAlert?.reason ?? ""}
             </span>
             <button
               type="button"
@@ -4570,10 +4831,10 @@ function App() {
             </button>
           </div>
         )}
-        {showLowBatteryBanner && batteryState && batteryState.percentage !== null && (
+        {showLowBatteryBanner && batteryState?.percentage != null ? (
           <div className="low-battery-banner" role="status" aria-live="polite">
             <span className="low-battery-message">
-              Battery is low ({Math.round(batteryState.percentage)}%). Switch Athena to a smaller model to conserve power?
+              Battery is low ({Math.round((batteryState?.percentage ?? 0) as number)}%). Switch Athena to a smaller model to conserve power?
             </span>
             <div className="low-battery-actions">
               <button
@@ -4595,7 +4856,7 @@ function App() {
               </button>
             </div>
           </div>
-        )}
+        ) : null}
         {findInChatOpen && (
           <div className="find-in-chat-bar" role="search">
             <input
@@ -4657,14 +4918,7 @@ function App() {
         <ErrorBoundary sectionLabel="chat messages">
         {messages.length === 0 && (
           <div className="welcome">
-            <p>Ask me anything about survival, repair, or practical skills.</p>
-            <p className="welcome-hint">
-              I work fully offline. Add Kiwix or other documents in <strong>Library</strong> so I can reference them in my answers.
-            </p>
-            <div className="welcome-tip" aria-label="Tip of the day">
-              <span className="welcome-tip-label">Tip of the day</span>
-              <p className="welcome-tip-text">{getTipOfTheDay()}</p>
-            </div>
+            <p>Ask me anything</p>
           </div>
         )}
         {messages.map((msg, i) => (
@@ -4680,14 +4934,33 @@ function App() {
                 </span>
               )}
               {msg.role === "assistant" && showSourcesInChat && msg.sources && msg.sources.length > 0 && (
-                <p className="message-sources" aria-label="Sources from your library">
-                  Sources: {msg.sources.map((s, idx) => (
-                    <React.Fragment key={s}>
-                      {idx ? ", " : null}
-                      <strong>{s}</strong>
+                <div className="message-sources" aria-label="Sources from your library">
+                  <span>Sources: </span>
+                  {msg.sources.map((c, idx) => (
+                    <React.Fragment key={`${c.filePath}-${c.pageNumber ?? "x"}-${idx}`}>
+                      {idx > 0 ? " " : null}
+                      {c.filePath ? (
+                        <button
+                          type="button"
+                          className="glass-action-btn"
+                          style={{ marginRight: "0.35rem", marginTop: "0.25rem" }}
+                          onClick={() => {
+                            void invoke("open_library_source", {
+                              path: c.filePath,
+                              page: c.pageNumber,
+                            }).catch(() => {});
+                          }}
+                          aria-label={`${lx.citationOpenFile}: ${c.displayTitle}`}
+                        >
+                          {c.displayTitle}
+                          {c.pageNumber != null ? ` · ${lx.citationPageLabel} ${c.pageNumber}` : ""}
+                        </button>
+                      ) : (
+                        <span style={{ marginRight: "0.35rem" }}>{c.displayTitle}</span>
+                      )}
                     </React.Fragment>
                   ))}
-                </p>
+                </div>
               )}
             </div>
             {msg.timestamp != null && (
@@ -4964,9 +5237,11 @@ function App() {
           ) : null}
           {currentView === "map" && !featureMapEnabled ? (
             <div className="glass-panel app-view-placeholder">
-              <h2 className="app-view-placeholder-title">Maps are off</h2>
+              <h2 className="app-view-placeholder-title">{lx.mapDisabledTitle}</h2>
               <p className="text-muted app-view-placeholder-body">
-                Enable Maps under <strong>Location</strong> in Settings to open the map viewer.
+                {lx.mapDisabledBodyBefore}
+                <strong>{lx.mapDisabledLocationWord}</strong>
+                {lx.mapDisabledBodyAfter}
               </p>
               <div className="app-view-placeholder-actions">
                 <button
@@ -4976,20 +5251,112 @@ function App() {
                     goToSettingsSubpanel("location");
                   }}
                 >
-                  Open Location settings
+                  {lx.mapDisabledOpenLocation}
                 </button>
                 <button type="button" className="secondary" onClick={() => setCurrentView("home")}>
-                  Back to Home
+                  {lx.mapDisabledBackHome}
                 </button>
               </div>
             </div>
+          ) : null}
+          {currentView === "academy" ? <AcademyView /> : null}
+          {currentView === "archive" ? (
+            <ArchiveHub
+              primaryTab={archivePrimaryTab}
+              onPrimaryTabChange={setArchivePrimaryTab}
+              networkSubTab={archiveNetworkSubTab}
+              onNetworkSubTabChange={setArchiveNetworkSubTab}
+              libraryError={libraryError}
+              mapsTabProps={{
+                mapCatalog,
+                downloadedMaps,
+                networkReachable,
+                mapsSuggestion,
+                mapDownloadJobs,
+                mapZimsOnDiskOnly,
+                mapLibraryFileCount: mapLibraryFiles.length,
+                stats,
+                formatBytes,
+                formatLibraryFileSizeBytes,
+                onDownloadMap: handleDownloadMap,
+                onOpenMapFileManager: () => setOfflineMapManagerOpen(true),
+                onOpenOfflineMapSettings: () => {
+                  setSettingsOpen(true);
+                  goToSettingsSubpanel("maps");
+                },
+                onOpenExternalUrl: (url) => void openUrl(url),
+                onRefreshNetworkReachable: () => {
+                  void invoke<boolean>("check_network_reachable")
+                    .then((r) => setNetworkReachable(r))
+                    .catch(() => setNetworkReachable(false));
+                },
+                onRemoveDownloadedMap: handleRemoveDownloadedMap,
+                onRemoveLibraryFile: handleRemoveLibraryFile,
+              }}
+            />
           ) : null}
           {currentView === "radio" ? (
             <RadioView />
           ) : null}
           {currentView === "logbook" ? <LogbookView meshConnected={meshRadioConnected === true} /> : null}
+          {currentView === "calendar" ? (
+            <CalendarView
+              timeFormat={timeFormat}
+              calendarRegion={calendarRegion}
+              quietHoursStart={calendarQuietHoursStart}
+              quietHoursEnd={calendarQuietHoursEnd}
+              meshConnected={meshRadioConnected === true}
+              onOpenMapView={() => setCurrentView("map")}
+              onGoToMarker={(markerId) => {
+                if (!markerId) return;
+                void invoke<Array<{ id: string; lat: number; lng: number }>>("get_map_markers")
+                  .then((rows) => rows.find((r) => r.id === markerId))
+                  .then((m) => {
+                    if (!m) return;
+                    setMapViewCenter([m.lat, m.lng]);
+                    setMapViewZoom(14);
+                    setCurrentView("map");
+                  })
+                  .catch(() => {});
+              }}
+            />
+          ) : null}
         </div>
       </div>
+      {birthdayModalVisible && (
+        <div
+          className="birthday-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="birthday-modal-title"
+          onClick={dismissBirthdayModal}
+        >
+          <div className="birthday-modal-panel glass-panel" onClick={(e) => e.stopPropagation()}>
+            <p className="birthday-modal-from">A note from the creator</p>
+            <h2 id="birthday-modal-title" className="birthday-modal-heading">
+              Happy birthday{userDisplayName.trim() ? `, ${userDisplayName.trim()}` : ""}
+            </h2>
+            <div className="birthday-modal-body">
+              <p>
+                I&apos;m <strong>the ATHENA developer</strong>, and I built Athena as a small corner of software meant to
+                stand with you when things get hard—when you need clarity, connection, or a steady tool at your side.
+              </p>
+              <p>
+                Thank you, truly, for trusting this app and spending part of your day with it. Every hour you give
+                Athena is a gift I don&apos;t take lightly. On your birthday I hope you feel seen, valued, and a little
+                lighter—today and in the year ahead.
+              </p>
+              <p className="birthday-modal-signoff">With gratitude,</p>
+              <p className="birthday-modal-signature">the ATHENA developer</p>
+            </div>
+            <div className="birthday-modal-actions">
+              <button type="button" className="birthday-modal-close-btn" onClick={dismissBirthdayModal}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {deviceOverlayEnabled && (
         <div className="device-details-overlay" aria-live="polite" aria-label="Device stats">
@@ -5015,6 +5382,55 @@ function App() {
                 </div>
                 {deviceOverlayExpanded ? (
                   <>
+                    <div className="device-details-row">
+                      <span>Host</span>
+                      <span>{deviceStats.host_name ?? "—"}</span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>OS</span>
+                      <span>{deviceStats.long_os_version ?? deviceStats.os_name ?? "—"}</span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Kernel</span>
+                      <span>{deviceStats.kernel_version ?? "—"}</span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>CPU</span>
+                      <span>{deviceStats.cpu_brand ?? "—"}</span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Arch</span>
+                      <span>{deviceStats.cpu_arch ?? "—"}</span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Uptime</span>
+                      <span>
+                        {(() => {
+                          const sec = deviceStats.uptime_secs;
+                          const d = Math.floor(sec / 86400);
+                          const h = Math.floor((sec % 86400) / 3600);
+                          const m = Math.floor((sec % 3600) / 60);
+                          if (d > 0) return `${d}d ${h}h`;
+                          if (h > 0) return `${h}h ${m}m`;
+                          return `${m}m`;
+                        })()}
+                      </span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>Load</span>
+                      <span>
+                        {deviceStats.load_one.toFixed(2)} / {deviceStats.load_five.toFixed(2)} /{" "}
+                        {deviceStats.load_fifteen.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="device-details-row">
+                      <span>CPUs</span>
+                      <span>
+                        {deviceStats.physical_cores != null
+                          ? `${deviceStats.logical_cpus}L / ${deviceStats.physical_cores}P`
+                          : `${deviceStats.logical_cpus} logical`}
+                      </span>
+                    </div>
                     <div className="device-details-row">
                       <span>Swap</span>
                       <span>
@@ -5083,6 +5499,13 @@ function App() {
                 ) : (
                   <>
                     <div className="device-details-row device-details-row-compact">
+                      <span>Load</span>
+                      <span>
+                        {deviceStats.load_one.toFixed(2)} / {deviceStats.load_five.toFixed(2)} /{" "}
+                        {deviceStats.load_fifteen.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="device-details-row device-details-row-compact">
                       <span>SSD</span>
                       <span>
                         {deviceStats.disk_total_gb > 0
@@ -5133,9 +5556,9 @@ function App() {
                       }
                       setSettingsPanel("menu");
                     }}
-                    aria-label="Back to settings menu"
+                    aria-label={lx.settingsBackAria}
                   >
-                    ← Back
+                    {lx.settingsBackLabel}
                   </button>
                 ) : null}
               </div>
@@ -5151,78 +5574,100 @@ function App() {
                     : undefined
                 }
                 role={settingsPanel === "menu" ? "button" : undefined}
-                aria-label={settingsPanel === "menu" ? "Settings" : undefined}
+                aria-label={settingsPanel === "menu" ? lx.settingsMenuTitleAria : undefined}
               >
                 {settingsPanel === "menu"
-                  ? "Settings"
+                  ? lx.settingsMenuTitle
                   : settingsPanel === "general"
-                    ? "General"
+                    ? lx.settingsPanelGeneral
                     : settingsPanel === "ai"
-                      ? "AI & Models"
+                      ? lx.settingsPanelAi
                       : settingsPanel === "location"
-                        ? "Location"
+                        ? lx.settingsPanelLocation
                         : settingsPanel === "apiKeys"
-                          ? "API keys"
+                          ? lx.settingsPanelApiKeys
                         : settingsPanel === "maps"
-                          ? "Offline maps"
+                          ? lx.settingsPanelMaps
                           : settingsPanel === "mesh"
-                          ? "Mesh"
+                          ? lx.settingsPanelMesh
                           : settingsPanel === "voice"
-                            ? "Voice"
+                            ? lx.settingsPanelVoice
+                            : settingsPanel === "calendar"
+                              ? lx.settingsPanelCalendar
+                              : settingsPanel === "dateTime"
+                                ? lx.settingsPanelDateTime
                             : settingsPanel === "appearance"
-                              ? "Window & Display"
+                              ? lx.settingsPanelAppearance
                               : settingsPanel === "themes"
                                 ? themesSubView === "studio"
-                                  ? "Theme Studio"
-                                  : "Themes & Colors"
+                                  ? lx.settingsPanelThemeStudio
+                                  : lx.settingsPanelThemes
                                 : settingsPanel === "troubleshooting"
-                                  ? "Troubleshooting"
-                                  : "Developer"}
+                                  ? lx.settingsPanelTroubleshooting
+                                  : settingsPanel === "usbExport"
+                                    ? lx.settingsPanelUsbExport
+                                    : lx.settingsPanelDeveloper}
               </h2>
-              <button type="button" className="close-btn" onClick={() => setSettingsOpen(false)}>
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => setSettingsOpen(false)}
+                aria-label={lx.settingsCloseAria}
+              >
                 ×
               </button>
             </div>
             <div className="settings-modal-body" ref={settingsBodyRef}>
             {settingsPanel === "menu" && (
-              <nav className="settings-nav" aria-label="Settings sections">
+              <nav className="settings-nav" aria-label={lx.settingsNavAria}>
                 <p className="settings-nav-intro text-muted">
-                  Choose a category. Library is opened from the header.
+                  {lx.settingsNavIntroLead}
                   {meshRadioConnected === true
-                    ? " The mesh radio button appears when a Meshtastic device is connected."
+                    ? lx.settingsNavMeshConnectedNote
                     : meshRadioConnected === false
-                      ? " No Meshtastic radio detected—mesh options are unavailable until a device is connected."
+                      ? lx.settingsNavMeshDisconnectedNote
                       : null}
                 </p>
                 <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">Basics</span>
+                  <span className="settings-nav-group-label">{lx.settingsNavGroupProfileCalendar}</span>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("general")}>
-                    <span className="settings-nav-label">General</span>
-                    <span className="text-muted">Help, shortcuts, optional CPU/RAM overlay</span>
+                    <span className="settings-nav-label">{lx.settingsNavGeneral}</span>
+                    <span className="text-muted">{lx.settingsNavGeneralDesc}</span>
                   </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("ai")}>
-                    <span className="settings-nav-label">AI &amp; Models</span>
-                    <span className="text-muted">Ollama, personality, model size, memory, citations</span>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("calendar")}>
+                    <span className="settings-nav-label">{lx.settingsNavCalendar}</span>
+                    <span className="text-muted">{lx.settingsNavCalendarDesc}</span>
+                  </button>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("dateTime")}>
+                    <span className="settings-nav-label">{lx.settingsNavDateTime}</span>
+                    <span className="text-muted">{lx.settingsNavDateTimeDesc}</span>
                   </button>
                 </div>
                 <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">Context &amp; Devices</span>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("location")}>
-                    <span className="settings-nav-label">Location</span>
-                    <span className="text-muted">Place-aware answers and local data downloads</span>
+                  <span className="settings-nav-group-label">{lx.settingsNavGroupAiKnowledge}</span>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("ai")}>
+                    <span className="settings-nav-label">{lx.settingsNavAiModels}</span>
+                    <span className="text-muted">{lx.settingsNavAiModelsDesc}</span>
                   </button>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("apiKeys")}>
-                    <span className="settings-nav-label">API keys</span>
-                    <span className="text-muted">Paste and store provider keys for advanced features</span>
+                    <span className="settings-nav-label">{lx.settingsNavApiKeys}</span>
+                    <span className="text-muted">{lx.settingsNavApiKeysDesc}</span>
+                  </button>
+                </div>
+                <div className="settings-nav-group">
+                  <span className="settings-nav-group-label">{lx.settingsNavGroupMapsRadio}</span>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("location")}>
+                    <span className="settings-nav-label">{lx.settingsNavLocation}</span>
+                    <span className="text-muted">{lx.settingsNavLocationDesc}</span>
                   </button>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("maps")}>
-                    <span className="settings-nav-label">Offline maps</span>
+                    <span className="settings-nav-label">{lx.settingsNavOfflineMaps}</span>
                     <span className="text-muted">
-                      Kiwix regional maps, tile basemaps, and imports
+                      {lx.settingsNavOfflineMapsDesc}
                       {featureMapEnabled ? (
-                        <span className="settings-build-note"> · Use the Map icon in the top bar when Maps is enabled</span>
+                        <span className="settings-build-note">{lx.settingsNavOfflineMapsNoteMapOn}</span>
                       ) : (
-                        <span className="settings-build-note"> · Turn on Maps under Location to show the map button</span>
+                        <span className="settings-build-note">{lx.settingsNavOfflineMapsNoteMapOff}</span>
                       )}
                     </span>
                   </button>
@@ -5233,30 +5678,30 @@ function App() {
                     onClick={() => meshRadioConnected === true && goToSettingsSubpanel("mesh")}
                     aria-disabled={meshRadioConnected !== true}
                   >
-                    <span className="settings-nav-label">Mesh</span>
+                    <span className="settings-nav-label">{lx.settingsNavMesh}</span>
                     <span className="text-muted">
                       {meshRadioConnected === null
-                        ? "Checking for USB radio…"
+                        ? lx.settingsNavMeshChecking
                         : meshRadioConnected === false
-                          ? "No Meshtastic radio connected"
-                          : "Meshtastic auto-reply and mesh traffic"}
+                          ? lx.settingsNavMeshNone
+                          : lx.settingsNavMeshOk}
                     </span>
                   </button>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("voice")}>
-                    <span className="settings-nav-label">Voice</span>
+                    <span className="settings-nav-label">{lx.settingsNavVoice}</span>
                     <span className="text-muted">
-                      Read-aloud (TTS)
+                      {lx.settingsNavVoiceDesc}
                       {VOICE_AND_MIC_FEATURES_HIDDEN ? (
-                        <span className="settings-build-note"> · Hidden in this build</span>
+                        <span className="settings-build-note">{lx.settingsNavVoiceHiddenNote}</span>
                       ) : null}
                     </span>
                   </button>
                 </div>
                 <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">Look &amp; Support</span>
+                  <span className="settings-nav-group-label">{lx.settingsNavGroupLookFeel}</span>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("appearance")}>
-                    <span className="settings-nav-label">Window &amp; Display</span>
-                    <span className="text-muted">Fullscreen and night vision</span>
+                    <span className="settings-nav-label">{lx.settingsNavWindowDisplay}</span>
+                    <span className="text-muted">{lx.settingsNavWindowDisplayDesc}</span>
                   </button>
                   <button
                     type="button"
@@ -5267,18 +5712,45 @@ function App() {
                       goToSettingsSubpanel("themes");
                     }}
                   >
-                    <span className="settings-nav-label">Themes &amp; Colors</span>
-                    <span className="text-muted">Experience style, color palette, custom themes</span>
+                    <span className="settings-nav-label">{lx.settingsNavThemes}</span>
+                    <span className="text-muted">{lx.settingsNavThemesDesc}</span>
                   </button>
+                </div>
+                <div className="settings-nav-group">
+                  <span className="settings-nav-group-label">{lx.settingsNavGroupBackupHelp}</span>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("troubleshooting")}>
-                    <span className="settings-nav-label">Troubleshooting</span>
-                    <span className="text-muted">Error log and advanced diagnostics</span>
+                    <span className="settings-nav-label">{lx.settingsNavTroubleshooting}</span>
+                    <span className="text-muted">{lx.settingsNavTroubleshootingDesc}</span>
+                  </button>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("usbExport")}>
+                    <span className="settings-nav-label">{lx.settingsNavUsbExport}</span>
+                    <span className="text-muted">{lx.settingsNavUsbExportDesc}</span>
                   </button>
                 </div>
               </nav>
             )}
             {settingsPanel === "general" && (
               <>
+                <section className="library-section">
+                  <h3>About ATHENA</h3>
+                  <p className="text-muted small" style={{ marginBottom: "0.5rem" }}>
+                    Full product name: <strong>{ATHENA_FULL_NAME}</strong>. In chat and most UI copy the assistant is called{" "}
+                    <strong>Athena</strong>.
+                  </p>
+                  <ul className="settings-tips-list text-muted">
+                    {ATHENA_ACRONYM_PARTS.map((row, i) => (
+                      <li key={`${row.word}-${i}`}>
+                        <strong>{row.letter}</strong> — <strong>{row.word}:</strong> {row.meaning}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-muted small" style={{ marginTop: "0.65rem", marginBottom: 0 }}>
+                    <strong>Watch folder:</strong> set from the header <strong>Library</strong> sheet. Large <strong>The Archive</strong>{" "}
+                    downloads (Wikipedia ZIMs, US state Protomaps) need free disk space there. <strong>Settings → Location</strong> is only for
+                    AI place-aware answers and the Kiwix “install local data” helper—it does not change which state maps the Installer offers;
+                    change that under <strong>Home → The Archive</strong> (Change area).
+                  </p>
+                </section>
                 <section className="library-section">
                   <h3>User profile</h3>
                   <p className="text-muted small">
@@ -5377,7 +5849,9 @@ function App() {
                       className="secondary"
                       onClick={() => {
                         setSettingsOpen(false);
-                        setLibraryOpen(true);
+                        setCurrentView("archive");
+                        setArchivePrimaryTab("network");
+                        setArchiveNetworkSubTab("documents");
                       }}
                     >
                       Open Library
@@ -5461,8 +5935,245 @@ function App() {
                 </section>
               </>
             )}
+            {settingsPanel === "calendar" && (
+              <>
+                <section className="library-section">
+                  <h3>Holiday region</h3>
+                  <p className="text-muted small">Used to show recognized public holidays inside Calendar.</p>
+                  <select
+                    className="theme-select"
+                    value={calendarRegion}
+                    onChange={(e) => {
+                      const next = e.target.value.toUpperCase();
+                      setCalendarRegion(next);
+                      void invoke("set_calendar_region", { value: next }).then(() => loadModelSettings());
+                    }}
+                  >
+                    <option value="US">United States (US)</option>
+                    <option value="CA">Canada (CA)</option>
+                    <option value="GB">United Kingdom (GB)</option>
+                    <option value="AU">Australia (AU)</option>
+                  </select>
+                </section>
+                <section className="library-section">
+                  <h3>Calendar workflows</h3>
+                  <p className="text-muted small">
+                    Use Calendar for recurring events, map-pin linked tasks, templates, quick-add parsing, reminders,
+                    and ICS import/export.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettingsOpen(false);
+                      setCurrentView("calendar");
+                    }}
+                  >
+                    Open Calendar
+                  </button>
+                </section>
+              </>
+            )}
+            {settingsPanel === "dateTime" && (
+              <>
+                <section className="library-section">
+                  <h3>Header clock format</h3>
+                  <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
+                    <label style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                      <input
+                        type="radio"
+                        name="time-format"
+                        checked={timeFormat === "12"}
+                        onChange={() => {
+                          setTimeFormat("12");
+                          void invoke("set_time_format", { value: "12" }).then(() => loadModelSettings());
+                        }}
+                      />
+                      12-hour
+                    </label>
+                    <label style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                      <input
+                        type="radio"
+                        name="time-format"
+                        checked={timeFormat === "24"}
+                        onChange={() => {
+                          setTimeFormat("24");
+                          void invoke("set_time_format", { value: "24" }).then(() => loadModelSettings());
+                        }}
+                      />
+                      24-hour
+                    </label>
+                  </div>
+                </section>
+                <section className="library-section">
+                  <h3>Calendar reminder quiet hours</h3>
+                  <p className="text-muted small">
+                    Reminders can stay quiet during these hours to reduce noise while still appearing in agenda lists.
+                  </p>
+                  <div className="settings-startup-view-row">
+                    <label className="settings-startup-view-label">Start</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={calendarQuietHoursStart}
+                      onChange={(e) => setCalendarQuietHoursStart(Math.max(0, Math.min(23, Number.parseInt(e.target.value || "0", 10))))}
+                    />
+                    <label className="settings-startup-view-label">End</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={calendarQuietHoursEnd}
+                      onChange={(e) => setCalendarQuietHoursEnd(Math.max(0, Math.min(23, Number.parseInt(e.target.value || "0", 10))))}
+                    />
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() =>
+                        void invoke("set_calendar_quiet_hours", {
+                          startHour: calendarQuietHoursStart,
+                          endHour: calendarQuietHoursEnd,
+                        }).then(() => loadModelSettings())
+                      }
+                    >
+                      Save quiet hours
+                    </button>
+                  </div>
+                </section>
+              </>
+            )}
             {settingsPanel === "ai" && (
               <>
+                <section className="library-section">
+                  <h3>Chat, embedding, and reranker folders</h3>
+                  <p className="text-muted small">
+                    These lists come from your app data <code className="ollama-managed-path-code">models/</code> tree (chat
+                    files and folders, embedding subfolders, reranker subfolders). ONNX files may still be downloading in the
+                    background on first launch.
+                  </p>
+                  <div
+                    className="glass-panel"
+                    style={{ padding: "0.9rem", borderRadius: "12px", marginTop: "0.65rem", display: "grid", gap: "0.85rem", maxWidth: "32rem" }}
+                  >
+                    <div>
+                      <label className="text-muted small" htmlFor="settings-chat-model-select">
+                        Chat model
+                      </label>
+                      <select
+                        id="settings-chat-model-select"
+                        className="theme-select"
+                        style={{ marginTop: "0.25rem", width: "100%" }}
+                        disabled={availableChatModels.length === 0}
+                        value={
+                          availableChatModels.length === 0
+                            ? ""
+                            : availableChatModels.includes(selectedChatModelPath)
+                              ? selectedChatModelPath
+                              : availableChatModels[0]
+                        }
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setSelectedChatModelPath(v);
+                          const stem = v.toLowerCase().endsWith(".gguf") ? v.slice(0, -5) : v;
+                          void invoke("set_explicit_ollama_model", {
+                            value: stem.trim().length > 0 ? stem.trim() : null,
+                          }).catch((err) => {
+                            setLibraryError(String(err));
+                          });
+                        }}
+                        aria-label="Chat model path or file"
+                      >
+                        {availableChatModels.length === 0 ? (
+                          <option value="" disabled>
+                            {modelScannerPathsLoading ? "Downloading models..." : "No models found"}
+                          </option>
+                        ) : (
+                          availableChatModels.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-muted small" htmlFor="settings-embedding-model-select">
+                        Embedding model
+                      </label>
+                      <select
+                        id="settings-embedding-model-select"
+                        className="theme-select"
+                        style={{ marginTop: "0.25rem", width: "100%" }}
+                        disabled={availableEmbeddingModels.length === 0}
+                        value={
+                          availableEmbeddingModels.length === 0
+                            ? ""
+                            : availableEmbeddingModels.includes(selectedEmbeddingModelId)
+                              ? selectedEmbeddingModelId
+                              : availableEmbeddingModels[0]
+                        }
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setSelectedEmbeddingModelId(v);
+                          void invoke("set_active_embedding_model", { folder_name: v }).catch((err) => {
+                            setLibraryError(String(err));
+                          });
+                        }}
+                        aria-label="Embedding model folder"
+                      >
+                        {availableEmbeddingModels.length === 0 ? (
+                          <option value="" disabled>
+                            {modelScannerPathsLoading ? "Downloading models..." : "No models found"}
+                          </option>
+                        ) : (
+                          availableEmbeddingModels.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-muted small" htmlFor="settings-reranker-model-select">
+                        Reranker model
+                      </label>
+                      <select
+                        id="settings-reranker-model-select"
+                        className="theme-select"
+                        style={{ marginTop: "0.25rem", width: "100%" }}
+                        disabled={availableRerankerModels.length === 0}
+                        value={
+                          availableRerankerModels.length === 0
+                            ? ""
+                            : availableRerankerModels.includes(selectedRerankerModelId)
+                              ? selectedRerankerModelId
+                              : availableRerankerModels[0]
+                        }
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setSelectedRerankerModelId(v);
+                          void invoke("set_active_reranker_model", { folder_name: v }).catch((err) => {
+                            setLibraryError(String(err));
+                          });
+                        }}
+                        aria-label="Reranker model folder"
+                      >
+                        {availableRerankerModels.length === 0 ? (
+                          <option value="" disabled>
+                            {modelScannerPathsLoading ? "Downloading models..." : "No models found"}
+                          </option>
+                        ) : (
+                          availableRerankerModels.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                  </div>
+                </section>
                 <section className="library-section">
                   <h3>Inference backend</h3>
                   <p className="text-muted small">
@@ -5837,6 +6548,11 @@ function App() {
                   <h3>Location</h3>
                   <p className="text-muted">
                     When enabled, the AI can use your location to give place-based advice (e.g. where to find spare parts, auto parts stores, or parking lots with similar vehicles). It will ask for your address if you haven’t set one.
+                  </p>
+                  <p className="text-muted small settings-build-banner">
+                    <strong>Separate from The Archive:</strong> this field and <strong>Install local data</strong> feed chat context and
+                    Kiwix regional map picks. <strong>US state Protomaps</strong> in the Satchel tier use the pin saved inside{" "}
+                    <strong>Home → The Archive</strong> (Change area)—update it there if you move or want different border states.
                   </p>
                   {downloadedMaps.length === 0 && (
                     <p className="text-muted small settings-build-banner">
@@ -6535,28 +7251,6 @@ function App() {
                       } catch {
                         // ignore
                       }
-                      // #region agent log
-                      try {
-                        fetch("http://127.0.0.1:7625/ingest/8fd099f6-5880-4d68-82fc-1df05f97fa81", {
-                          method: "POST",
-                          headers: {
-                            "Content-Type": "application/json",
-                            "X-Debug-Session-Id": "035879",
-                          },
-                          body: JSON.stringify({
-                            sessionId: "035879",
-                            runId: "pre-fix",
-                            hypothesisId: "H5-nightvision",
-                            location: "App.tsx:nightvision-select",
-                            message: "Night vision mode changed",
-                            data: { mode },
-                            timestamp: Date.now(),
-                          }),
-                        }).catch(() => {});
-                      } catch {
-                        // ignore instrumentation failures
-                      }
-                      // #endregion agent log
                     }}
                     aria-label="Night vision mode"
                   >
@@ -6925,6 +7619,44 @@ function App() {
                 </section>
               </section>
             )}
+            {settingsPanel === "usbExport" && (
+              <section className="library-section">
+                <h3>USB export</h3>
+                <p className="text-muted small">
+                  Copy ATHENA and a portable <code>data</code> folder to a USB drive. The export flow creates <code>data</code>, <code>models</code>, and{" "}
+                  <code>documents</code> on the destination automatically.
+                </p>
+                <div className="settings-inline-actions" style={{ flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={usbExportBusy}
+                    onClick={() => {
+                      setUsbExportModalKind("essentials");
+                      setUsbExportModalOpen(true);
+                    }}
+                  >
+                    Export essentials
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={usbExportBusy}
+                    onClick={() => {
+                      setUsbExportModalKind("complete");
+                      setUsbExportModalOpen(true);
+                    }}
+                  >
+                    Export full archive
+                  </button>
+                </div>
+                {usbExportStatus && !usbExportModalOpen ? (
+                  <p className="text-muted small" style={{ marginTop: "0.65rem" }} aria-live="polite">
+                    {usbExportStatus}
+                  </p>
+                ) : null}
+              </section>
+            )}
             {settingsPanel === "troubleshooting" && (
               <>
                 <section className="library-section">
@@ -6965,7 +7697,9 @@ function App() {
                       className="secondary"
                       onClick={() => {
                         setSettingsOpen(false);
-                        setLibraryOpen(true);
+                        setCurrentView("archive");
+                        setArchivePrimaryTab("network");
+                        setArchiveNetworkSubTab("documents");
                       }}
                     >
                       Open Library
@@ -7164,341 +7898,63 @@ function App() {
         <MeshRadioModal open={meshOpen} onClose={() => setMeshOpen(false)} messages={meshMessages} />
       )}
 
-      {libraryOpen && (
-        <div className="modal-backdrop" onClick={() => setLibraryOpen(false)}>
-          <div className="library-modal library-modal-tabs glass-panel" onClick={(e) => e.stopPropagation()}>
+      <UsbExportModal
+        open={usbExportModalOpen}
+        onClose={() => {
+          if (!usbExportBusy) setUsbExportModalOpen(false);
+        }}
+        exportType={usbExportModalKind}
+        scorchedEarth={usbScorchedEarth}
+        onScorchedEarthChange={setUsbScorchedEarth}
+        busy={usbExportBusy}
+        status={usbExportStatus}
+        onStartExport={(args) => void executeUsbExportFromModal(args)}
+      />
+
+      {libraryFilesModalOpen && (
+        <div className="modal-backdrop" onClick={() => setLibraryFilesModalOpen(false)}>
+          <div className="library-modal library-files-modal" onClick={(e) => e.stopPropagation()}>
             <div className="library-header">
-              <h2>Library</h2>
-              <button type="button" className="close-btn" onClick={() => setLibraryOpen(false)}>
+              <h2>All documents (AI search)</h2>
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => setLibraryFilesModalOpen(false)}
+                aria-label="Close"
+              >
                 ×
               </button>
             </div>
-            <div className="library-tabs-scroll">
-              <p className="library-desc">
-                Use the tabs below like a browser: <strong>Documents</strong> for RAG files and Kiwix content for search,{" "}
-                <strong>Maps</strong> for Kiwix map ZIMs, tile packs, and the <strong>map archive manager</strong> (PMTiles / MBTiles catalog). More library types can be added as new tabs later.
+            <p className="text-muted small" style={{ padding: "0 1.25rem" }}>
+              Map ZIMs are not listed here — open the Archive and use the <strong>Maps</strong> tab.
+            </p>
+            {ragDisplayFiles.length === 0 ? (
+              <p className="text-muted" style={{ padding: "0 1.25rem 1rem" }}>
+                No document files in your library folder.
               </p>
-              <div className="library-tablist" role="tablist" aria-label="Library sections">
-                <button
-                  type="button"
-                  role="tab"
-                  id="library-tab-documents"
-                  aria-selected={libraryActiveTab === "documents"}
-                  aria-controls="library-panel-documents"
-                  className={"library-tab" + (libraryActiveTab === "documents" ? " library-tab-active" : "")}
-                  onClick={() => setLibraryActiveTab("documents")}
-                >
-                  Documents
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  id="library-tab-maps"
-                  aria-selected={libraryActiveTab === "maps"}
-                  aria-controls="library-panel-maps"
-                  className={"library-tab" + (libraryActiveTab === "maps" ? " library-tab-active" : "")}
-                  onClick={() => setLibraryActiveTab("maps")}
-                >
-                  Maps
-                </button>
-              </div>
-              <div className="library-tab-panels">
-              {libraryActiveTab === "documents" && (
-                <div
-                  className="library-tab-panel"
-                  id="library-panel-documents"
-                  role="tabpanel"
-                  aria-labelledby="library-tab-documents"
-                >
-                  <KnowledgeCatalogView />
-                </div>
-              )}
-              {libraryActiveTab === "maps" && (
-                <div
-                  className="library-tab-panel"
-                  id="library-panel-maps"
-                  role="tabpanel"
-                  aria-labelledby="library-tab-maps"
-                >
-                  <section className="library-section library-section-map-archives">
-                    <h3>Map files (PMTiles / MBTiles)</h3>
-                    <p className="text-muted small library-section-lead">
-                      <strong>Download or import</strong> map tile archives for the viewer. Same tool as <strong>Map archives…</strong> on the map.
-                    </p>
-                    <div className="library-maps-action-row">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLibraryOpen(false);
-                          setOfflineMapManagerOpen(true);
-                        }}
-                      >
-                        Open map file manager…
-                      </button>
-                    </div>
-                  </section>
-                  <section className="library-section library-section-maps">
-                    <h3>Offline map packs (Kiwix)</h3>
-                    <p className="text-muted small library-section-lead">
-                      <strong>Regional map ZIMs</strong> for the map viewer. Downloads also show in Settings → Offline maps.
-                    </p>
-                    <div className="library-maps-action-row">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => {
-                          setLibraryOpen(false);
-                          setSettingsOpen(true);
-                          goToSettingsSubpanel("maps");
-                        }}
-                      >
-                        Offline map settings…
-                      </button>
-                      <button type="button" onClick={() => void openUrl("https://library.kiwix.org")}>
-                        Kiwix Library (browse ZIMs)
-                      </button>
-                    </div>
-                    <div className="settings-network-row text-muted small library-maps-network" aria-live="polite">
-                      Network:{" "}
-                      {networkReachable === null
-                        ? "—"
-                        : networkReachable
-                          ? "Reachable"
-                          : "Not reachable — connect to download packs"}
-                      <button
-                        type="button"
-                        className="secondary settings-network-refresh"
-                        onClick={() => {
-                          void invoke<boolean>("check_network_reachable")
-                            .then((r) => setNetworkReachable(r))
-                            .catch(() => setNetworkReachable(false));
-                        }}
-                      >
-                        Check again
-                      </button>
-                    </div>
-                    {mapCatalog.length === 0 && (
-                      <p className="text-muted small settings-map-catalog-empty-note" role="status">
-                        <strong>No regional map ZIMs are listed right now.</strong> The official Kiwix mirror&apos;s{" "}
-                        <code>zim/maps/</code> folder is sometimes empty, so direct links can 404. For the <strong>in-app map</strong>, use{" "}
-                        <strong>Offline map settings</strong> for raster basemaps and tile imports. For other Kiwix content, use the{" "}
-                        <strong>Documents</strong> tab → <strong>Download more data</strong> and place <code>.zim</code> files in your library folder.
-                      </p>
-                    )}
-                    {mapsSuggestion !== null && (
-                      <div className="settings-map-suggestion-banner">
-                        <strong>Suggested for your location:</strong> {mapsSuggestion.name} ({mapsSuggestion.size_label})
-                        {downloadedMaps.some(
-                          (m) => m.region === mapsSuggestion.region && m.style === mapsSuggestion.style,
-                        ) ? (
-                          <span className="text-muted"> — already downloaded</span>
-                        ) : (
-                          <button
-                            type="button"
-                            className="settings-map-suggestion-dl"
-                            onClick={() => void handleDownloadMap(mapsSuggestion)}
-                            disabled={networkReachable === false}
-                          >
-                            Download
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    {mapCatalog.length > 0 && (
-                      <>
-                        <h4 className="library-maps-subheading">Regional map packs</h4>
-                        <ul className="settings-map-catalog-list">
-                          {mapCatalog.map((entry) => {
-                            const acquired = downloadedMaps.some(
-                              (m) => m.region === entry.region && m.style === entry.style,
-                            );
-                            return (
-                              <li key={entry.id} className="settings-map-catalog-item">
-                                <div className="settings-map-catalog-main">
-                                  <span className="settings-map-catalog-name">
-                                    {entry.name}
-                                    {entry.for_user_region ? (
-                                      <span className="settings-map-catalog-badge">Matches location</span>
-                                    ) : null}
-                                  </span>
-                                  <span className="text-muted settings-map-catalog-meta">
-                                    {entry.size_label} · {entry.region}
-                                  </span>
-                                </div>
-                                {acquired ? (
-                                  <span className="text-muted small">Downloaded</span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="secondary"
-                                    onClick={() => void handleDownloadMap(entry)}
-                                    disabled={networkReachable === false}
-                                  >
-                                    Download
-                                  </button>
-                                )}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </>
-                    )}
-                    {mapDownloadJobs.length > 0 && (
-                      <div className="library-maps-downloads" role="status" aria-live="polite">
-                        <h4 className="library-maps-subheading">Downloading</h4>
-                        <ul className="library-map-download-list">
-                          {mapDownloadJobs.map(([id, job]) => (
-                            <li key={id} className="library-map-download-item">
-                              <div className="library-map-download-head">
-                                <span className="library-map-download-label">{job.label}</span>
-                                <span className="text-muted small">
-                                  {job.total != null && job.total > 0
-                                    ? `${formatBytes(job.downloaded)} / ${formatBytes(job.total)} · ${Math.min(
-                                        100,
-                                        Math.round((job.downloaded / job.total) * 100),
-                                      )}%`
-                                    : job.downloaded > 0
-                                      ? `${formatBytes(job.downloaded)}…`
-                                      : "Starting…"}
-                                </span>
-                              </div>
-                              {job.total != null && job.total > 0 && (
-                                <div className="library-map-download-bar" aria-hidden>
-                                  <div
-                                    className="library-map-download-bar-fill"
-                                    style={{
-                                      width: `${Math.min(100, Math.round((job.downloaded / job.total) * 100))}%`,
-                                    }}
-                                  />
-                                </div>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {downloadedMaps.length > 0 && (
-                      <>
-                        <h4 className="library-maps-subheading">Downloaded (map viewer)</h4>
-                        <ul className="library-file-list library-map-file-list">
-                          {downloadedMaps.map((m) => (
-                            <li key={m.path} className="library-file-item">
-                              <span className="library-file-name" title={m.path}>
-                                <strong>{m.name}</strong>
-                                <span className="text-muted small"> · {m.region}</span>
-                              </span>
-                              <button
-                                type="button"
-                                className="library-file-remove"
-                                onClick={() => void handleRemoveDownloadedMap(m.path)}
-                                title="Remove map pack"
-                                aria-label={`Remove map ${m.name}`}
-                              >
-                                Remove
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    )}
-                    {mapZimsOnDiskOnly.length > 0 && (
-                      <>
-                        <h4 className="library-maps-subheading">Map ZIMs on disk (indexed, not in viewer)</h4>
-                        <p className="text-muted small">
-                          These look like Kiwix map archives but are not registered for the map tab yet. They are still indexed for search if they sit in your library folder.
-                        </p>
-                        <ul className="library-file-list library-map-file-list">
-                          {mapZimsOnDiskOnly.map((file) => (
-                            <li key={file.path} className="library-file-item">
-                              <span className="library-file-name" title={file.path}>
-                                {file.name}
-                              </span>
-                              <span className="library-file-size">{formatLibraryFileSizeBytes(file.size_bytes)}</span>
-                              <button
-                                type="button"
-                                className="library-file-remove"
-                                onClick={() => handleRemoveLibraryFile(file.path)}
-                                title="Remove file"
-                                aria-label={"Remove " + file.name}
-                              >
-                                Remove
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    )}
-                    {mapDownloadJobs.length === 0 &&
-                      downloadedMaps.length === 0 &&
-                      mapZimsOnDiskOnly.length === 0 &&
-                      mapCatalog.length === 0 &&
-                      mapsSuggestion === null && (
-                        <p className="text-muted">
-                          No map downloads in progress and no map packs on disk yet. When mirrors list regional ZIMs, download from the catalog above; otherwise use{" "}
-                          <strong>Offline map settings</strong> for raster basemaps, or add a <code>maps_*</code> ZIM where the app can see it.
-                        </p>
-                      )}
-                  </section>
-                  {stats !== null && (
-                    <section className="library-section library-stats library-stats-maps">
-                      <div className="stats">
-                        <span className="stat">Map ZIM files: {mapLibraryFiles.length}</span>
-                        <span className="stat">Active downloads: {mapDownloadJobs.length}</span>
-                      </div>
-                    </section>
-                  )}
-                </div>
-              )}
-              </div>
-            </div>
-            {libraryError !== null && <p className="error library-tab-error">{libraryError}</p>}
-            {libraryFilesModalOpen && (
-              <div className="modal-backdrop" onClick={() => setLibraryFilesModalOpen(false)}>
-                <div className="library-modal library-files-modal" onClick={(e) => e.stopPropagation()}>
-                  <div className="library-header">
-                    <h2>All documents (AI search)</h2>
+            ) : (
+              <ul className="library-file-list library-file-list-full">
+                {ragDisplayFiles.map((file) => (
+                  <li key={file.path} className="library-file-item">
+                    <span className="library-file-name" title={file.path}>
+                      {file.name}
+                    </span>
+                    <span className="library-file-size">{formatLibraryFileSizeBytes(file.size_bytes)}</span>
                     <button
                       type="button"
-                      className="close-btn"
-                      onClick={() => setLibraryFilesModalOpen(false)}
-                      aria-label="Close"
+                      className="library-file-remove"
+                      onClick={() => {
+                        handleRemoveLibraryFile(file.path);
+                        if (ragDisplayFiles.length <= 1) setLibraryFilesModalOpen(false);
+                      }}
+                      title="Remove from library"
+                      aria-label={"Remove " + file.name}
                     >
-                      ×
+                      Remove
                     </button>
-                  </div>
-                  <p className="text-muted small" style={{ padding: "0 1.25rem" }}>
-                    Map ZIMs are not listed here — open Library and use the <strong>Maps</strong> tab.
-                  </p>
-                  {ragDisplayFiles.length === 0 ? (
-                    <p className="text-muted" style={{ padding: "0 1.25rem 1rem" }}>
-                      No document files in your library folder.
-                    </p>
-                  ) : (
-                    <ul className="library-file-list library-file-list-full">
-                      {ragDisplayFiles.map((file) => (
-                        <li key={file.path} className="library-file-item">
-                          <span className="library-file-name" title={file.path}>
-                            {file.name}
-                          </span>
-                          <span className="library-file-size">{formatLibraryFileSizeBytes(file.size_bytes)}</span>
-                          <button
-                            type="button"
-                            className="library-file-remove"
-                            onClick={() => {
-                              handleRemoveLibraryFile(file.path);
-                              if (ragDisplayFiles.length <= 1) setLibraryFilesModalOpen(false);
-                            }}
-                            title="Remove from library"
-                            aria-label={"Remove " + file.name}
-                          >
-                            Remove
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         </div>
@@ -7601,7 +8057,9 @@ function App() {
           </div>
         </div>
       )}
+
     </div>
+    </LexiconProvider>
   );
 }
 

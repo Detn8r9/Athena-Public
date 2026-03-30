@@ -48,7 +48,7 @@ pub fn scan_kiwix_zim_files(root: &Path) -> Result<Vec<DiscoveredZim>, String> {
                 }
                 let is_zim = path
                     .extension()
-                    .map_or(false, |ext| ext.eq_ignore_ascii_case("zim"));
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("zim"));
                 if !is_zim {
                     continue;
                 }
@@ -75,6 +75,29 @@ pub fn scan_kiwix_zim_files(root: &Path) -> Result<Vec<DiscoveredZim>, String> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+/// Scan several roots and merge results, deduplicating by file path.
+pub fn scan_kiwix_zim_files_multi(roots: &[std::path::PathBuf]) -> Result<Vec<DiscoveredZim>, String> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut all: Vec<DiscoveredZim> = Vec::new();
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        let batch = match scan_kiwix_zim_files(root) {
+            Ok(b) => b,
+            Err(e) => return Err(e),
+        };
+        for z in batch {
+            if seen.insert(z.path.clone()) {
+                all.push(z);
+            }
+        }
+    }
+    all.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(all)
 }
 
 /// Downloads a ZIM (or any file) from `url` into `dest_path`, calling `on_progress(downloaded_bytes, total_bytes)` periodically.

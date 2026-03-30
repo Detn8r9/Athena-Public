@@ -1,4 +1,7 @@
-# Athena
+# ATHENA
+
+Autonomous Tactical Heuristic Emergency Network Archive (ATHENA)
+
 
 Desktop app (**Tauri 2** + **React** + **Rust**). Day-to-day development happens inside the **`athena/`** folder.
 

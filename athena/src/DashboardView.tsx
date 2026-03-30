@@ -5,20 +5,34 @@ import type { AppView } from "./appView";
 import type { ReactNode } from "react";
 import {
   AlertTriangle,
+  CalendarDays,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Home,
-  Library,
   Map,
   MessageSquare,
   Radio,
-  Settings,
+  Library,
+  GraduationCap,
 } from "lucide-react";
 
 interface SystemStatsPayload {
   total_memory: number;
   used_memory: number;
   cpu_usage: number;
+  logical_cpus: number;
+  physical_cores?: number | null;
+  uptime_secs: number;
+  load_one: number;
+  load_five: number;
+  load_fifteen: number;
+  host_name?: string | null;
+  os_name?: string | null;
+  kernel_version?: string | null;
+  long_os_version?: string | null;
+  cpu_arch?: string | null;
+  cpu_brand?: string | null;
 }
 
 interface RadioLogEntry {
@@ -42,6 +56,18 @@ interface DeviceStatsPayload {
   net_tx_bytes: number;
   disk_read_bytes_total: number;
   disk_write_bytes_total: number;
+  logical_cpus: number;
+  physical_cores?: number | null;
+  uptime_secs: number;
+  load_one: number;
+  load_five: number;
+  load_fifteen: number;
+  host_name?: string | null;
+  os_name?: string | null;
+  kernel_version?: string | null;
+  long_os_version?: string | null;
+  cpu_arch?: string | null;
+  cpu_brand?: string | null;
   cpu_temp_c?: number | null;
   gpu_usage_pct?: number | null;
   battery_pct?: number | null;
@@ -74,7 +100,7 @@ function LauncherIcon({ children }: { children: ReactNode }) {
   );
 }
 
-const LAUNCHER_ITEMS: Array<{ key: DashboardDestination; label: string; icon: ReactNode }> = [
+function buildLauncherItems(): Array<{ key: DashboardDestination; label: string; icon: ReactNode }> { return [
   {
     key: "home",
     label: "Home",
@@ -103,7 +129,25 @@ const LAUNCHER_ITEMS: Array<{ key: DashboardDestination; label: string; icon: Re
     ),
   },
   {
-    key: "library",
+    key: "calendar",
+    label: "Calendar",
+    icon: (
+      <LauncherIcon>
+        <CalendarDays size={20} strokeWidth={2} aria-hidden />
+      </LauncherIcon>
+    ),
+  },
+  {
+    key: "academy",
+    label: "Academy",
+    icon: (
+      <LauncherIcon>
+        <GraduationCap size={20} strokeWidth={2} aria-hidden />
+      </LauncherIcon>
+    ),
+  },
+  {
+    key: "archive",
     label: "Library",
     icon: (
       <LauncherIcon>
@@ -111,25 +155,17 @@ const LAUNCHER_ITEMS: Array<{ key: DashboardDestination; label: string; icon: Re
       </LauncherIcon>
     ),
   },
-  {
-    key: "radio",
-    label: "Comms",
-    icon: (
-      <LauncherIcon>
-        <Radio size={20} strokeWidth={2} aria-hidden />
-      </LauncherIcon>
-    ),
-  },
-  {
-    key: "settings",
-    label: "Settings",
-    icon: (
-      <LauncherIcon>
-        <Settings size={20} strokeWidth={2} aria-hidden />
-      </LauncherIcon>
-    ),
-  },
-];
+]; }
+
+
+function formatUptime(sec: number): string {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
 
 function ThinBar({ percent }: { percent: number }) {
   const clamped = Math.max(0, Math.min(100, percent));
@@ -148,6 +184,7 @@ function ThinBar({ percent }: { percent: number }) {
 }
 
 export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) {
+  const launcherItems = useMemo(() => buildLauncherItems(), []);
   const pageVisible = usePageVisible();
   const [stats, setStats] = useState<SystemStatsPayload | null>(null);
   const [statsErr, setStatsErr] = useState<string | null>(null);
@@ -177,7 +214,7 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
       }
     };
     void load();
-    const pollMs = pageVisible ? 5000 : 60000;
+    const pollMs = pageVisible ? 1000 : 60000;
     timer = setInterval(() => void load(), pollMs);
     return () => {
       cancelled = true;
@@ -198,7 +235,7 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
       }
     };
     void loadRecentComms();
-    const pollMs = pageVisible ? 8000 : 120000;
+    const pollMs = pageVisible ? 10000 : 120000;
     const timer = setInterval(() => void loadRecentComms(), pollMs);
     return () => {
       cancelled = true;
@@ -261,7 +298,7 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
       }
     };
     void tick();
-    const pollMs = pageVisible ? 3000 : 30000;
+    const pollMs = pageVisible ? 1000 : 60000;
     const id = setInterval(() => void tick(), pollMs);
     return () => {
       cancelled = true;
@@ -334,6 +371,21 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
                 <ThinBar percent={memoryPct} />
               </div>
             </div>
+            {stats ? (
+              <p className="text-muted" style={{ margin: "0.35rem 0 0", fontSize: "0.72rem", lineHeight: 1.45, wordBreak: "break-word" }}>
+                {[
+                  stats.host_name ?? undefined,
+                  `${formatUptime(stats.uptime_secs)} up`,
+                  `load ${stats.load_one.toFixed(2)} ${stats.load_five.toFixed(2)} ${stats.load_fifteen.toFixed(2)}`,
+                  stats.physical_cores != null
+                    ? `${stats.logical_cpus} threads / ${stats.physical_cores} cores`
+                    : `${stats.logical_cpus} threads`,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+                {stats.cpu_brand ? ` · ${stats.cpu_brand}` : ""}
+              </p>
+            ) : null}
             {systemExpanded ? (
               <div className="dashboard-system-expanded-grid">
                 {detailErr ? (
@@ -342,6 +394,45 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
                   </p>
                 ) : detailStats ? (
                   <>
+                    <div className="dashboard-system-metric">
+                      <span>Hostname</span>
+                      <span>{detailStats.host_name ?? "—"}</span>
+                    </div>
+                    <div className="dashboard-system-metric">
+                      <span>OS</span>
+                      <span>{detailStats.long_os_version ?? detailStats.os_name ?? "—"}</span>
+                    </div>
+                    <div className="dashboard-system-metric">
+                      <span>Kernel</span>
+                      <span>{detailStats.kernel_version ?? "—"}</span>
+                    </div>
+                    <div className="dashboard-system-metric">
+                      <span>CPU</span>
+                      <span>{detailStats.cpu_brand ?? "—"}</span>
+                    </div>
+                    <div className="dashboard-system-metric">
+                      <span>Arch</span>
+                      <span>{detailStats.cpu_arch ?? "—"}</span>
+                    </div>
+                    <div className="dashboard-system-metric">
+                      <span>Uptime</span>
+                      <span>{formatUptime(detailStats.uptime_secs)}</span>
+                    </div>
+                    <div className="dashboard-system-metric">
+                      <span>Load avg</span>
+                      <span>
+                        {detailStats.load_one.toFixed(2)} / {detailStats.load_five.toFixed(2)} /{" "}
+                        {detailStats.load_fifteen.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="dashboard-system-metric">
+                      <span>Processors</span>
+                      <span>
+                        {detailStats.physical_cores != null
+                          ? `${detailStats.logical_cpus} logical / ${detailStats.physical_cores} physical`
+                          : `${detailStats.logical_cpus} logical`}
+                      </span>
+                    </div>
                     <div className="dashboard-system-metric">
                       <span>CPU (telemetry)</span>
                       <span>{detailStats.cpu_usage_pct.toFixed(1)}%</span>
@@ -462,7 +553,35 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
           className="glass-panel dashboard-recent-comms"
           style={{ padding: "0.8rem" }}
         >
-          <h3 style={{ margin: "0 0 0.65rem", color: "var(--primary)" }}>Recent Comms</h3>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "0.5rem",
+              flexWrap: "wrap",
+              marginBottom: "0.65rem",
+            }}
+          >
+            <h3 style={{ margin: 0, color: "var(--primary)" }}>Recent Comms</h3>
+            <button
+              type="button"
+              className="glass-action-btn"
+              onClick={() => onNavigate("radio")}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.35rem",
+                fontSize: "0.82rem",
+                padding: "0.35rem 0.65rem",
+              }}
+              aria-label="Open Comms"
+            >
+              <Radio size={16} strokeWidth={2} aria-hidden />
+              Open Comms
+              <ChevronRight size={16} strokeWidth={2} aria-hidden />
+            </button>
+          </div>
           {logs.length === 0 ? (
             <p className="text-muted" style={{ margin: 0 }}>
               No recent radio traffic.
@@ -490,7 +609,7 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
             alignContent: "start",
           }}
         >
-          {LAUNCHER_ITEMS.map((item) => (
+          {launcherItems.map((item) => (
             <button
               key={item.key}
               type="button"

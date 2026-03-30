@@ -10,6 +10,7 @@ import {
   Satellite,
   Smartphone,
   Wifi,
+  Home,
 } from "lucide-react";
 import { getPoiLucideIcon, POI_CUSTOM_LUCIDE_GRID, POI_PRESET_ENTRIES } from "./tacticalLucideIconRegistry";
 
@@ -21,10 +22,13 @@ export interface TacticalPinSavePayload {
   pinLayer: "resource" | "network";
   lat: number;
   lng: number;
+  /** Network pins only: stored in notes as @range_m:<meters> via description tail. */
+  coverageRadiusMeters?: number | null;
 }
 
 /** Meshtastic / RF / IP comms — stored with `@network` when Network tab is active. */
 const NETWORK_PRESET_ENTRIES: readonly { label: string; lucideIconName: string; Icon: LucideIcon }[] = [
+  { label: "Home", lucideIconName: "Home", Icon: Home },
   { label: "Mesh / net", lucideIconName: "Network", Icon: Network },
   { label: "Radio tower", lucideIconName: "RadioTower", Icon: RadioTower },
   { label: "Radio", lucideIconName: "Radio", Icon: Radio },
@@ -53,6 +57,7 @@ export function PoiDetailsModal({ open, onClose, latLng, onSave }: PoiDetailsMod
   const [iconSearch, setIconSearch] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [networkCoverageRadiusM, setNetworkCoverageRadiusM] = useState("");
 
   useEffect(() => {
     if (!open) {
@@ -63,6 +68,7 @@ export function PoiDetailsModal({ open, onClose, latLng, onSave }: PoiDetailsMod
       setIconSearch("");
       setSaveError(null);
       setSaving(false);
+      setNetworkCoverageRadiusM("");
     }
   }, [open]);
 
@@ -73,6 +79,7 @@ export function PoiDetailsModal({ open, onClose, latLng, onSave }: PoiDetailsMod
       setSelectedLucideIconName("");
       setIconSearch("");
       setSaveError(null);
+      setNetworkCoverageRadiusM("");
     }
   }, [open, latLng?.lat, latLng?.lng]);
 
@@ -99,6 +106,14 @@ export function PoiDetailsModal({ open, onClose, latLng, onSave }: PoiDetailsMod
     setSaveError(null);
     setSaving(true);
     try {
+      let coverageRadiusMeters: number | null = null;
+      if (activeTab === "network") {
+        const raw = networkCoverageRadiusM.trim();
+        if (raw !== "") {
+          const n = Number.parseFloat(raw);
+          if (Number.isFinite(n) && n > 0) coverageRadiusMeters = n;
+        }
+      }
       await onSave({
         name,
         description: description.trim(),
@@ -106,6 +121,7 @@ export function PoiDetailsModal({ open, onClose, latLng, onSave }: PoiDetailsMod
         pinLayer: activeTab === "network" ? "network" : "resource",
         lat: latLng.lat,
         lng: latLng.lng,
+        coverageRadiusMeters,
       });
       onClose();
     } catch (e) {
@@ -113,7 +129,7 @@ export function PoiDetailsModal({ open, onClose, latLng, onSave }: PoiDetailsMod
     } finally {
       setSaving(false);
     }
-  }, [activeTab, description, latLng, onClose, onSave, pinName, selectedLucideIconName]);
+  }, [activeTab, description, latLng, networkCoverageRadiusM, onClose, onSave, pinName, selectedLucideIconName]);
 
   if (!open || latLng === null) {
     return null;
@@ -318,6 +334,24 @@ export function PoiDetailsModal({ open, onClose, latLng, onSave }: PoiDetailsMod
                     Radios, mesh, and connectivity. Pins save as <strong>network</strong> markers (shown with network layers).
                   </p>
                   {networkGrid}
+                  <label className="poi-details-name-label" htmlFor="poi-network-coverage-m">
+                    Coverage radius (meters)
+                  </label>
+                  <input
+                    id="poi-network-coverage-m"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    step={10}
+                    className="poi-details-name-input"
+                    value={networkCoverageRadiusM}
+                    onChange={(e) => setNetworkCoverageRadiusM(e.target.value)}
+                    placeholder="Optional — e.g. 500"
+                    aria-describedby="poi-network-coverage-hint"
+                  />
+                  <p id="poi-network-coverage-hint" className="text-muted small" style={{ margin: "0.25rem 0 0" }}>
+                    When set, a coverage circle appears on the map with mesh coverage (Network family → Coverage circles).
+                  </p>
                 </>
               ) : null}
               {activeTab === "custom" ? (

@@ -71,11 +71,7 @@ fn parse_mac_time_to_empty_minutes(line: &str) -> Option<u32> {
         let t = token.trim_matches(|c| c == '(' || c == ')' || c == ';');
         if t.contains(':') {
             let parts: Vec<&str> = t.split(':').collect();
-            if parts.len() == 2 {
-                if let (Ok(h), Ok(m)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                    return Some(h.saturating_mul(60).saturating_add(m));
-                }
-            } else if parts.len() == 3 {
+            if matches!(parts.len(), 2 | 3) {
                 if let (Ok(h), Ok(m)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
                     return Some(h.saturating_mul(60).saturating_add(m));
                 }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Athena",
+  "productName": "ATHENA",
   "version": "0.1.0",
   "identifier": "com.athena.micro",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Athena",
+        "title": "ATHENA",
         "width": 800,
         "height": 600,
         "maximizable": true
@@ -25,7 +25,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["bin/pmtiles", "ollama"],
+    "externalBin": [
+      "bin/pmtiles",
+      "bin/tesseract",
+      "bin/pdftoppm",
+      "ollama"
+    ],
     "macOS": {
       "entitlements": "./Entitlements.plist"
     },
@@ -35,6 +40,12 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/embedding",
+      "resources/reranker",
+      "resources/tessdata/*",
+      "payload/**/*"
     ]
   }
 }

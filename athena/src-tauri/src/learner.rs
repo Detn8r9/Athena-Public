@@ -80,14 +80,18 @@ Keep it under ~1200 words."#;
                     "kind": "learned_note"
                 })
                 .to_string();
+                let title = format!("Learned: {}", source_name);
                 db.upsert_file(
                     &learned_path,
                     "learned",
-                    &format!("Learned: {}", source_name),
+                    &title,
                     None,
                     None,
                     Some(note.trim()),
                     Some(&meta),
+                    Some(title.as_str()),
+                    None,
+                    None,
                 )?;
                 return Ok(());
             }
@@ -125,7 +129,8 @@ pub fn build_learned_notes_for_all_text(
         if text.len() > 2_000_000 {
             continue;
         }
-        if ensure_learned_note_for_text(db, config, ollama_models, &f.path, &f.name, &text).is_ok() {
+        if ensure_learned_note_for_text(db, config, ollama_models, &f.path, &f.name, &text).is_ok()
+        {
             made += 1;
         }
     }

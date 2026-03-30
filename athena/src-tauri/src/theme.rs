@@ -40,7 +40,7 @@ pub fn get_active_theme(config: &AppConfig) -> ThemePreset {
     let theme_id = config
         .theme_id
         .as_deref()
-        .or_else(|| config.personality_id.as_deref())
+        .or(config.personality_id.as_deref())
         .unwrap_or("default");
     PRESETS
         .iter()

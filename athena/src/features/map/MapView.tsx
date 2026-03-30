@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createElement, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -193,10 +193,19 @@ function parseTacticalLucideIconName(notes: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Meters from `@range_m:123` in tactical POI notes (network coverage). */
+function parseTacticalNetworkCoverageRadiusMeters(notes: string): number | null {
+  const m = notes.match(/@range_m:(\d+)/i);
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function stripTacticalNotesBody(notes: string): string {
   return notes
     .replace(/@network\b/gi, "")
     .replace(/@icon:[A-Za-z0-9]+/gi, "")
+    .replace(/@range_m:\d+\b/gi, "")
     .replace(/@(power|water|food|equipment)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -399,6 +408,15 @@ function SatelliteDownloadBoxTool({
   return null;
 }
 
+/** Applies parent-controlled center/zoom without remounting the map (avoids flash on zoom changes). */
+function MapExternalViewSync({ center, zoom }: { center: [number, number]; zoom: number }) {
+  const map = useMap();
+  useEffect(() => {
+    map.setView(center, zoom, { animate: true });
+  }, [map, center[0], center[1], zoom]);
+  return null;
+}
+
 interface MapViewProps {
   pois: Poi[];
   /** When omitted and `embedded` is true, no back control is shown. */
@@ -449,6 +467,7 @@ interface MapViewProps {
     pinLayer: "resource" | "network";
     lat: number;
     lng: number;
+    coverageRadiusMeters?: number | null;
   }) => Promise<void>;
   tacticalLayerVisibility: TacticalLayerVisibilityState;
   onTacticalLayerVisibilityChange: (next: TacticalLayerVisibilityState) => void;
@@ -1127,14 +1146,17 @@ export function MapView({
         data-map-contextmenu-lng={rightClickPinLatLng != null ? String(rightClickPinLatLng.lng) : undefined}
       >
         <MapContainer
-          key={`${mapCenter[0]}-${mapCenter[1]}-${mapZoom}`}
           center={mapCenter}
           zoom={mapZoom}
           zoomAnimation={true}
           fadeAnimation={true}
+          zoomSnap={0.25}
+          zoomDelta={0.5}
+          wheelPxPerZoomLevel={96}
           className="map-view-map"
           style={{ height: "100%", width: "100%" }}
         >
+          <MapExternalViewSync center={mapCenter} zoom={mapZoom} />
           {showOnlineOsmBase && (
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -1303,17 +1325,35 @@ export function MapView({
               return tacticalLayerVisibility.resources[classification.kind];
             })
             .map((point) => {
+              const classification = classifyTacticalPoint(point.notes);
               const kind = parseTacticalResourceKind(point.notes);
               const notesBody = stripTacticalNotesBody(point.notes);
               const lucideName = parseTacticalLucideIconName(point.notes);
               const lucideIcon = lucideName != null ? getTacticalLucideMarkerIcon(lucideName) : null;
               const markerIcon = lucideIcon ?? tacticalResourceIcons[kind];
+              const networkCoverageM =
+                classification.bucket === "network_pin" ? parseTacticalNetworkCoverageRadiusMeters(point.notes) : null;
+              const showNetCoverage =
+                networkCoverageM != null &&
+                networkCoverageM > 0 &&
+                tacticalLayerVisibility.activeFamily === "network" &&
+                tacticalLayerVisibility.network.coverageCircles;
               return (
-                <Marker
-                  key={`tactical-resource-${point.id}`}
-                  position={[point.lat, point.lon]}
-                  icon={markerIcon}
-                >
+                <Fragment key={`tactical-resource-${point.id}`}>
+                  {showNetCoverage ? (
+                    <Circle
+                      center={[point.lat, point.lon]}
+                      radius={networkCoverageM}
+                      pathOptions={{
+                        color: "#38bdf8",
+                        weight: 1,
+                        opacity: 0.5,
+                        fillColor: "#38bdf8",
+                        fillOpacity: 0.07,
+                      }}
+                    />
+                  ) : null}
+                  <Marker position={[point.lat, point.lon]} icon={markerIcon}>
                   <Popup>
                     <strong>{point.name}</strong>
                     {notesBody.length > 0 ? <p>{notesBody}</p> : null}
@@ -1335,6 +1375,7 @@ export function MapView({
                     </div>
                   </Popup>
                 </Marker>
+                </Fragment>
               );
             })}
           {layerFilters.pois &&

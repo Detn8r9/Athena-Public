@@ -1,8 +1,10 @@
-# Athena — complete application reference
+# ATHENA — complete application reference
+
+**Autonomous Tactical Heuristic Emergency Network Archive (ATHENA)** — the product is referred to as **Athena** in the UI.
 
 This document describes the **Athena** desktop application in full: purpose, architecture, features, settings, and behavior. It is intended for retrieval when the user prefixes a chat message with **`/athena`** so the model can answer accurately about the app itself.
 
-**Version note:** This file ships with the application source tree. Feature names and behavior refer to the Athena Micro / `athena` Tauri app unless stated otherwise.
+**Version note:** This file ships with the application source tree. Feature names and behavior refer to the `athena` Tauri app unless stated otherwise.
 
 ---
 

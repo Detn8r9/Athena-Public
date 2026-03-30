@@ -1,6 +1,6 @@
 //! User display name, birthdate, age gate for NSFW catalog, birthday check.
 
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, Local, NaiveDate};
 
 /// Returns age in full years if birthdate parses as YYYY-MM-DD; None if missing/invalid.
 pub fn age_years_from_birthdate_iso(iso: Option<&str>) -> Option<u32> {
@@ -9,7 +9,7 @@ pub fn age_years_from_birthdate_iso(iso: Option<&str>) -> Option<u32> {
         return None;
     }
     let birth = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
-    let today = Utc::now().date_naive();
+    let today = Local::now().date_naive();
     if birth > today {
         return Some(0);
     }
@@ -22,7 +22,9 @@ pub fn age_years_from_birthdate_iso(iso: Option<&str>) -> Option<u32> {
 }
 
 pub fn is_at_least_18(iso: Option<&str>) -> bool {
-    age_years_from_birthdate_iso(iso).map(|a| a >= 18).unwrap_or(false)
+    age_years_from_birthdate_iso(iso)
+        .map(|a| a >= 18)
+        .unwrap_or(false)
 }
 
 /// True if today's calendar month/day matches birth (ignores year).
@@ -44,7 +46,7 @@ pub fn is_birthday_today(iso: Option<&str>) -> bool {
     let Ok(birth) = NaiveDate::parse_from_str(s, "%Y-%m-%d") else {
         return false;
     };
-    let today = Utc::now().date_naive();
+    let today = Local::now().date_naive();
     birth.month() == today.month() && birth.day() == today.day()
 }
 

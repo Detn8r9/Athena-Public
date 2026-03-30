@@ -143,6 +143,7 @@ fn serve_get<R: Runtime>(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn resolve_tile_request<R: Runtime>(
     application_handle: &AppHandle<R>,
     uri_path: &str,

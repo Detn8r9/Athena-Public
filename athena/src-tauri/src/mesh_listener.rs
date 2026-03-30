@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::db::Database;
+use crate::db::{Database, LogbookEntry};
+use crate::lan_sync;
+use crate::mesh_calendar;
 use crate::mesh_logbook;
 
 use meshtastic::api::StreamApi;
@@ -32,8 +34,8 @@ use crate::mesh_radio::MeshRadioSerialLink;
 const MESH_CMD_QUEUE_CAPACITY: usize = 100;
 /// Capacity for pending UI mesh-text notifications before throttle drains.
 const MESH_TEXT_QUEUE_CAPACITY: usize = 200;
-/// At most five `athena:mesh-text` emissions per second (one every 200 ms).
-const MESH_TEXT_EMIT_INTERVAL_MS: u64 = 200;
+/// At most ~3 `athena:mesh-text` emissions per second (battery-friendly; still feels instant).
+const MESH_TEXT_EMIT_INTERVAL_MS: u64 = 350;
 /// If the UI cannot keep up, drop oldest pending mesh-text payloads after this many.
 const MESH_TEXT_PENDING_CAP: usize = 500;
 
@@ -171,6 +173,55 @@ async fn respond_logbook_sync_request(
     for entry in entries {
         let wire = mesh_logbook::wire_from_logbook_entry(&entry, my_node);
         let packet = match mesh_logbook::encode_logbook_packet(&wire) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        match cmd_tx.try_send(MeshCommand::SendText {
+            text: packet,
+            want_ack: false,
+            channel: PRIMARY_MESH_CHANNEL,
+            destination: None,
+            reply: reply_tx,
+        }) {
+            Ok(()) => {}
+            Err(TrySendError::Full(cmd)) => {
+                fail_mesh_command(cmd, "Meshtastic command queue is full.".to_string());
+                break;
+            }
+            Err(TrySendError::Closed(cmd)) => {
+                fail_mesh_command(cmd, "Meshtastic command channel closed.".to_string());
+                break;
+            }
+        }
+        let _ = reply_rx.await;
+        tokio::time::sleep(std::time::Duration::from_millis(420)).await;
+    }
+}
+
+/// After another device sends `ATHCAL1:{"t":"req"}`, push recent local calendar rows on Primary.
+async fn respond_calendar_sync_request(
+    db: Arc<Mutex<Database>>,
+    cmd_tx: Sender<MeshCommand>,
+    my_node: u32,
+) {
+    if my_node == 0 {
+        return;
+    }
+    let rows = match db
+        .lock()
+        .map_err(|e| e.to_string())
+        .and_then(|g| g.list_calendar_recent_for_mesh_share(16))
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[mesh] calendar sync: list failed: {e}");
+            return;
+        }
+    };
+    for ev in rows {
+        let wire = mesh_calendar::wire_from_calendar_event(&ev, my_node);
+        let packet = match mesh_calendar::encode_calendar_packet(&wire) {
             Ok(p) => p,
             Err(_) => continue,
         };
@@ -357,6 +408,12 @@ async fn sleep_or_command(
     }
 }
 
+/// Fast retries while the user may be connecting, then slow polling to reduce CPU/log overhead.
+/// A plugged-in radio is still detected on the next slow interval.
+const SERIAL_OPEN_BURST_ATTEMPTS: u32 = 5;
+const SERIAL_OPEN_BURST_DELAY_SECS: u64 = 3;
+const SERIAL_OPEN_IDLE_DELAY_SECS: u64 = 90;
+
 async fn mesh_radio_main_loop(
     app: tauri::AppHandle,
     app_data_dir: PathBuf,
@@ -371,13 +428,28 @@ async fn mesh_radio_main_loop(
 
     loop {
         notify_mesh_connected(&app, false);
+        let mut serial_open_failures: u32 = 0;
         let stream_handle = 'open_serial: loop {
             let link = MeshRadioSerialLink::new(None);
             match link.open_stream() {
                 Ok(h) => break 'open_serial h,
                 Err(e) => {
-                    eprintln!("[mesh] no serial yet: {e}");
-                    match sleep_or_command(std::time::Duration::from_secs(3), &mut cmd_rx).await {
+                    serial_open_failures += 1;
+                    if serial_open_failures <= SERIAL_OPEN_BURST_ATTEMPTS {
+                        eprintln!("[mesh] no serial yet: {e}");
+                    } else if serial_open_failures == SERIAL_OPEN_BURST_ATTEMPTS + 1 {
+                        eprintln!(
+                            "[mesh] no serial after {SERIAL_OPEN_BURST_ATTEMPTS} tries; polling every {SERIAL_OPEN_IDLE_DELAY_SECS}s (plug in radio when ready)"
+                        );
+                    }
+                    let delay_secs = if serial_open_failures <= SERIAL_OPEN_BURST_ATTEMPTS {
+                        SERIAL_OPEN_BURST_DELAY_SECS
+                    } else {
+                        SERIAL_OPEN_IDLE_DELAY_SECS
+                    };
+                    match sleep_or_command(std::time::Duration::from_secs(delay_secs), &mut cmd_rx)
+                        .await
+                    {
                         None => continue,
                         Some(cmd) => fail_mesh_command(
                             cmd,
@@ -448,6 +520,21 @@ async fn mesh_radio_main_loop(
                                                     )
                                                 }) {
                                                     Some(Ok(true)) => {
+                                                        let entry = LogbookEntry {
+                                                            id: wire.id.clone(),
+                                                            body: wire.b.clone(),
+                                                            created_at: wire.c,
+                                                            from_node_id: Some(author),
+                                                            author_name: String::new(),
+                                                            author_occupation: String::new(),
+                                                            parent_entry_id: None,
+                                                        };
+                                                        if let Ok(v) = serde_json::to_value(&entry) {
+                                                            lan_sync::publish_local_sync_row(
+                                                                lan_sync::LAN_TBL_LOGBOOK_ENTRIES,
+                                                                v,
+                                                            );
+                                                        }
                                                         let _ = app.emit("athena:logbook-updated", ());
                                                     }
                                                     Some(Ok(false)) => {}
@@ -456,6 +543,37 @@ async fn mesh_radio_main_loop(
                                                     }
                                                     None => {
                                                         eprintln!("[mesh] logbook insert skipped: database lock poisoned");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else if let Some(inbound) = mesh_calendar::try_parse_calendar_packet(&text) {
+                                        match inbound {
+                                            mesh_calendar::CalendarMeshInbound::SyncRequest => {
+                                                let my = my_node_num.load(Ordering::Relaxed);
+                                                if my != 0 && from != my {
+                                                    let db_s = Arc::clone(&db);
+                                                    let cmd_s = cmd_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        respond_calendar_sync_request(db_s, cmd_s, my).await;
+                                                    });
+                                                }
+                                            }
+                                            mesh_calendar::CalendarMeshInbound::Entry(wire) => {
+                                                let author = wire.o.unwrap_or(from);
+                                                let event = mesh_calendar::calendar_event_from_wire(wire, author);
+                                                match db.lock().ok().map(|g| {
+                                                    g.upsert_calendar_event_from_mesh(&event)
+                                                }) {
+                                                    Some(Ok(true)) => {
+                                                        let _ = app.emit("athena:calendar-updated", ());
+                                                    }
+                                                    Some(Ok(false)) => {}
+                                                    Some(Err(e)) => {
+                                                        eprintln!("[mesh] calendar insert failed: {e}");
+                                                    }
+                                                    None => {
+                                                        eprintln!("[mesh] calendar insert skipped: database lock poisoned");
                                                     }
                                                 }
                                             }
@@ -478,6 +596,7 @@ async fn mesh_radio_main_loop(
                                 if cfg.mesh_ai_auto_reply.unwrap_or(true)
                                     && should_run_mesh_ai(from, to, my, channel)
                                     && !mesh_logbook::is_logbook_mesh_text(&text)
+                                    && !mesh_calendar::is_calendar_mesh_text(&text)
                                 {
                                     let display_name = node_names
                                         .lock()

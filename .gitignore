@@ -46,6 +46,12 @@ dist-ssr/
 target/
 **/target/
 **/.cargo-target-phase4/
+# Custom CARGO_TARGET_DIR trees under athena/src-tauri (local builds; multi-GB)
+athena/src-tauri/target-check/
+athena/src-tauri/target-local/
+athena/src-tauri/target-local-agent/
+athena/src-tauri/target-local-agent-check/
+athena/src-tauri/target-phase2b/
 
 # --- Tauri generated ---
 **/gen/schemas/

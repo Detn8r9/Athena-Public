@@ -8,6 +8,7 @@ use tauri::Emitter;
 use crate::chats::{get_chat, save_chat, SavedMessage};
 use crate::config::load_config;
 use crate::inference::{self, load_models_for_inference};
+use crate::mesh_calendar;
 use crate::mesh_logbook;
 use crate::ollama::ChatMessage;
 use crate::user_profile;
@@ -64,7 +65,10 @@ pub fn chunk_mesh_utf8(text: &str, max_bytes: usize) -> Vec<String> {
 }
 
 fn mesh_system_prompt(cfg: &crate::config::AppConfig) -> String {
-    let mut s = "You are Athena, a local offline survival and repair assistant. You are replying over a Meshtastic LoRa mesh: keep answers concise, practical, and plain text (no markdown tables). If you are unsure, say so briefly.".to_string();
+    let mut s = format!(
+        "You are Athena, the assistant for {}. You are a local offline survival and repair assistant. You are replying over a Meshtastic LoRa mesh: keep answers concise, practical, and plain text (no markdown tables). If you are unsure, say so briefly.",
+        crate::ATHENA_FULL_NAME
+    );
     s.push_str(&user_profile::line_display_name_for_prompt(
         cfg.user_display_name.as_deref(),
     ));
@@ -115,6 +119,9 @@ pub fn process_mesh_message_and_reply(
     if mesh_logbook::is_logbook_mesh_text(trimmed) {
         return Err("Logbook sync packet (not a chat prompt).".to_string());
     }
+    if mesh_calendar::is_calendar_mesh_text(trimmed) {
+        return Err("Calendar sync packet (not a chat prompt).".to_string());
+    }
 
     let models = load_models_for_inference(&cfg);
     inference::ensure_inference_ready(&cfg, &models)?;
@@ -131,7 +138,8 @@ pub fn process_mesh_message_and_reply(
     let system = mesh_system_prompt(&cfg);
     let ollama_msgs = build_ollama_messages(&system, &prev, trimmed, max_memory);
 
-    let reply = inference::chat_unified(&cfg, &models, ollama_msgs, None).map_err(|e| e.to_string())?;
+    let reply =
+        inference::chat_unified(&cfg, &models, ollama_msgs, None).map_err(|e| e.to_string())?;
     let reply_trimmed = reply.trim();
     if reply_trimmed.is_empty() {
         return Err("Model returned an empty reply.".to_string());

@@ -1,0 +1,64 @@
+{
+  "tiers": [
+    {
+      "name": "The Satchel",
+      "description": "Essential emergency data and lightweight local reference. Offline maps are US state Protomaps extracts chosen from your installer location (home state plus nearby states when you are close to a border).",
+      "display_total_label": "~3.4 GB + regional maps",
+      "files": [
+        {
+          "name": "Wikipedia Simple English",
+          "category": "Academy",
+          "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_simple_all_maxi_2026-02.zim",
+          "destination": "library/academy/",
+          "size_bytes": 3413847238,
+          "academy_age_group_id": "ms",
+          "academy_subject_id": "reading"
+        }
+      ]
+    },
+    {
+      "name": "The Vault",
+      "description": "A massive, highly redundant data package meant for a dedicated home server array.",
+      "display_total_label": "~145 GB",
+      "files": [
+        {
+          "name": "Wikipedia English (Full)",
+          "category": "Academy",
+          "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_maxi_2026-02.zim",
+          "destination": "library/academy/",
+          "size_bytes": 123980647016,
+          "academy_age_group_id": "hs",
+          "academy_subject_id": "reference"
+        },
+        {
+          "name": "North America Topographical Map",
+          "category": "Maps",
+          "url": "https://data.protomaps.com/extracts/north_america.pmtiles",
+          "destination": "library/maps/",
+          "size_bytes": 21474836480
+        }
+      ]
+    },
+    {
+      "name": "Alexandria",
+      "description": "The uncompromising, complete offline backup of civilization.",
+      "display_total_label": "~350 GB",
+      "files": [
+        {
+          "name": "Global Planet Map",
+          "category": "Maps",
+          "url": "https://data.protomaps.com/extracts/planet.pmtiles",
+          "destination": "library/maps/",
+          "size_bytes": 128849018880
+        },
+        {
+          "name": "Project Gutenberg (Complete Library)",
+          "category": "Literature",
+          "url": "https://download.kiwix.org/zim/gutenberg/gutenberg_en_all_2025-11.zim",
+          "destination": "library/literature/",
+          "size_bytes": 221251590584
+        }
+      ]
+    }
+  ]
+}

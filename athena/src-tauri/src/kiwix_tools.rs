@@ -15,7 +15,11 @@ fn looks_safe_tool_path(p: &Path) -> bool {
 }
 
 /// Run `kiwix-search ZIM QUERY` and return stdout lines (best-effort).
-pub fn kiwix_search_lines(binary: &str, zim_path: &str, query: &str) -> Result<Vec<String>, String> {
+pub fn kiwix_search_lines(
+    binary: &str,
+    zim_path: &str,
+    query: &str,
+) -> Result<Vec<String>, String> {
     let bin = Path::new(binary.trim());
     let zim = Path::new(zim_path.trim());
     if !looks_safe_tool_path(bin) {

@@ -8,7 +8,7 @@ const WATCHDOG_TEST_T0 = 10_000_000;
 
 /**
  * Minimal harness that mirrors the main-chat watchdog interval in App.tsx:
- * 1s tick, uses the same `evaluateMainChatWatchdog` helper.
+ * 2s tick, uses the same `evaluateMainChatWatchdog` helper.
  */
 function MainChatWatchdogHarness() {
   const [sending, setSending] = useState(true);
@@ -33,7 +33,7 @@ function MainChatWatchdogHarness() {
         setSending(false);
       }
     };
-    const id = window.setInterval(tick, 1000);
+    const id = window.setInterval(tick, 2000);
     return () => window.clearInterval(id);
   }, [sending]);
 
@@ -70,7 +70,7 @@ describe("main chat stream watchdog (Phase 1)", () => {
     vi.setSystemTime(t0 + 31_000);
 
     await act(async () => {
-      vi.advanceTimersByTime(1000);
+      vi.advanceTimersByTime(2000);
     });
 
     expect(screen.getByTestId("sending-state")).toHaveTextContent("idle");

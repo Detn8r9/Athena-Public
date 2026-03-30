@@ -1,182 +1,22 @@
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::collections::{HashMap, HashSet};
 
+use crate::chunking;
+use crate::embeddings;
+use crate::indexer;
+use crate::vector_index;
+use crate::indexer::index_zim_file;
+use crate::AppState;
 use futures_util::StreamExt;
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tauri::Manager;
+use tauri::State;
 use uuid::Uuid;
-use crate::indexer::index_zim_file;
 
-/// N.O.M.A.D defaults translated to character-based chunking:
-/// - TARGET_TOKENS_PER_CHUNK = 1700
-/// - CHAR_TO_TOKEN_RATIO = 3
-/// - overlap tokens = 150
-pub const DEFAULT_CHUNK_SIZE: usize = 5_100;
-pub const DEFAULT_CHUNK_OVERLAP: usize = 450;
-
-/// Chunker optimized for low-allocation splitting of large document text.
-///
-/// It prefers semantic boundaries in this order:
-/// 1) paragraph break (`\n\n`)
-/// 2) line break (`\n`)
-/// 3) sentence-ish boundary (`. `)
-/// 4) word boundary (` `)
-///
-/// Overlap is also aligned forward to one of these separators so the next chunk
-/// starts at a natural boundary whenever possible.
-#[derive(Debug, Clone, Copy)]
-pub struct DocumentChunker {
-    pub chunk_size: usize,
-    pub chunk_overlap: usize,
-}
-
-impl Default for DocumentChunker {
-    fn default() -> Self {
-        Self {
-            chunk_size: DEFAULT_CHUNK_SIZE,
-            chunk_overlap: DEFAULT_CHUNK_OVERLAP,
-        }
-    }
-}
-
-impl DocumentChunker {
-    pub fn new(chunk_size: usize, chunk_overlap: usize) -> Self {
-        let size = chunk_size.max(1);
-        let overlap = chunk_overlap.min(size.saturating_sub(1));
-        Self {
-            chunk_size: size,
-            chunk_overlap: overlap,
-        }
-    }
-
-    /// Split raw text into overlapping chunks with separator-aware boundaries.
-    pub fn chunk_text(&self, raw_text: &str) -> Vec<String> {
-        if raw_text.trim().is_empty() {
-            return Vec::new();
-        }
-
-        // N.O.M.A.D is text-first and preserves source text; only line ending normalization
-        // is applied to improve deterministic boundary checks.
-        let normalized = raw_text.replace("\r\n", "\n");
-        let text = normalized.as_str();
-        let text_len = text.len();
-
-        let mut chunks: Vec<String> = Vec::new();
-        let mut start = 0usize;
-
-        while start < text_len {
-            while start < text_len && !text.is_char_boundary(start) {
-                start += 1;
-            }
-            if start >= text_len {
-                break;
-            }
-
-            let hard_end = char_boundary_at_or_before(text, start.saturating_add(self.chunk_size))
-                .max(start + 1)
-                .min(text_len);
-
-            let mut end = if hard_end == text_len {
-                text_len
-            } else {
-                find_best_split_end(text, start, hard_end).unwrap_or(hard_end)
-            };
-
-            if end <= start {
-                end = hard_end;
-            }
-            if end <= start {
-                break;
-            }
-
-            let piece = text[start..end].trim();
-            if !piece.is_empty() {
-                chunks.push(piece.to_string());
-            }
-
-            if end >= text_len {
-                break;
-            }
-
-            let mut next_start = end.saturating_sub(self.chunk_overlap);
-            next_start = align_overlap_start(text, next_start, end);
-
-            if next_start <= start {
-                next_start = end;
-            }
-            start = next_start;
-        }
-
-        chunks
-    }
-}
-
-/// Convenience API requested for ingestion pipeline call sites.
-pub fn chunk_text(raw_text: &str) -> Vec<String> {
-    DocumentChunker::default().chunk_text(raw_text)
-}
-
-fn find_best_split_end(text: &str, start: usize, hard_end: usize) -> Option<usize> {
-    if start >= hard_end || hard_end > text.len() {
-        return None;
-    }
-    let window = &text[start..hard_end];
-    let min_len = ((hard_end - start) / 4).max(64);
-
-    // Prefer larger semantic boundaries first.
-    for sep in ["\n\n", "\n", ". ", " "] {
-        if let Some((idx, _)) = window.rmatch_indices(sep).next() {
-            let candidate = start + idx + sep.len();
-            if candidate > start && candidate - start >= min_len {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
-}
-
-fn align_overlap_start(text: &str, nominal_start: usize, end: usize) -> usize {
-    if nominal_start >= end || end > text.len() {
-        return nominal_start.min(text.len());
-    }
-
-    let nominal = char_boundary_at_or_after(text, nominal_start).min(end);
-    if nominal >= end {
-        return nominal;
-    }
-
-    let window = &text[nominal..end];
-    for sep in ["\n\n", "\n", ". ", " "] {
-        if let Some((idx, _)) = window.match_indices(sep).next() {
-            let candidate = nominal + idx + sep.len();
-            if candidate < end {
-                return candidate;
-            }
-        }
-    }
-
-    nominal
-}
-
-fn char_boundary_at_or_before(text: &str, mut idx: usize) -> usize {
-    idx = idx.min(text.len());
-    while idx > 0 && !text.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
-
-fn char_boundary_at_or_after(text: &str, mut idx: usize) -> usize {
-    idx = idx.min(text.len());
-    while idx < text.len() && !text.is_char_boundary(idx) {
-        idx += 1;
-    }
-    idx
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    embeddings::cosine_similarity(a, b)
 }
 
 /// Read supported document formats into a single UTF-8 string.
@@ -190,7 +30,9 @@ pub fn read_document_to_text(file_path: &Path) -> Result<String, String> {
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
-        .ok_or_else(|| "Unsupported file extension (expected .txt, .md, .csv, .zim, or .pdf).".to_string())?;
+        .ok_or_else(|| {
+            "Unsupported file extension (expected .txt, .md, .csv, .zim, or .pdf).".to_string()
+        })?;
 
     match ext.as_str() {
         "txt" | "md" => fs::read_to_string(file_path)
@@ -214,7 +56,9 @@ pub fn read_document_to_text(file_path: &Path) -> Result<String, String> {
             }
         },
         "zim" => read_zim_to_text(file_path),
-        _ => Err("Unsupported file extension (expected .txt, .md, .csv, .zim, or .pdf).".to_string()),
+        _ => {
+            Err("Unsupported file extension (expected .txt, .md, .csv, .zim, or .pdf).".to_string())
+        }
     }
 }
 
@@ -237,7 +81,10 @@ fn read_csv_to_text(file_path: &Path) -> Result<String, String> {
             .collect();
         let mut parts: Vec<String> = Vec::new();
         for (i, value) in cols.iter().enumerate() {
-            let key = headers.get(i).cloned().unwrap_or_else(|| format!("col_{}", i + 1));
+            let key = headers
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("col_{}", i + 1));
             if !value.is_empty() {
                 parts.push(format!("{key}: {value}"));
             }
@@ -275,32 +122,6 @@ fn read_zim_to_text(file_path: &Path) -> Result<String, String> {
     Ok(out)
 }
 
-fn tokenize_terms(text: &str) -> HashSet<String> {
-    text.split(|c: char| !c.is_ascii_alphanumeric())
-        .map(|t| t.trim().to_ascii_lowercase())
-        .filter(|t| t.len() >= 3)
-        .collect()
-}
-
-fn ensure_rag_metadata_schema(conn: &rusqlite::Connection) -> Result<(), String> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS rag_chunk_metadata (
-            chunk_id TEXT PRIMARY KEY NOT NULL,
-            source TEXT,
-            content_type TEXT,
-            tags_json TEXT,
-            article_title TEXT,
-            section_title TEXT,
-            FOREIGN KEY(chunk_id) REFERENCES rag_chunks(id) ON DELETE CASCADE
-        );
-        CREATE INDEX IF NOT EXISTS idx_rag_chunk_metadata_source ON rag_chunk_metadata(source);
-        CREATE INDEX IF NOT EXISTS idx_rag_chunk_metadata_content_type ON rag_chunk_metadata(content_type);
-        ",
-    )
-    .map_err(|e| e.to_string())
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct RagIngestionProgressPayload {
     pub file_path: String,
@@ -309,11 +130,6 @@ pub struct RagIngestionProgressPayload {
     pub chunks: usize,
     pub document_id: Option<String>,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaEmbeddingResponse {
-    embedding: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -328,7 +144,9 @@ pub struct RagSearchResult {
     pub content_type: Option<String>,
 }
 
+/// Accepted from the frontend for future filter-aware search; not applied in v1 retrieval.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct RagSearchFilters {
     pub file_types: Option<Vec<String>>,
     pub source_contains: Option<String>,
@@ -353,46 +171,11 @@ pub struct KnowledgeDownloadProgressPayload {
     pub error: Option<String>,
 }
 
-/// Generate one embedding vector from the local Ollama sidecar.
-pub async fn generate_embedding(text: String) -> Result<Vec<f32>, String> {
-    let prompt = text.trim().to_string();
-    if prompt.is_empty() {
-        return Err("Embedding prompt is empty.".to_string());
-    }
-
-    let client = reqwest::Client::new();
-    let res = client
-        .post("http://localhost:11434/api/embeddings")
-        .json(&serde_json::json!({
-            "model": "nomic-embed-text",
-            "prompt": prompt,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to call Ollama embeddings API: {e}"))?;
-
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!(
-            "Ollama embeddings request failed ({status}): {body}"
-        ));
-    }
-
-    let parsed: OllamaEmbeddingResponse = res
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse Ollama embedding response: {e}"))?;
-    if parsed.embedding.is_empty() {
-        return Err("Ollama returned an empty embedding vector.".to_string());
-    }
-    Ok(parsed.embedding)
-}
-
 #[tauri::command]
 pub async fn ingest_local_document(
     file_path: String,
     app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     let source_path = Path::new(&file_path);
     let filename = source_path
@@ -424,81 +207,43 @@ pub async fn ingest_local_document(
         }
     };
 
-    let chunker = DocumentChunker::default();
-    let chunks = chunker.chunk_text(&text);
-    let total_chunks = chunks.len();
-    let mut chunk_rows: Vec<(String, Vec<u8>, String)> = Vec::with_capacity(total_chunks);
-    let document_tags: Vec<String> = filename
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .map(|t| t.trim().to_ascii_lowercase())
-        .filter(|t| t.len() >= 3)
-        .collect();
-    let tags_json = serde_json::to_string(&document_tags).unwrap_or_else(|_| "[]".to_string());
-    for chunk_text in chunks {
-        let embedding = match generate_embedding(chunk_text.clone()).await {
-            Ok(v) => v,
-            Err(e) => {
-                emit_payload(true, 0, None, Some(e.clone()));
-                return Err(e);
-            }
-        };
-        let embedding_blob = bytemuck::cast_slice::<f32, u8>(&embedding).to_vec();
-        chunk_rows.push((chunk_text, embedding_blob, tags_json.clone()));
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let path_for_db = file_path.clone();
+    let doc_title = std::path::Path::new(&file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&filename)
+        .to_string();
+    let preview = indexer::limit_text_for_index(source_path, text.clone());
+    let meta = source_path.metadata().ok();
+    let size = meta.as_ref().map(|m| m.len() as i64);
+    let modified_at = meta
+        .and_then(|m| m.modified().ok())
+        .and_then(|st| st.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    db.upsert_file(
+        &path_for_db,
+        "text",
+        &filename,
+        size,
+        modified_at,
+        preview.as_deref(),
+        None,
+        Some(doc_title.as_str()),
+        None,
+        None,
+    )?;
+    let words = chunking::words_from_plain_text(&text);
+    let plan = chunking::build_parent_child_plan(&words, &doc_title);
+    let total_chunks: usize = plan.iter().map(|p| 1 + p.children.len()).sum();
+    if total_chunks == 0 {
+        let err = "No indexable text.".to_string();
+        emit_payload(true, 0, None, Some(err.clone()));
+        return Err(err);
     }
-
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
-    let db_path = app_data_dir.join("athena_index.db");
-    let mut conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
-    ensure_rag_metadata_schema(&conn)?;
+    vector_index::index_document(&db, &path_for_db, &doc_title, None, &text)?;
 
     let document_id = Uuid::new_v4().to_string();
-    let file_type = source_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_else(|| "txt".to_string());
-    let ingested_at = chrono::Utc::now().to_rfc3339();
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT INTO rag_documents (id, filename, file_type, total_chunks, ingested_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![document_id, filename, file_type, total_chunks as i64, ingested_at],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let mut stmt = tx
-        .prepare(
-            "INSERT INTO rag_chunks (id, document_id, chunk_index, content, embedding) VALUES (?1, ?2, ?3, ?4, ?5)",
-        )
-        .map_err(|e| e.to_string())?;
-    let mut metadata_stmt = tx
-        .prepare(
-            "INSERT OR REPLACE INTO rag_chunk_metadata (chunk_id, source, content_type, tags_json, article_title, section_title)
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL)",
-        )
-        .map_err(|e| e.to_string())?;
-    for (idx, (content, embedding_blob, tags_json)) in chunk_rows.iter().enumerate() {
-        let chunk_id = Uuid::new_v4().to_string();
-        stmt.execute(params![
-            chunk_id,
-            document_id,
-            idx as i64,
-            content,
-            embedding_blob
-        ])
-        .map_err(|e| e.to_string())?;
-        metadata_stmt
-            .execute(params![chunk_id, filename, file_type, tags_json])
-            .map_err(|e| e.to_string())?;
-    }
-    drop(stmt);
-    drop(metadata_stmt);
-    tx.commit().map_err(|e| e.to_string())?;
-
     emit_payload(true, total_chunks, Some(document_id.clone()), None);
     Ok(document_id)
 }
@@ -508,6 +253,7 @@ pub async fn download_knowledge_package(
     package_id: String,
     url: String,
     app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
 ) -> Result<bool, String> {
     let package_id = package_id.trim().to_string();
     let url = url.trim().to_string();
@@ -549,7 +295,8 @@ pub async fn download_knowledge_package(
         .app_data_dir()
         .map_err(|e| format!("Could not resolve app data directory: {e}"))?;
     let packages_dir = app_data_dir.join("knowledge_packages");
-    fs::create_dir_all(&packages_dir).map_err(|e| format!("Failed to create package directory: {e}"))?;
+    fs::create_dir_all(&packages_dir)
+        .map_err(|e| format!("Failed to create package directory: {e}"))?;
 
     let inferred_name = url
         .rsplit('/')
@@ -568,19 +315,43 @@ pub async fn download_knowledge_package(
     } else {
         inferred_name
     };
-    let out_path: PathBuf = packages_dir.join(final_name);
-    let mut out = tokio::fs::File::create(&out_path)
-        .await
-        .map_err(|e| format!("Failed to create destination file: {e}"))?;
+    let out_path: PathBuf = packages_dir.join(&final_name);
+    let _ = fs::remove_file(&out_path);
+    let file_name = out_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Could not determine destination file name.".to_string())?;
+    let part_path = out_path.with_file_name(format!("{file_name}.part"));
+    let _ = fs::remove_file(&part_path);
+
+    let mut out = match tokio::fs::File::create(&part_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            let msg = format!("Failed to create temporary download file: {e}");
+            emit_progress(0, true, Some(msg.clone()));
+            return Err(msg);
+        }
+    };
 
     let mut downloaded: u64 = 0;
     let mut last_emitted_bucket: u8 = 0;
     let mut stream = response.bytes_stream();
     while let Some(next) = stream.next().await {
-        let chunk = next.map_err(|e| format!("Download stream failed: {e}"))?;
-        tokio::io::AsyncWriteExt::write_all(&mut out, &chunk)
-            .await
-            .map_err(|e| format!("Failed writing downloaded data: {e}"))?;
+        let chunk = match next {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("Download stream failed: {e}");
+                let _ = fs::remove_file(&part_path);
+                emit_progress(0, true, Some(msg.clone()));
+                return Err(msg);
+            }
+        };
+        if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut out, &chunk).await {
+            let msg = format!("Failed writing downloaded data: {e}");
+            let _ = fs::remove_file(&part_path);
+            emit_progress(0, true, Some(msg.clone()));
+            return Err(msg);
+        }
         downloaded = downloaded.saturating_add(chunk.len() as u64);
         if total_bytes > 0 {
             let pct = ((downloaded.saturating_mul(100)) / total_bytes).min(100) as u8;
@@ -591,15 +362,26 @@ pub async fn download_knowledge_package(
             }
         }
     }
-    tokio::io::AsyncWriteExt::flush(&mut out)
-        .await
-        .map_err(|e| format!("Failed to flush destination file: {e}"))?;
+    if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut out).await {
+        let msg = format!("Failed to flush temporary download file: {e}");
+        let _ = fs::remove_file(&part_path);
+        emit_progress(0, true, Some(msg.clone()));
+        return Err(msg);
+    }
+    drop(out);
+
+    if let Err(e) = tokio::fs::rename(&part_path, &out_path).await {
+        let msg = format!("Failed to finalize download: {e}");
+        let _ = fs::remove_file(&part_path);
+        emit_progress(0, true, Some(msg.clone()));
+        return Err(msg);
+    }
 
     let path_str = out_path
         .to_str()
         .ok_or_else(|| "Downloaded path is not valid UTF-8.".to_string())?
         .to_string();
-    if let Err(e) = ingest_local_document(path_str, app_handle.clone()).await {
+    if let Err(e) = ingest_local_document(path_str, app_handle.clone(), state).await {
         emit_progress(100, true, Some(e.clone()));
         return Err(e);
     }
@@ -608,153 +390,44 @@ pub async fn download_knowledge_package(
     Ok(true)
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.is_empty() || b.is_empty() || a.len() != b.len() {
-        return 0.0;
-    }
-    let mut dot = 0.0f32;
-    let mut a_norm_sq = 0.0f32;
-    let mut b_norm_sq = 0.0f32;
-    for (x, y) in a.iter().zip(b.iter()) {
-        dot += x * y;
-        a_norm_sq += x * x;
-        b_norm_sq += y * y;
-    }
-    let denom = a_norm_sq.sqrt() * b_norm_sq.sqrt();
-    if denom <= f32::EPSILON {
-        return 0.0;
-    }
-    dot / denom
-}
-
 #[tauri::command]
 pub async fn search_rag_chunks(
     query: String,
     limit: usize,
     filters: Option<RagSearchFilters>,
     app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
 ) -> Result<Vec<RagSearchResult>, String> {
-    let query_embedding = generate_embedding(query.clone()).await?;
-    let query_terms = tokenize_terms(&query);
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    let db_path = app_data_dir.join("athena_index.db");
-    let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
-    ensure_rag_metadata_schema(&conn)?;
+    let query_embedding = embeddings::embed_text(&query);
+    let cap = limit.clamp(1, 50);
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT
-                rc.id,
-                rc.document_id,
-                rc.chunk_index,
-                rc.content,
-                rc.embedding,
-                rcm.source,
-                rcm.content_type,
-                rcm.tags_json
-             FROM rag_chunks rc
-             LEFT JOIN rag_chunk_metadata rcm ON rcm.chunk_id = rc.id
-             WHERE rc.embedding IS NOT NULL AND length(rc.embedding) > 0",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<String>>(6)?,
-                row.get::<_, Option<String>>(7)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
+    // Current v1: sqlite-vec semantic retrieval over `chunk_embeddings`.
+    // Filters are not applied at this layer yet (no per-chunk metadata is stored in `chunk_embeddings`).
+    let _ = (filters, app_handle);
 
-    let mut scored: Vec<RagSearchResult> = Vec::new();
-    let mut source_count: HashMap<String, usize> = HashMap::new();
-    for row in rows {
-        let (chunk_id, document_id, chunk_index, content, blob, source, content_type, tags_json) =
-            row.map_err(|e| e.to_string())?;
-        if let Some(ref f) = filters {
-            if let Some(ref types) = f.file_types {
-                let ct = content_type.clone().unwrap_or_default().to_ascii_lowercase();
-                if !types.iter().any(|t| t.eq_ignore_ascii_case(&ct)) {
-                    continue;
-                }
-            }
-            if let Some(ref needle) = f.source_contains {
-                let src = source.clone().unwrap_or_default().to_ascii_lowercase();
-                if !src.contains(&needle.to_ascii_lowercase()) {
-                    continue;
-                }
-            }
-            if let Some(ref ct) = f.content_type {
-                let ctv = content_type.clone().unwrap_or_default();
-                if !ctv.eq_ignore_ascii_case(ct) {
-                    continue;
-                }
-            }
-            if let Some(ref wanted_tags) = f.tags {
-                let tags: Vec<String> = tags_json
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
-                    .unwrap_or_default();
-                let set: HashSet<String> = tags.into_iter().map(|t| t.to_ascii_lowercase()).collect();
-                if !wanted_tags.iter().any(|t| set.contains(&t.to_ascii_lowercase())) {
-                    continue;
-                }
-            }
-        }
-        if blob.len() % std::mem::size_of::<f32>() != 0 {
-            continue;
-        }
-        let emb_slice = match bytemuck::try_cast_slice::<u8, f32>(&blob) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let semantic_score = cosine_similarity(&query_embedding, emb_slice);
-        let chunk_terms = tokenize_terms(&content);
-        let lexical_overlap = if query_terms.is_empty() {
-            0.0
-        } else {
-            query_terms.intersection(&chunk_terms).count() as f32 / query_terms.len() as f32
-        };
-        let src_key = source.clone().unwrap_or_default();
-        let seen = source_count.entry(src_key.clone()).or_insert(0);
-        let diversity_penalty = (*seen as f32) * 0.05;
-        *seen += 1;
-        let score = (semantic_score * 0.75) + (lexical_overlap * 0.30) - diversity_penalty;
-        scored.push(RagSearchResult {
-            chunk_id,
-            document_id,
-            chunk_index,
-            content,
-            score,
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let hits = db.search_similar_chunks(&query, cap)?;
+    let mut out: Vec<RagSearchResult> = Vec::new();
+    for h in hits {
+        let semantic_score = cosine_similarity(&query_embedding, &h.vector);
+        out.push(RagSearchResult {
+            chunk_id: format!("{}:{}", h.file_path, h.chunk_index),
+            document_id: h.file_path.clone(),
+            chunk_index: h.chunk_index,
+            content: h.chunk_text.clone(),
+            score: semantic_score,
             semantic_score,
-            source,
-            content_type,
+            source: Some(h.file_path.clone()),
+            content_type: None,
         });
     }
-
-    scored.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let cap = limit.max(1);
-    if scored.len() > cap {
-        scored.truncate(cap);
-    }
-    Ok(scored)
+    Ok(out)
 }
 
 #[tauri::command]
-pub async fn list_rag_documents(app_handle: tauri::AppHandle) -> Result<Vec<RagDocumentSummary>, String> {
+pub async fn list_rag_documents(
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<RagDocumentSummary>, String> {
     let app_data_dir = app_handle
         .path()
         .app_data_dir()
@@ -789,33 +462,10 @@ pub async fn list_rag_documents(app_handle: tauri::AppHandle) -> Result<Vec<RagD
 
 #[cfg(test)]
 mod tests {
-    use super::{DocumentChunker, DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE};
+    // Legacy chunker tests removed; chunking is now centralized in `crate::chunking`.
 
     #[test]
-    fn defaults_match_nomad_conversion() {
-        let c = DocumentChunker::default();
-        assert_eq!(c.chunk_size, DEFAULT_CHUNK_SIZE);
-        assert_eq!(c.chunk_overlap, DEFAULT_CHUNK_OVERLAP);
-        assert_eq!(c.chunk_size, 5_100);
-        assert_eq!(c.chunk_overlap, 450);
-    }
-
-    #[test]
-    fn chunking_creates_multiple_overlapping_chunks() {
-        let text = "Para one sentence one. Para one sentence two.\n\nPara two sentence one. Para two sentence two.\n\nPara three sentence one. Para three sentence two.\n\nPara four sentence one. Para four sentence two.";
-        let chunker = DocumentChunker::new(80, 20);
-        let out = chunker.chunk_text(text);
-        assert!(out.len() >= 2);
-        assert!(out[0].contains("Para one"));
-        assert!(out.last().expect("last").contains("Para four"));
-    }
-
-    #[test]
-    fn handles_unicode_boundaries_without_panics() {
-        let text = "Alpha 😄 bravo charlie.\n\nDelta echo foxtrot.\n\nGolf hotel india.";
-        let chunker = DocumentChunker::new(24, 8);
-        let out = chunker.chunk_text(text);
-        assert!(!out.is_empty());
-        assert!(out.iter().all(|s| !s.is_empty()));
+    fn placeholder() {
+        assert!(true);
     }
 }

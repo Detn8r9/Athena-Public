@@ -1,10 +1,81 @@
 use serde::{Deserialize, Serialize};
+
+/// Saved pin for Library Installer regional Protomaps downloads (US).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryInstallerLocation {
+    pub query: String,
+    pub display_name: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub state_code: String,
+}
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::user_profile;
 
 const CONFIG_FILENAME: &str = "athena_config.json";
+
+/// Resolved ONNX / chat model directories under the host app data folder (`models/...`).
+#[derive(Debug, Clone)]
+pub struct ModelDirectoryPaths {
+    pub models_root: PathBuf,
+    pub chat_models: PathBuf,
+    pub embeddings_root: PathBuf,
+    pub embedding_all_minilm: PathBuf,
+    pub rerankers_root: PathBuf,
+    pub reranker_ms_marco: PathBuf,
+}
+
+/// Ensures `models/chat`, `models/embeddings/all-MiniLM-L6-v2`, and `models/rerankers/ms-marco-MiniLM-L-6-v2` exist.
+/// Default embedding subfolder (matches bootstrap download target).
+pub const DEFAULT_EMBEDDING_FOLDER: &str = "all-MiniLM-L6-v2";
+/// Default reranker subfolder (matches bootstrap download target).
+pub const DEFAULT_RERANKER_FOLDER: &str = "ms-marco-MiniLM-L-6-v2";
+
+pub fn effective_embedding_folder(config: &AppConfig) -> String {
+    config
+        .active_embedding_model_folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_EMBEDDING_FOLDER)
+        .to_string()
+}
+
+pub fn effective_reranker_folder(config: &AppConfig) -> String {
+    config
+        .active_reranker_model_folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_RERANKER_FOLDER)
+        .to_string()
+}
+
+pub fn ensure_model_directories(app_data_dir: &Path) -> Result<ModelDirectoryPaths, String> {
+    let models_root = app_data_dir.join("models");
+    let chat_models = models_root.join("chat");
+    let embeddings_root = models_root.join("embeddings");
+    let embedding_all_minilm = embeddings_root.join("all-MiniLM-L6-v2");
+    let rerankers_root = models_root.join("rerankers");
+    let reranker_ms_marco = rerankers_root.join("ms-marco-MiniLM-L-6-v2");
+    for p in [&chat_models, &embedding_all_minilm, &reranker_ms_marco] {
+        fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
+    Ok(ModelDirectoryPaths {
+        models_root,
+        chat_models,
+        embeddings_root,
+        embedding_all_minilm,
+        rerankers_root,
+        reranker_ms_marco,
+    })
+}
+
+fn default_buddy_personality() -> String {
+    "friendly".to_string()
+}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -80,6 +151,44 @@ pub struct AppConfig {
     /// Optional path to `kiwix-serve` binary for local ZIM HTTP (GPL-3).
     #[serde(default)]
     pub kiwix_serve_binary_path: Option<String>,
+    /// Header clock format preference (`"12"` or `"24"`). Defaults to 12-hour if unset.
+    #[serde(default)]
+    pub time_format: Option<String>,
+    /// Calendar holiday region code (e.g. `US`, `CA`, `GB`, `AU`).
+    #[serde(default)]
+    pub calendar_region: Option<String>,
+    /// Reminder quiet hours start (0-23 local hour). Defaults to 22.
+    #[serde(default)]
+    pub calendar_quiet_hours_start: Option<u8>,
+    /// Reminder quiet hours end (0-23 local hour). Defaults to 7.
+    #[serde(default)]
+    pub calendar_quiet_hours_end: Option<u8>,
+
+    /// Buddy personality id. Defaults to "friendly".
+    #[serde(default = "default_buddy_personality")]
+    pub buddy_personality: String,
+
+    /// Directory for downloaded AI model files (GGUF).
+    #[serde(default)]
+    pub models_dir: Option<String>,
+
+    /// Subfolder name under `models/embeddings` for the active ONNX embedding model.
+    #[serde(default)]
+    pub active_embedding_model_folder: Option<String>,
+    /// Subfolder name under `models/rerankers` for the active ONNX reranker model.
+    #[serde(default)]
+    pub active_reranker_model_folder: Option<String>,
+
+    /// US place pin for Library Installer map tier (Protomaps state extracts).
+    #[serde(default)]
+    pub library_installer_location: Option<LibraryInstallerLocation>,
+
+    /// Display name stamped on new local logbook entries (mesh/LAN may carry their own).
+    #[serde(default)]
+    pub logbook_author_name: Option<String>,
+    /// Occupation / role shown with logbook entries.
+    #[serde(default)]
+    pub logbook_author_occupation: Option<String>,
 }
 
 /// A user-defined theme that can override colors, fonts, and personality.
@@ -123,18 +232,43 @@ fn normalize_age_gate(mut c: AppConfig) -> AppConfig {
     if !user_profile::is_at_least_18(c.user_birthdate_iso.as_deref()) {
         c.allow_nsfw_unrestricted_models = Some(false);
     }
+    if c.buddy_personality.trim().is_empty() {
+        c.buddy_personality = default_buddy_personality();
+    }
+    c.models_dir = c.models_dir.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    c.active_embedding_model_folder = c.active_embedding_model_folder.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    c.active_reranker_model_folder = c.active_reranker_model_folder.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
     c
 }
 
 pub fn load_config(app_data_dir: &Path) -> AppConfig {
     let path = config_path(app_data_dir);
     if path.exists() {
-        match fs::read_to_string(&path) {
-            Ok(s) => match serde_json::from_str::<AppConfig>(&s) {
-                Ok(c) => return normalize_age_gate(c),
-                Err(_) => {}
-            },
-            Err(_) => {}
+        if let Ok(s) = fs::read_to_string(&path) {
+            if let Ok(c) = serde_json::from_str::<AppConfig>(&s) {
+                return normalize_age_gate(c);
+            }
         }
     }
     normalize_age_gate(AppConfig::default())

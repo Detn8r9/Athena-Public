@@ -95,7 +95,17 @@ pub fn wire_from_logbook_entry(entry: &LogbookEntry, local_mesh_node: u32) -> Lo
 
 /// Build the on-air packet; enforces Meshtastic short-text limit used elsewhere in Athena.
 pub fn encode_logbook_packet(wire: &LogbookWire) -> Result<String, String> {
-    let json = serde_json::to_string(wire).map_err(|e| e.to_string())?;
+    let max_b = max_body_utf8_bytes_for_mesh();
+    let mut b = wire.b.clone();
+    if b.len() > max_b {
+        let mut end = max_b;
+        while end > 0 && !b.is_char_boundary(end) {
+            end -= 1;
+        }
+        b.truncate(end);
+    }
+    let trimmed = LogbookWire { b, ..wire.clone() };
+    let json = serde_json::to_string(&trimmed).map_err(|e| e.to_string())?;
     let out = format!("{LOGBOOK_MESH_PREFIX}{json}");
     if out.len() > 233 {
         return Err(format!(

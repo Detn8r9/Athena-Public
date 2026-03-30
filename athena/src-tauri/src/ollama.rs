@@ -5,6 +5,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::SyncSender;
 use std::time::{Duration, Instant};
 
+use crate::config::{load_config, save_config};
+
 /// Default Ollama base URL (override with `ATHENA_OLLAMA_BASE_URL` for integration tests).
 const OLLAMA_HOST_DEFAULT: &str = "http://127.0.0.1:11434";
 
@@ -350,6 +352,55 @@ pub fn select_model_for_tier(available: &[ModelInfo], tier: &str) -> Option<Stri
     }
 }
 
+/// Small instruct model used when Ollama is running but the library is empty (first-run assist).
+const DEFAULT_OLLAMA_INSTRUCT_MODEL: &str = "llama3.2:3b";
+
+/// Best-effort: if Ollama responds on HTTP but `/api/tags` is empty, pull a default model and pin it in config.
+pub fn maybe_ensure_default_ollama_model(app_data_dir: &Path) {
+    if !is_ollama_running() {
+        return;
+    }
+    let Ok(models) = get_available_models() else {
+        return;
+    };
+    if !models.is_empty() {
+        return;
+    }
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(900))
+        .build()
+    else {
+        return;
+    };
+    let url = format!("{}/api/pull", ollama_base_url());
+    let body = serde_json::json!({ "name": DEFAULT_OLLAMA_INSTRUCT_MODEL, "stream": false });
+    let Ok(resp) = client.post(url).json(&body).send() else {
+        return;
+    };
+    if !resp.status().is_success() {
+        return;
+    }
+    let _ = resp.bytes();
+    let Ok(after) = get_available_models() else {
+        return;
+    };
+    if after.is_empty() {
+        return;
+    }
+    let mut c = load_config(app_data_dir);
+    let empty_explicit = c
+        .explicit_ollama_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_none();
+    if empty_explicit {
+        c.explicit_ollama_model = Some(DEFAULT_OLLAMA_INSTRUCT_MODEL.to_string());
+        let _ = save_config(app_data_dir, &c);
+    }
+}
+
+
 pub fn chat(
     model: &str,
     messages: Vec<ChatMessage>,
@@ -516,7 +567,12 @@ where
                 return;
             }
         };
-        let result = rt.block_on(ollama_stream_read_lines(model, messages, options, tx.clone()));
+        let result = rt.block_on(ollama_stream_read_lines(
+            model,
+            messages,
+            options,
+            tx.clone(),
+        ));
         if let Err(e) = result {
             let _ = tx.send(Err(e));
         }
@@ -539,89 +595,4 @@ where
     let _ = handle.join();
     on_done();
     Ok(())
-}
-
-/// Generate a short chat title (3–6 words) from the first user message. Uses non-streaming chat.
-pub fn generate_chat_title(model: &str, first_message: &str) -> Result<String, String> {
-    let truncated = first_message.trim();
-    let prompt = if truncated.len() > 400 {
-        format!("{}…", truncated.chars().take(400).collect::<String>())
-    } else {
-        truncated.to_string()
-    };
-    let system = "You generate very short chat titles. Reply with only the title: 3 to 6 words, no quotes, no punctuation at the end.";
-    let messages = vec![
-        ChatMessage {
-            role: "system".to_string(),
-            content: system.to_string(),
-        },
-        ChatMessage {
-            role: "user".to_string(),
-            content: format!(
-                "Generate a short title for this question or topic:\n\n{}",
-                prompt
-            ),
-        },
-    ];
-    let out = chat(model, messages, None)?;
-    let title = out
-        .trim()
-        .trim_matches('"')
-        .chars()
-        .take(80)
-        .collect::<String>()
-        .trim()
-        .to_string();
-    Ok(if title.is_empty() {
-        "New chat".to_string()
-    } else {
-        title
-    })
-}
-
-/// Generate a one-line description of what the conversation is about. Uses non-streaming chat.
-pub fn generate_chat_description(model: &str, messages: &[ChatMessage]) -> Result<String, String> {
-    if messages.is_empty() {
-        return Ok(String::new());
-    }
-    let summary: String = messages
-        .iter()
-        .map(|m| {
-            format!(
-                "{}: {}",
-                m.role,
-                m.content.chars().take(300).collect::<String>()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let combined = if summary.len() > 1500 {
-        format!("{}…", summary.chars().take(1500).collect::<String>())
-    } else {
-        summary
-    };
-    let system = "You summarize conversations in one short sentence. Reply with only that sentence: what the conversation is about, no quotes.";
-    let msgs = vec![
-        ChatMessage {
-            role: "system".to_string(),
-            content: system.to_string(),
-        },
-        ChatMessage {
-            role: "user".to_string(),
-            content: format!(
-                "Summarize this conversation in one short sentence:\n\n{}",
-                combined
-            ),
-        },
-    ];
-    let out = chat(model, msgs, None)?;
-    let desc = out
-        .trim()
-        .trim_matches('"')
-        .chars()
-        .take(200)
-        .collect::<String>()
-        .trim()
-        .to_string();
-    Ok(desc)
 }

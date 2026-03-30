@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { boundingBoxFromCenterAndRadiusMiles } from "./geographicBoundingBox";
+import { boundingBoxFromCenterAndRadiusMiles } from "../../geographicBoundingBox";
 import {
   downloadOfflineMap,
   getOfflineMapManagerCatalog,
@@ -15,7 +15,7 @@ import {
   type SatelliteRegionDownloadErrorEventPayload,
   type SatelliteRegionDownloadProgressEventPayload,
 } from "./offlineMapManagerCatalog";
-import { ErrorBoundary } from "./ErrorBoundary";
+import { ErrorBoundary } from "../../ErrorBoundary";
 import { OfflineMapViewport } from "./OfflineMapViewport";
 
 export interface OfflineMapManagerDashboardProps {
