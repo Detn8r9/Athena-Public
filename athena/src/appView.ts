@@ -1,8 +1,8 @@
-export type AppView = "home" | "chat" | "map" | "radio" | "logbook" | "calendar" | "academy" | "archive";
+export type AppView = "home" | "chat" | "map" | "radio" | "mesh" | "logbook" | "calendar" | "academy" | "archive";
 
 const STORAGE_KEY_STARTUP_VIEW = "athena-startup-view";
 
-export const APP_VIEWS: readonly AppView[] = ["home", "chat", "map", "radio", "logbook", "calendar", "academy", "archive"];
+export const APP_VIEWS: readonly AppView[] = ["home", "chat", "map", "radio", "mesh", "logbook", "calendar", "academy", "archive"];
 
 function isAppView(value: string): value is AppView {
   return (APP_VIEWS as readonly string[]).includes(value);
@@ -14,7 +14,8 @@ export const APP_VIEW_LABELS: Record<AppView, string> = {
   home: "Home",
   chat: "Chat",
   map: "Map",
-  radio: "Radio",
+  radio: "Comms",
+  mesh: "Mesh network",
   logbook: "Logbook",
   calendar: "Calendar",
   academy: "Academy",

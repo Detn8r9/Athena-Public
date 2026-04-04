@@ -5,6 +5,7 @@ import type { AppView } from "./appView";
 import type { ReactNode } from "react";
 import {
   AlertTriangle,
+  Antenna,
   CalendarDays,
   ChevronDown,
   ChevronUp,
@@ -152,6 +153,15 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     icon: (
       <LauncherIcon>
         <Library size={20} strokeWidth={2} aria-hidden />
+      </LauncherIcon>
+    ),
+  },
+  {
+    key: "mesh",
+    label: "Mesh network",
+    icon: (
+      <LauncherIcon>
+        <Antenna size={20} strokeWidth={2} aria-hidden />
       </LauncherIcon>
     ),
   },
@@ -564,23 +574,42 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
             }}
           >
             <h3 style={{ margin: 0, color: "var(--primary)" }}>Recent Comms</h3>
-            <button
-              type="button"
-              className="glass-action-btn"
-              onClick={() => onNavigate("radio")}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.35rem",
-                fontSize: "0.82rem",
-                padding: "0.35rem 0.65rem",
-              }}
-              aria-label="Open Comms"
-            >
-              <Radio size={16} strokeWidth={2} aria-hidden />
-              Open Comms
-              <ChevronRight size={16} strokeWidth={2} aria-hidden />
-            </button>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "center" }}>
+              <button
+                type="button"
+                className="glass-action-btn"
+                onClick={() => onNavigate("mesh")}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.35rem",
+                  fontSize: "0.82rem",
+                  padding: "0.35rem 0.65rem",
+                }}
+                aria-label="Open mesh network"
+              >
+                <Antenna size={16} strokeWidth={2} aria-hidden />
+                Mesh network
+                <ChevronRight size={16} strokeWidth={2} aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="glass-action-btn"
+                onClick={() => onNavigate("radio")}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.35rem",
+                  fontSize: "0.82rem",
+                  padding: "0.35rem 0.65rem",
+                }}
+                aria-label="Open Comms"
+              >
+                <Radio size={16} strokeWidth={2} aria-hidden />
+                Open Comms
+                <ChevronRight size={16} strokeWidth={2} aria-hidden />
+              </button>
+            </div>
           </div>
           {logs.length === 0 ? (
             <p className="text-muted" style={{ margin: 0 }}>

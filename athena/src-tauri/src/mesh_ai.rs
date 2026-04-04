@@ -101,6 +101,7 @@ fn build_ollama_messages(
 }
 
 /// Runs Ollama, saves/updates the per-node chat file, returns text chunks to transmit.
+#[allow(dead_code)]
 pub fn process_mesh_message_and_reply(
     app_data_dir: &Path,
     app: Option<&tauri::AppHandle>,
@@ -183,4 +184,57 @@ pub fn process_mesh_message_and_reply(
     }
 
     Ok(chunk_mesh_utf8(reply_trimmed, 200))
+}
+
+/// Build chat history from `mesh_chats` and run unified inference (used by `/ai` over mesh).
+pub fn generate_mesh_slash_ai_reply(
+    db_arc: &std::sync::Arc<std::sync::Mutex<crate::db::Database>>,
+    app_data_dir: &Path,
+    node_id: i64,
+) -> Result<String, String> {
+    let cfg = load_config(app_data_dir);
+    let models = load_models_for_inference(&cfg);
+    inference::ensure_inference_ready(&cfg, &models)?;
+
+    let rows = {
+        let g = db_arc.lock().map_err(|e| e.to_string())?;
+        g.list_mesh_chats_for_node(node_id, 80)?
+    };
+
+    let max_memory = cfg.memory_messages.unwrap_or(20) as usize;
+    let system = mesh_system_prompt(&cfg);
+    let mut messages = vec![ChatMessage {
+        role: "system".to_string(),
+        content: system,
+    }];
+
+    for row in rows.iter() {
+        let content = row.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        match (row.sender_type.as_str(), row.message_type.as_str()) {
+            ("remote", "chat") | ("remote", "prompt") | ("human", "chat") | ("human", "prompt") => {
+                messages.push(ChatMessage {
+                    role: "user".to_string(),
+                    content: content.to_string(),
+                });
+            }
+            ("ai", "response") => {
+                messages.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: content.to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    let cap = max_memory.max(1).saturating_mul(2);
+    if messages.len() > 1 + cap {
+        let remove = messages.len() - 1 - cap;
+        messages.drain(1..1 + remove);
+    }
+
+    inference::chat_unified(&cfg, &models, messages, None).map_err(|e| e.to_string())
 }

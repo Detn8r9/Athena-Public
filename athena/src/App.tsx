@@ -9,6 +9,8 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { TRIAGE_ITEMS, getTriageItem, TriageId } from "./triageData";
 import { HelpModal } from "./HelpModal";
 import { MeshRadioModal, type MeshRadioMessage } from "./MeshRadioModal";
+import { MeshChatView } from "./MeshChatView";
+import { MeshNetworkHubView } from "./MeshNetworkHubView";
 import { UsbExportModal } from "./UsbExportModal";
 import { MapView, type MapBasemap, type TacticalMapMeshNodeLocation, type TacticalMapPointOfInterest } from "./features/map/MapView";
 import { defaultTacticalLayerVisibilityState, type TacticalLayerVisibilityState } from "./features/map/TacticalSidebar";
@@ -724,6 +726,7 @@ function App() {
   const [customPrimary, setCustomPrimary] = useState<string>(() => loadCustomColors().primary);
   const [customText, setCustomText] = useState<string>(() => loadCustomColors().text);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatWorkspaceTab, setChatWorkspaceTab] = useState<"local" | "mesh">("local");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   /** Shown when the frontend watchdog detects a stalled Ollama stream (main chat). */
@@ -977,6 +980,9 @@ function App() {
   const [studioDraft, setStudioDraft] = useState<BackendCustomTheme | null>(null);
   const [featureMapEnabled, setFeatureMapEnabled] = useState(false);
   const [meshAiAutoReply, setMeshAiAutoReply] = useState(true);
+  const [meshRemoteRegEnabled, setMeshRemoteRegEnabled] = useState(false);
+  const [meshRegPhraseInput, setMeshRegPhraseInput] = useState("");
+  const [meshRegPhraseBusy, setMeshRegPhraseBusy] = useState(false);
   const [showSourcesInChat, setShowSourcesInChat] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [userLocationAddress, setUserLocationAddress] = useState<string>("");
@@ -2601,6 +2607,21 @@ function App() {
     }
   }
 
+  async function handleSaveMeshRegistrationPhrase() {
+    setMeshRegPhraseBusy(true);
+    try {
+      const v = meshRegPhraseInput.trim();
+      await invoke("set_mesh_registration_admin_password", { password: v.length > 0 ? v : null });
+      setMeshRegPhraseInput("");
+      const en = await invoke<boolean>("is_mesh_remote_registration_enabled");
+      setMeshRemoteRegEnabled(en === true);
+    } catch (e) {
+      setLibraryError(String(e));
+    } finally {
+      setMeshRegPhraseBusy(false);
+    }
+  }
+
   /** Save location and offer local data install when online + location feature is on. */
   async function handleUserLocationBlur(value: string) {
     const trimmed = value.trim();
@@ -3122,6 +3143,13 @@ function App() {
       );
     };
   }, []);
+
+  useEffect(() => {
+    if (!settingsOpen || settingsPanel !== "mesh") return;
+    void invoke<boolean>("is_mesh_remote_registration_enabled")
+      .then((v) => setMeshRemoteRegEnabled(v === true))
+      .catch(() => setMeshRemoteRegEnabled(false));
+  }, [settingsOpen, settingsPanel]);
 
   useEffect(() => {
     const unlisten = listen<{ sender_id: number; text: string }>("athena:mesh-text", (event) => {
@@ -4377,7 +4405,7 @@ ${tag}` : tag;
           }}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenHelp={() => setHelpOpen(true)}
-          onOpenMesh={() => setMeshOpen(true)}
+          onNavigateToMeshNetwork={() => setCurrentView("mesh")}
           onOpenCalendar={() => setCurrentView("calendar")}
           calendarDateTimeLabel={headerClockLabel}
           batteryState={batteryState}
@@ -4610,6 +4638,34 @@ ${tag}` : tag;
         )}
         <header className="main-header">
           <div className="main-header-toolbar">
+          <div className="chat-workspace-tabs" role="tablist" aria-label="Chat workspace">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={chatWorkspaceTab === "local"}
+              className={`chat-workspace-tab${chatWorkspaceTab === "local" ? " chat-workspace-tab-active" : ""}`}
+              onClick={() => setChatWorkspaceTab("local")}
+            >
+              Offline chat
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={chatWorkspaceTab === "mesh"}
+              className={`chat-workspace-tab${chatWorkspaceTab === "mesh" ? " chat-workspace-tab-active" : ""}`}
+              onClick={() => setChatWorkspaceTab("mesh")}
+            >
+              LoRa mesh
+            </button>
+          </div>
+          <button
+            type="button"
+            className="glass-action-btn chat-workspace-mesh-home-btn"
+            onClick={() => setCurrentView("mesh")}
+            title="Open the full Meshtastic screen (status, help, and mesh inbox)"
+          >
+            Mesh home
+          </button>
           <button
             type="button"
             className="main-header-icon-btn"
@@ -4857,6 +4913,10 @@ ${tag}` : tag;
             </div>
           </div>
         ) : null}
+        {chatWorkspaceTab === "mesh" ? (
+          <MeshChatView />
+        ) : (
+          <>
         {findInChatOpen && (
           <div className="find-in-chat-bar" role="search">
             <input
@@ -5195,6 +5255,8 @@ ${tag}` : tag;
             </button>
           </div>
         </div>
+          </>
+        )}
       </main>
             </div>
           ) : null}
@@ -5296,7 +5358,27 @@ ${tag}` : tag;
             />
           ) : null}
           {currentView === "radio" ? (
-            <RadioView />
+            <RadioView
+              onOpenMeshNetwork={() => setCurrentView("mesh")}
+              meshRadioConnected={meshRadioConnected}
+            />
+          ) : null}
+          {currentView === "mesh" ? (
+            <div className="home-view-scroll mesh-network-hub-scroll">
+              <MeshNetworkHubView
+                meshRadioConnected={meshRadioConnected}
+                onOpenQuickSend={() => setMeshOpen(true)}
+                onOpenMeshSettings={() => {
+                  setSettingsOpen(true);
+                  goToSettingsSubpanel("mesh");
+                }}
+                onGoToOfflineChat={() => {
+                  setCurrentView("chat");
+                  setChatWorkspaceTab("local");
+                }}
+                onGoToComms={() => setCurrentView("radio")}
+              />
+            </div>
           ) : null}
           {currentView === "logbook" ? <LogbookView meshConnected={meshRadioConnected === true} /> : null}
           {currentView === "calendar" ? (
@@ -5671,19 +5753,13 @@ ${tag}` : tag;
                       )}
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    className={`settings-nav-item ${meshRadioConnected !== true ? "settings-nav-item-disabled" : ""}`}
-                    disabled={meshRadioConnected !== true}
-                    onClick={() => meshRadioConnected === true && goToSettingsSubpanel("mesh")}
-                    aria-disabled={meshRadioConnected !== true}
-                  >
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("mesh")}>
                     <span className="settings-nav-label">{lx.settingsNavMesh}</span>
                     <span className="text-muted">
                       {meshRadioConnected === null
                         ? lx.settingsNavMeshChecking
                         : meshRadioConnected === false
-                          ? lx.settingsNavMeshNone
+                          ? "USB radio optional — set signup phrase anytime"
                           : lx.settingsNavMeshOk}
                     </span>
                   </button>
@@ -7049,23 +7125,85 @@ ${tag}` : tag;
             )}
             {settingsPanel === "mesh" && (
               <>
-                {meshRadioConnected === null ? (
-                  <section className="library-section">
-                    <h3>Mesh</h3>
-                    <p className="text-muted">Checking for a Meshtastic USB radio…</p>
-                  </section>
-                ) : meshRadioConnected === false ? (
-                  <section className="library-section">
-                    <h3>Mesh</h3>
+                <section className="library-section">
+                  <h3>Meshtastic &amp; mesh network</h3>
+                  {meshRadioConnected === null ? (
+                    <p className="text-muted">Checking for a USB Meshtastic radio…</p>
+                  ) : meshRadioConnected === false ? (
                     <p className="text-muted">
-                      No Meshtastic USB radio was detected. Connect a device and wait a few seconds—the header radio button and this menu will activate when serial is available.
+                      No USB radio right now. You can still set a remote signup phrase below; plug in a Meshtastic device
+                      later for over-the-air chat and channel tools.
                     </p>
-                  </section>
-                ) : (
-                  <section className="library-section">
-                    <h3>Meshtastic Mesh</h3>
+                  ) : (
                     <p className="text-muted">
-                      When a USB Meshtastic radio is connected, inbound text from other nodes (broadcast or DM to you) can start a saved chat per sender and reply over the mesh using Ollama. Requires Ollama running. Turn off to only listen without AI replies.
+                      USB mesh radio connected. Use <strong>Mesh home</strong> in the header for the full inbox. Options
+                      below tune AI replies and who may register by radio.
+                    </p>
+                  )}
+                  <h4 className="settings-subheading" style={{ marginTop: "1rem" }}>
+                    Remote signup (optional)
+                  </h4>
+                  <p className="text-muted small">
+                    When a phrase is set, unknown handhelds can send one registration line to create their contact. Share
+                    the phrase only with people you trust. You can always add people manually from{" "}
+                    <strong>Mesh home → profiles</strong>.
+                  </p>
+                  <p className="text-muted small">
+                    Status: <strong>{meshRemoteRegEnabled ? "Remote signup is on" : "Remote signup is off"}</strong>
+                  </p>
+                  <div className="settings-mesh-reg-row">
+                    <label htmlFor="mesh-reg-phrase-input" className="text-muted small">
+                      New signup phrase (stored on this computer only)
+                    </label>
+                    <input
+                      id="mesh-reg-phrase-input"
+                      type="password"
+                      autoComplete="new-password"
+                      className="theme-select"
+                      style={{ width: "100%", maxWidth: "28rem", marginTop: "0.25rem" }}
+                      value={meshRegPhraseInput}
+                      onChange={(e) => setMeshRegPhraseInput(e.target.value)}
+                      placeholder={
+                        meshRemoteRegEnabled ? "Enter new phrase to replace, or clear below" : "Choose a phrase to enable signup"
+                      }
+                    />
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginTop: "0.5rem" }}>
+                      <button
+                        type="button"
+                        className="glass-action-btn"
+                        disabled={meshRegPhraseBusy}
+                        onClick={() => void handleSaveMeshRegistrationPhrase()}
+                      >
+                        {meshRegPhraseBusy ? "Saving…" : "Save phrase"}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={meshRegPhraseBusy}
+                        onClick={async () => {
+                          setMeshRegPhraseBusy(true);
+                          try {
+                            await invoke("set_mesh_registration_admin_password", { password: null });
+                            setMeshRegPhraseInput("");
+                            setMeshRemoteRegEnabled(false);
+                          } catch (e) {
+                            setLibraryError(String(e));
+                          } finally {
+                            setMeshRegPhraseBusy(false);
+                          }
+                        }}
+                      >
+                        Turn off remote signup
+                      </button>
+                    </div>
+                  </div>
+                </section>
+                {meshRadioConnected === true ? (
+                  <section className="library-section">
+                    <h4 className="settings-subheading">Local AI on mesh</h4>
+                    <p className="text-muted small">
+                      When enabled, registered radios can use <code>/ai</code> in a message for offline model answers (needs
+                      Ollama or your configured backend running on this computer).
                     </p>
                     <div className="feature-checkbox-wrap">
                       <input
@@ -7077,12 +7215,12 @@ ${tag}` : tag;
                         aria-label="Auto-reply to Meshtastic messages with AI"
                       />
                       <label htmlFor="mesh-ai-auto-reply-checkbox" className="feature-checkbox-label">
-                        Auto-reply to mesh (Primary broadcast → DM; private chat per sender)
+                        Allow /ai mesh questions to use local AI
                       </label>
                     </div>
                     <RadioSettingsView />
                   </section>
-                )}
+                ) : null}
               </>
             )}
             {settingsPanel === "voice" && (

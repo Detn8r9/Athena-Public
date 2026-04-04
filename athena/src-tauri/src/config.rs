@@ -189,6 +189,9 @@ pub struct AppConfig {
     /// Occupation / role shown with logbook entries.
     #[serde(default)]
     pub logbook_author_occupation: Option<String>,
+    /// When set, remote Meshtastic nodes may self-register by sending `ATHREG1:{...}` with this phrase.
+    #[serde(default)]
+    pub mesh_registration_admin_password: Option<String>,
 }
 
 /// A user-defined theme that can override colors, fonts, and personality.
@@ -252,6 +255,14 @@ fn normalize_age_gate(mut c: AppConfig) -> AppConfig {
         }
     });
     c.active_reranker_model_folder = c.active_reranker_model_folder.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    c.mesh_registration_admin_password = c.mesh_registration_admin_password.and_then(|s| {
         let t = s.trim();
         if t.is_empty() {
             None

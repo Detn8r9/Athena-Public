@@ -22,10 +22,6 @@ use crate::db::{Database, LogbookEntry, MapMarker, MeshMessage, RadioTelemetrySa
 use crate::lan_cluster::{self, InjectQueue};
 use crate::lan_identity::set_lan_local_node_id;
 use crate::lan_packets::{LanCursors, LanPacket, LAN_PROTOCOL_VERSION};
-use crate::mesh_ai;
-use crate::mesh_calendar;
-use crate::mesh_listener::MeshRadioControl;
-use crate::mesh_logbook;
 use crate::radio_manager::{MeshMessageAckPayload, RadioState, RadioTelemetryPayload};
 
 pub use crate::lan_identity::lan_local_node_id;
@@ -678,7 +674,6 @@ pub fn spawn_lan_sync(
     app_handle: AppHandle,
     app_data_dir: PathBuf,
     db: Arc<std::sync::Mutex<Database>>,
-    mesh_control: MeshRadioControl,
 ) {
     let (node_id, created_at_ms) = resolve_or_create_lan_identity(&app_data_dir);
     set_lan_local_node_id(node_id);
@@ -812,7 +807,6 @@ pub fn spawn_lan_sync(
         }
     });
 
-    let mesh_control_for_fallback = mesh_control.clone();
     let db_for_fallback = db.clone();
     let app_handle_for_fallback = app_handle.clone();
     let last_peer_seen_for_fallback = last_peer_seen_ms.clone();
@@ -847,24 +841,9 @@ pub fn spawn_lan_sync(
                     }
                 }
 
-                let _ = mesh_control_for_fallback
-                    .send_text_message(
-                        mesh_logbook::encode_logbook_sync_request()
-                            .unwrap_or_else(|_| "ATHLB1:{\"t\":\"req\"}".to_string()),
-                        false,
-                        mesh_ai::PRIMARY_MESH_CHANNEL,
-                        None,
-                    )
-                    .await;
-                let _ = mesh_control_for_fallback
-                    .send_text_message(
-                        mesh_calendar::encode_calendar_sync_request()
-                            .unwrap_or_else(|_| "ATHCAL1:{\"t\":\"req\"}".to_string()),
-                        false,
-                        mesh_ai::PRIMARY_MESH_CHANNEL,
-                        None,
-                    )
-                    .await;
+                // Do not auto-broadcast logbook/calendar mesh sync here: it wastes LoRa airtime and
+                // repeats ~every minute when no LAN peers. Use Logbook / Calendar "pull from mesh"
+                // (or `logbook_request_mesh_sync` / calendar equivalent) when you want a sync.
                 last_peer_seen_for_fallback.store(now_unix_ms(), Ordering::Relaxed);
             }
         }

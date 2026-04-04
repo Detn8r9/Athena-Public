@@ -273,6 +273,37 @@ pub struct MeshMessage {
     pub updated_at: String,
 }
 
+/// Operator-defined Meshtastic node profile (Counter-Sign).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshProfile {
+    pub id: String,
+    pub node_id: i64,
+    pub username: String,
+    pub counter_sign: String,
+    pub created_at: i64,
+}
+
+/// One row in the mesh network chat log (remote, operator, or AI).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshChatRow {
+    pub id: String,
+    pub node_id: i64,
+    pub sender_type: String,
+    pub message_type: String,
+    pub content: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshNetworkNodeSummary {
+    pub node_id: u32,
+    pub username: Option<String>,
+    pub last_message_at: i64,
+}
+
 /// Stored encrypted channel profile (frequency + PSK); never written to `radio_logs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadioChannel {
@@ -549,6 +580,23 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_mesh_messages_created_at ON mesh_messages(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_mesh_messages_status ON mesh_messages(status);
+            CREATE TABLE IF NOT EXISTS mesh_profiles (
+                id TEXT PRIMARY KEY NOT NULL,
+                node_id INTEGER NOT NULL UNIQUE,
+                username TEXT NOT NULL,
+                counter_sign TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mesh_profiles_node_id ON mesh_profiles(node_id);
+            CREATE TABLE IF NOT EXISTS mesh_chats (
+                id TEXT PRIMARY KEY NOT NULL,
+                node_id INTEGER NOT NULL,
+                sender_type TEXT NOT NULL CHECK (sender_type IN ('human','ai','remote')),
+                message_type TEXT NOT NULL CHECK (message_type IN ('auth','chat','prompt','response')),
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mesh_chats_node_created ON mesh_chats(node_id, created_at ASC);
             CREATE TABLE IF NOT EXISTS radio_channels (
                 id TEXT PRIMARY KEY NOT NULL,
                 name TEXT NOT NULL,
@@ -3579,6 +3627,192 @@ LIMIT ?2
         drop(stmt);
         drop(conn);
         out.map_err(|e| e.to_string())
+    }
+
+    pub fn mesh_profile_upsert(
+        &self,
+        node_id: i64,
+        username: &str,
+        counter_sign: &str,
+    ) -> Result<MeshProfile, String> {
+        let username = username.trim();
+        let counter_sign = counter_sign.trim();
+        if username.is_empty() || counter_sign.is_empty() {
+            return Err("Username and counter-sign are required.".to_string());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM mesh_profiles WHERE node_id = ?1 LIMIT 1",
+                params![node_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let id = existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        conn.execute(
+            "INSERT INTO mesh_profiles (id, node_id, username, counter_sign, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(node_id) DO UPDATE SET
+               username = excluded.username,
+               counter_sign = excluded.counter_sign",
+            params![id.clone(), node_id, username, counter_sign, now],
+        )
+        .map_err(|e| e.to_string())?;
+        drop(conn);
+        self.mesh_profile_get_by_node(node_id)?.ok_or_else(|| "Profile upsert failed.".to_string())
+    }
+
+    pub fn mesh_profile_delete_by_id(&self, id: &str) -> Result<bool, String> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err("Profile id is required.".to_string());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute("DELETE FROM mesh_profiles WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    pub fn mesh_profile_list(&self) -> Result<Vec<MeshProfile>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_id, username, counter_sign, created_at FROM mesh_profiles ORDER BY username ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(MeshProfile {
+                    id: row.get(0)?,
+                    node_id: row.get(1)?,
+                    username: row.get(2)?,
+                    counter_sign: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn mesh_profile_get_by_node(&self, node_id: i64) -> Result<Option<MeshProfile>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_id, username, counter_sign, created_at FROM mesh_profiles WHERE node_id = ?1 LIMIT 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query(params![node_id]).map_err(|e| e.to_string())?;
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let row = row;
+            Ok(Some(MeshProfile {
+                id: row.get(0).map_err(|e| e.to_string())?,
+                node_id: row.get(1).map_err(|e| e.to_string())?,
+                username: row.get(2).map_err(|e| e.to_string())?,
+                counter_sign: row.get(3).map_err(|e| e.to_string())?,
+                created_at: row.get(4).map_err(|e| e.to_string())?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn mesh_chat_insert(
+        &self,
+        id: &str,
+        node_id: i64,
+        sender_type: &str,
+        message_type: &str,
+        content: &str,
+        created_at: i64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO mesh_chats (id, node_id, sender_type, message_type, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, node_id, sender_type, message_type, content, created_at],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn mesh_chats_remote_count_for_node(&self, node_id: i64) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let c: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mesh_chats WHERE node_id = ?1 AND sender_type = 'remote'",
+                params![node_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(c)
+    }
+
+    pub fn list_mesh_chats_for_node(&self, node_id: i64, limit: usize) -> Result<Vec<MeshChatRow>, String> {
+        let cap = limit.clamp(1, 500) as i64;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_id, sender_type, message_type, content, created_at
+                 FROM mesh_chats WHERE node_id = ?1 ORDER BY created_at ASC LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![node_id, cap], |row| {
+                Ok(MeshChatRow {
+                    id: row.get(0)?,
+                    node_id: row.get(1)?,
+                    sender_type: row.get(2)?,
+                    message_type: row.get(3)?,
+                    content: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn list_mesh_network_nodes(&self) -> Result<Vec<MeshNetworkNodeSummary>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.node_id, MAX(c.created_at) AS last_at,
+                        (SELECT p.username FROM mesh_profiles p WHERE p.node_id = c.node_id LIMIT 1) AS uname
+                 FROM mesh_chats c
+                 GROUP BY c.node_id
+                 ORDER BY last_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                let node_id: i64 = row.get(0)?;
+                let last_at: i64 = row.get(1)?;
+                let uname: Option<String> = row.get(2)?;
+                Ok(MeshNetworkNodeSummary {
+                    node_id: node_id as u32,
+                    username: uname,
+                    last_message_at: last_at,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
     }
 
     pub fn mark_academy_lesson_complete(&self, lesson_id: &str) -> Result<(), String> {

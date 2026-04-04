@@ -10187,3 +10187,390 @@ button.device-details-overlay-inner {
   color: color-mix(in srgb, var(--text) 55%, transparent);
   font-style: italic;
 }
+
+/* Local vs mesh workspace tabs (main chat header) */
+.chat-workspace-tabs {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-right: auto;
+  padding: 0.1rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-solid) 75%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.chat-workspace-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.chat-workspace-tab:hover {
+  color: var(--text);
+}
+
+.chat-workspace-tab-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.mesh-chat-view {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mesh-chat-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: color-mix(in srgb, var(--surface-solid) 40%, transparent);
+}
+
+.mesh-chat-sidebar-head {
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+.mesh-chat-sidebar-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.mesh-chat-node-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem;
+  overflow-y: auto;
+}
+
+.mesh-chat-node-empty {
+  padding: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.mesh-chat-node-btn {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 0.45rem 0.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.mesh-chat-node-btn:hover {
+  background: color-mix(in srgb, var(--border) 35%, transparent);
+}
+
+.mesh-chat-node-btn-active {
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.mesh-chat-node-id {
+  font-size: 0.78rem;
+}
+
+.mesh-chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mesh-chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  flex-shrink: 0;
+}
+
+.mesh-chat-toolbar-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.mesh-chat-toolbar-spacer {
+  flex: 1;
+}
+
+.mesh-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.75rem 1rem;
+  min-height: 0;
+}
+
+.mesh-chat-banner-error {
+  margin: 0 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, #c0392b 22%, transparent);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.mesh-profile-manager-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  background: color-mix(in srgb, #000 45%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.mesh-profile-manager-panel {
+  width: min(440px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 1rem 1.15rem;
+  border-radius: 14px;
+}
+
+.mesh-profile-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.mesh-profile-manager-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.mesh-profile-manager-close {
+  border: none;
+  background: transparent;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.mesh-profile-manager-hint {
+  font-size: 0.82rem;
+  margin: 0 0 0.75rem;
+}
+
+.mesh-profile-manager-error {
+  margin-bottom: 0.65rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, #c0392b 20%, transparent);
+  font-size: 0.85rem;
+}
+
+.mesh-profile-manager-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+}
+
+.mesh-profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+}
+
+.mesh-profile-field input {
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.mesh-profile-add-btn {
+  margin-top: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  background: var(--primary);
+  color: var(--primary-contrast, #fff);
+}
+
+.mesh-profile-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.mesh-profile-list-empty {
+  font-size: 0.85rem;
+  padding: 0.25rem 0;
+}
+
+.mesh-profile-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.mesh-profile-list-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.mesh-profile-list-name {
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.mesh-profile-list-meta {
+  font-size: 0.78rem;
+}
+
+.mesh-profile-list-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.mesh-profile-list-remove:hover {
+  color: #c0392b;
+}
+
+/* Mesh network hub (Comms + Chat entry) */
+.mesh-network-hub {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 0 0.25rem 1.5rem;
+}
+
+.mesh-network-hub-hero {
+  border-radius: 14px;
+  padding: 1.1rem 1.25rem;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 12%, var(--surface-solid)) 0%,
+    color-mix(in srgb, var(--surface-solid) 92%, var(--border)) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+}
+
+.mesh-network-hub-hero h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.15rem;
+}
+
+.mesh-network-hub-lead {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.mesh-network-hub-identity {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.mesh-network-hub-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.mesh-network-hub-dot-on {
+  background: #27ae60;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #27ae60 35%, transparent);
+}
+
+.mesh-network-hub-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mesh-network-hub-actions .btn {
+  font-size: 0.85rem;
+}
+
+.mesh-network-hub-scroll {
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+
+.chat-workspace-mesh-home-btn {
+  margin-left: 0.35rem;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 80%, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.chat-workspace-mesh-home-btn:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.radio-meshtastic-bridge {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 88%, var(--border));
+}
+
+.radio-meshtastic-bridge h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+}
+
+.radio-meshtastic-bridge p {
+  margin: 0 0 0.65rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}

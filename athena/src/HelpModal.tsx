@@ -516,6 +516,10 @@ function MeshtasticPanel() {
         <li>
           The mesh panel&apos;s <strong>?</strong> button has extra tips (e.g. USB vs BLE with a phone).
         </li>
+        <li>
+          <strong>Mesh network</strong> (from <strong>Chat</strong> or <strong>Comms</strong>) is the guided inbox: it shows which radio is plugged in, opens
+          offline mesh chat, and links to Comms for technical logs.
+        </li>
       </ul>
     </>
   );

@@ -4,7 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::db::{Database, LogbookEntry};
 use crate::lan_sync;
@@ -15,6 +15,7 @@ use meshtastic::api::StreamApi;
 use meshtastic::packet::{PacketDestination, PacketRouter};
 use meshtastic::protobufs;
 use meshtastic::types::{MeshChannel, NodeId};
+use prost::Message;
 use serde::Serialize;
 use tauri::Emitter;
 use thiserror::Error;
@@ -23,9 +24,8 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Semaphore;
 use tokio::time::{interval, MissedTickBehavior};
 
-use crate::config::load_config;
 use crate::mesh_ai::{
-    process_mesh_message_and_reply, should_run_mesh_ai, MESHTASTIC_BROADCAST_TO,
+    should_run_mesh_ai, MESHTASTIC_BROADCAST_TO,
     PRIMARY_MESH_CHANNEL,
 };
 use crate::mesh_radio::MeshRadioSerialLink;
@@ -53,6 +53,32 @@ pub const MESH_CONNECTION_EVENT: &str = "athena:mesh-connection";
 static MESH_RADIO_CONNECTED: AtomicBool = AtomicBool::new(false);
 static MESH_MY_NODE_NUM: AtomicU32 = AtomicU32::new(0);
 
+fn mesh_local_display_name_storage() -> &'static Mutex<String> {
+    static NAME: OnceLock<Mutex<String>> = OnceLock::new();
+    NAME.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Long or short name for this USB-connected node when known (from NodeInfo).
+pub fn mesh_local_display_name() -> String {
+    mesh_local_display_name_storage()
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+fn set_mesh_local_display_name(name: &str) {
+    if let Ok(mut g) = mesh_local_display_name_storage().lock() {
+        *g = name.to_string();
+    }
+}
+
+fn clear_mesh_local_display_name() {
+    if let Ok(mut g) = mesh_local_display_name_storage().lock() {
+        g.clear();
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct MeshConnectionPayload {
     pub connected: bool,
@@ -72,6 +98,7 @@ fn notify_mesh_connected(app: &tauri::AppHandle, connected: bool) {
     MESH_RADIO_CONNECTED.store(connected, Ordering::Relaxed);
     if !connected {
         MESH_MY_NODE_NUM.store(0, Ordering::Relaxed);
+        clear_mesh_local_display_name();
     }
     let payload = MeshConnectionPayload { connected };
     if let Err(e) = app.emit(MESH_CONNECTION_EVENT, &payload) {
@@ -86,7 +113,7 @@ pub struct MeshTextEventPayload {
     pub text: String,
 }
 
-enum MeshCommand {
+pub(crate) enum MeshCommand {
     SendText {
         text: String,
         want_ack: bool,
@@ -139,6 +166,10 @@ impl MeshRadioControl {
         reply_rx
             .await
             .map_err(|_| "Meshtastic send was cancelled.".to_string())?
+    }
+
+    pub(crate) fn from_sender(cmd_tx: Sender<MeshCommand>) -> Self {
+        Self { cmd_tx }
     }
 }
 
@@ -359,7 +390,11 @@ fn extract_my_node_num(from_radio: &protobufs::FromRadio) -> Option<u32> {
     }
 }
 
-fn ingest_node_display_name(from_radio: &protobufs::FromRadio, map: &Mutex<HashMap<u32, String>>) {
+fn ingest_node_display_name(
+    from_radio: &protobufs::FromRadio,
+    map: &Mutex<HashMap<u32, String>>,
+    my_node_num: &Arc<AtomicU32>,
+) {
     let Some(protobufs::from_radio::PayloadVariant::NodeInfo(ni)) = &from_radio.payload_variant
     else {
         return;
@@ -375,18 +410,125 @@ fn ingest_node_display_name(from_radio: &protobufs::FromRadio, map: &Mutex<HashM
         return;
     };
     if let Ok(mut g) = map.lock() {
-        g.insert(ni.num, name);
+        g.insert(ni.num, name.clone());
+    }
+    if ni.num == my_node_num.load(Ordering::Relaxed) {
+        set_mesh_local_display_name(&name);
+    }
+}
+
+/// Hex preview of raw bytes for terminal debugging (Meshtastic serial is framed into protobuf `FromRadio` by the `meshtastic` crate before we see it here).
+fn mesh_hex_preview(bytes: &[u8], max: usize) -> String {
+    let n = bytes.len().min(max);
+    let mut s = String::with_capacity(n.saturating_mul(3).saturating_add(4));
+    for (i, b) in bytes.iter().take(n).enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    if bytes.len() > max {
+        s.push_str(" …");
+    }
+    s
+}
+
+/// Log every `FromRadio` received from the USB serial stream (post-framing protobuf, closest to “raw bridge” in app code).
+fn log_mesh_raw_incoming(packet: &protobufs::FromRadio) {
+    let mut buf = Vec::with_capacity(packet.encoded_len().saturating_add(32));
+    match packet.encode(&mut buf) {
+        Ok(()) => {
+            eprintln!(
+                "[MESH RAW] id={} protobuf_len={} hex_preview={}",
+                packet.id,
+                buf.len(),
+                mesh_hex_preview(&buf, 384)
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[MESH RAW] id={} encode_error={e} (payload_variant present: {})",
+                packet.id,
+                packet.payload_variant.is_some()
+            );
+        }
+    }
+}
+
+/// When a decoded mesh packet is a text or position app payload, log clearly for field testing.
+fn log_mesh_text_and_gps_payloads(packet: &protobufs::FromRadio) {
+    let Some(protobufs::from_radio::PayloadVariant::Packet(mesh_packet)) = packet.payload_variant.as_ref()
+    else {
+        return;
+    };
+    let Some(inner) = mesh_packet.payload_variant.as_ref() else {
+        return;
+    };
+    let data = match inner {
+        protobufs::mesh_packet::PayloadVariant::Decoded(d) => d,
+        protobufs::mesh_packet::PayloadVariant::Encrypted(_) => return,
+    };
+    let port = data.portnum;
+    let text_app = protobufs::PortNum::TextMessageApp as i32;
+    let pos_app = protobufs::PortNum::PositionApp as i32;
+
+    if port == text_app {
+        let preview: String = String::from_utf8_lossy(&data.payload)
+            .chars()
+            .take(240)
+            .collect();
+        eprintln!(
+            "[MESH TEXT] from={} to={} channel={} payload_len={} preview={}",
+            mesh_packet.from,
+            mesh_packet.to,
+            mesh_packet.channel,
+            data.payload.len(),
+            preview.replace('\n', "\\n")
+        );
+        return;
+    }
+
+    if port == pos_app {
+        match protobufs::Position::decode(data.payload.as_slice()) {
+            Ok(pos) => {
+                let lat_deg = pos.latitude_i.map(|i| (i as f64) * 1e-7);
+                let lon_deg = pos.longitude_i.map(|i| (i as f64) * 1e-7);
+                eprintln!(
+                    "[MESH GPS] from={} to={} channel={} latitude_i={:?} longitude_i={:?} lat_deg={:?} lon_deg={:?} altitude_msl={:?} time={} timestamp={}",
+                    mesh_packet.from,
+                    mesh_packet.to,
+                    mesh_packet.channel,
+                    pos.latitude_i,
+                    pos.longitude_i,
+                    lat_deg,
+                    lon_deg,
+                    pos.altitude,
+                    pos.time,
+                    pos.timestamp
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[MESH GPS] from={} to={} channel={} decode_error={e} raw_len={}",
+                    mesh_packet.from,
+                    mesh_packet.to,
+                    mesh_packet.channel,
+                    data.payload.len()
+                );
+            }
+        }
     }
 }
 
 /// Decoded mesh text: sender, destination, channel field, payload.
-fn try_decode_mesh_text(from_radio: protobufs::FromRadio) -> Option<(u32, u32, u32, String)> {
-    let payload_variant = from_radio.payload_variant?;
+fn try_decode_mesh_text(from_radio: &protobufs::FromRadio) -> Option<(u32, u32, u32, String)> {
+    let payload_variant = from_radio.payload_variant.as_ref()?;
     let mesh_packet = match payload_variant {
         protobufs::from_radio::PayloadVariant::Packet(p) => p,
         _ => return None,
     };
-    let inner = mesh_packet.payload_variant?;
+    let inner = mesh_packet.payload_variant.as_ref()?;
     let data = match inner {
         protobufs::mesh_packet::PayloadVariant::Decoded(d) => d,
         protobufs::mesh_packet::PayloadVariant::Encrypted(_) => return None,
@@ -488,13 +630,21 @@ async fn mesh_radio_main_loop(
                 from_radio = packet_rx.recv() => {
                     match from_radio {
                         Some(packet) => {
+                            log_mesh_raw_incoming(&packet);
+                            log_mesh_text_and_gps_payloads(&packet);
+
                             if let Some(n) = extract_my_node_num(&packet) {
                                 my_node_num.store(n, Ordering::Relaxed);
                                 MESH_MY_NODE_NUM.store(n, Ordering::Relaxed);
+                                if let Ok(g) = node_names.lock() {
+                                    if let Some(nm) = g.get(&n) {
+                                        set_mesh_local_display_name(nm);
+                                    }
+                                }
                             }
-                            ingest_node_display_name(&packet, &node_names);
+                            ingest_node_display_name(&packet, &node_names, &my_node_num);
 
-                            if let Some((from, to, channel, text)) = try_decode_mesh_text(packet) {
+                            if let Some((from, to, channel, text)) = try_decode_mesh_text(&packet) {
                                 if channel == PRIMARY_MESH_CHANNEL && to == MESHTASTIC_BROADCAST_TO {
                                     if let Some(inbound) = mesh_logbook::try_parse_logbook_packet(&text) {
                                         match inbound {
@@ -592,77 +742,28 @@ async fn mesh_radio_main_loop(
                                 }
 
                                 let my = my_node_num.load(Ordering::Relaxed);
-                                let cfg = load_config(app_data_dir.as_path());
-                                if cfg.mesh_ai_auto_reply.unwrap_or(true)
-                                    && should_run_mesh_ai(from, to, my, channel)
+                                if should_run_mesh_ai(from, to, my, channel)
                                     && !mesh_logbook::is_logbook_mesh_text(&text)
                                     && !mesh_calendar::is_calendar_mesh_text(&text)
                                 {
-                                    let display_name = node_names
-                                        .lock()
-                                        .ok()
-                                        .and_then(|g| g.get(&from).cloned())
-                                        .unwrap_or_else(|| format!("Node {}", from));
                                     let app_dir = app_data_dir.clone();
                                     let app_h = app.clone();
-                                    let cmd_tx_ai = cmd_tx.clone();
+                                    let db_r = Arc::clone(&db);
                                     let sem = ai_permits.clone();
-                                    tokio::spawn(async move {
-                                        let _permit = match sem.acquire_owned().await {
-                                            Ok(p) => p,
-                                            Err(_) => return,
-                                        };
-                                        let app_dir2 = app_dir.clone();
-                                        let app_h2 = app_h.clone();
-                                        let chunks = match tokio::task::spawn_blocking(move || {
-                                            process_mesh_message_and_reply(
-                                                app_dir2.as_path(),
-                                                Some(&app_h2),
-                                                from,
-                                                &text,
-                                                &display_name,
-                                            )
-                                        })
-                                        .await
-                                        {
-                                            Ok(Ok(c)) => c,
-                                            Ok(Err(e)) => {
-                                                eprintln!("[mesh-ai] {}", e);
-                                                return;
-                                            }
-                                            Err(e) => {
-                                                eprintln!("[mesh-ai] join error: {e}");
-                                                return;
-                                            }
-                                        };
-                                        for (i, part) in chunks.iter().enumerate() {
-                                            if part.is_empty() {
-                                                continue;
-                                            }
-                                            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                                            match cmd_tx_ai.try_send(MeshCommand::SendText {
-                                                text: part.clone(),
-                                                want_ack: i + 1 == chunks.len(),
-                                                channel,
-                                                destination: Some(from),
-                                                reply: reply_tx,
-                                            }) {
-                                                Ok(()) => {}
-                                                Err(TrySendError::Full(cmd)) => {
-                                                    fail_mesh_command(cmd, "Meshtastic command queue is full.".to_string());
-                                                    eprintln!("[mesh-ai] outgoing command queue full; stopping DM reply");
-                                                    return;
-                                                }
-                                                Err(TrySendError::Closed(cmd)) => {
-                                                    fail_mesh_command(cmd, "Meshtastic command channel closed.".to_string());
-                                                    return;
-                                                }
-                                            }
-                                            if reply_rx.await.is_err() {
-                                                return;
-                                            }
-                                        }
-                                    });
+                                    let sink: std::sync::Arc<dyn crate::mesh_router::MeshDmSink> =
+                                        std::sync::Arc::new(MeshRadioControl::from_sender(cmd_tx.clone()));
+                                    crate::mesh_router::spawn_network_job(
+                                        sink,
+                                        app_h,
+                                        app_dir,
+                                        db_r,
+                                        sem,
+                                        from,
+                                        to,
+                                        my,
+                                        channel,
+                                        text.clone(),
+                                    );
                                 }
                             }
                         }
@@ -714,3 +815,20 @@ async fn mesh_radio_main_loop(
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }
+
+impl crate::mesh_router::MeshDmSink for MeshRadioControl {
+    fn send_dm(
+        &self,
+        text: String,
+        want_ack: bool,
+        channel: u32,
+        destination: Option<u32>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'static>>
+    {
+        let this = self.clone();
+        Box::pin(async move {
+            this.send_text_message(text, want_ack, channel, destination).await
+        })
+    }
+}
+

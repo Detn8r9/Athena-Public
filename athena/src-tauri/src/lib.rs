@@ -29,6 +29,7 @@ mod maps;
 mod mbtiles_io;
 mod mesh_ai;
 mod mesh_calendar;
+mod mesh_router;
 mod mesh_listener;
 mod mesh_logbook;
 mod mesh_radio;
@@ -232,6 +233,105 @@ async fn send_mesh_message(
             destination_node_id,
         )
         .await
+}
+
+#[tauri::command]
+fn add_mesh_profile(
+    state: tauri::State<'_, AppState>,
+    node_id: i64,
+    username: String,
+    counter_sign: String,
+) -> Result<db::MeshProfile, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .mesh_profile_upsert(node_id, &username, &counter_sign)
+}
+
+#[tauri::command]
+fn remove_mesh_profile(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .mesh_profile_delete_by_id(&id)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_mesh_profiles(state: tauri::State<'_, AppState>) -> Result<Vec<db::MeshProfile>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .mesh_profile_list()
+}
+
+#[tauri::command]
+fn list_mesh_network_nodes_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::MeshNetworkNodeSummary>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_mesh_network_nodes()
+}
+
+#[tauri::command]
+fn list_mesh_chats_for_node_cmd(
+    state: tauri::State<'_, AppState>,
+    node_id: i64,
+    limit: Option<usize>,
+) -> Result<Vec<db::MeshChatRow>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_mesh_chats_for_node(node_id, limit.unwrap_or(200))
+}
+
+#[tauri::command]
+async fn send_mesh_operator_chat_message(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    control: tauri::State<'_, mesh_listener::MeshRadioControl>,
+    node_id: i64,
+    text: String,
+) -> Result<(), String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("Message text is empty.".to_string());
+    }
+    if text.len() > 233 {
+        return Err("Message is too long (max 233 bytes for typical Meshtastic text).".to_string());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let id = uuid::Uuid::new_v4().to_string();
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .mesh_chat_insert(&id, node_id, "human", "chat", &text, now)?;
+    let dest = u32::try_from(node_id)
+        .map_err(|_| "Node id is out of range for Meshtastic.".to_string())?;
+    control
+        .send_text_message(
+            text,
+            false,
+            mesh_ai::PRIMARY_MESH_CHANNEL,
+            Some(dest),
+        )
+        .await?;
+    let _ = app.emit(
+        mesh_router::MESH_NETWORK_CHAT_UPDATED,
+        serde_json::json!({ "nodeId": dest }),
+    );
+    Ok(())
 }
 
 static LOGBOOK_ENTRY_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -579,6 +679,52 @@ fn get_mesh_ai_auto_reply(app: tauri::AppHandle) -> Result<bool, String> {
 #[tauri::command]
 fn is_mesh_radio_connected() -> bool {
     mesh_listener::mesh_radio_is_connected()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshRadioIdentity {
+    connected: bool,
+    node_id: u32,
+    display_name: String,
+}
+
+#[tauri::command]
+fn get_mesh_radio_identity() -> MeshRadioIdentity {
+    MeshRadioIdentity {
+        connected: mesh_listener::mesh_radio_is_connected(),
+        node_id: mesh_listener::mesh_local_node_id(),
+        display_name: mesh_listener::mesh_local_display_name(),
+    }
+}
+
+#[tauri::command]
+fn is_mesh_remote_registration_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let cfg = load_config(&app_data_dir);
+    Ok(cfg
+        .mesh_registration_admin_password
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+fn set_mesh_registration_admin_password(
+    app: tauri::AppHandle,
+    password: Option<String>,
+) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut cfg = load_config(&app_data_dir);
+    cfg.mesh_registration_admin_password = password.and_then(|s| {
+        let t = s.trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
+    save_config(&app_data_dir, &cfg)
 }
 
 #[tauri::command]
@@ -4407,13 +4553,11 @@ pub fn run() {
                 app_data_dir.clone(),
                 Arc::clone(&db),
             );
-            let mesh_control_for_lan = mesh_control.clone();
             app.manage(mesh_control);
             lan_sync::spawn_lan_sync(
                 app.handle().clone(),
                 app_data_dir.clone(),
                 Arc::clone(&db),
-                mesh_control_for_lan,
             );
             let (watcher_tx, watcher_rx) = crossbeam_channel::unbounded();
             run_watcher_loop(Arc::clone(&db), watcher_rx, app_data_dir.clone(), app.handle().clone());
@@ -4694,9 +4838,18 @@ pub fn run() {
             usb::get_available_usbs,
             commands::library_source::open_library_source,
             send_mesh_message,
+            add_mesh_profile,
+            remove_mesh_profile,
+            list_mesh_profiles,
+            list_mesh_network_nodes_cmd,
+            list_mesh_chats_for_node_cmd,
+            send_mesh_operator_chat_message,
             get_mesh_ai_auto_reply,
             set_mesh_ai_auto_reply,
             is_mesh_radio_connected,
+            get_mesh_radio_identity,
+            is_mesh_remote_registration_enabled,
+            set_mesh_registration_admin_password,
             logbook_list_entries,
             logbook_add_entry,
             logbook_delete_entry,

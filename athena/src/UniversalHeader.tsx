@@ -47,7 +47,8 @@ export interface UniversalHeaderProps {
   onOpenArchive: () => void;
   onOpenSettings: () => void;
   onOpenHelp: () => void;
-  onOpenMesh: () => void;
+  /** Open the full Meshtastic / mesh network screen (not only the quick-send modal). */
+  onNavigateToMeshNetwork: () => void;
   onOpenCalendar: () => void;
   calendarDateTimeLabel: string;
   batteryState: UniversalHeaderBatteryState | null;
@@ -67,7 +68,7 @@ export function UniversalHeader({
   onOpenArchive,
   onOpenSettings,
   onOpenHelp,
-  onOpenMesh,
+  onNavigateToMeshNetwork,
   onOpenCalendar,
   calendarDateTimeLabel,
   batteryState,
@@ -141,17 +142,16 @@ export function UniversalHeader({
           >
             <Library size={22} strokeWidth={2} aria-hidden />
           </button>
-          {meshRadioConnected ? (
-            <button
-              type="button"
-              className="universal-header-icon-btn"
-              onClick={onOpenMesh}
-              title={lx.navMeshTitle}
-              aria-label={lx.navMeshAria}
-            >
-              <Antenna size={22} strokeWidth={2} aria-hidden />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className={viewButtonClass(currentView === "mesh")}
+            onClick={onNavigateToMeshNetwork}
+            title={meshRadioConnected ? lx.navMeshTitle : `${lx.navMeshTitle} (open setup)`}
+            aria-label={lx.navMeshAria}
+            aria-current={currentView === "mesh" ? "page" : undefined}
+          >
+            <Antenna size={22} strokeWidth={2} aria-hidden />
+          </button>
           <button
             type="button"
             className={viewButtonClass(currentView === "radio")}

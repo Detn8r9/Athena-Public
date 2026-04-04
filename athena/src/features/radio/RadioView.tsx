@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { CheckCircle2, Clock, Radio, Signal } from "lucide-react";
+import { Antenna, CheckCircle2, Clock, Radio, Signal } from "lucide-react";
 import { usePageVisible } from "../../usePageVisible";
 import { useLexicon } from "../../shared/lexicon";
+import type { MeshRadioIdentity } from "../../MeshNetworkHubView";
 
 export interface RadioTelemetryPayload {
   rssi: number;
@@ -63,7 +64,14 @@ function formatTs(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString();
 }
 
-export function RadioView() {
+type RadioViewProps = {
+  /** Opens the full Meshtastic / mesh inbox screen in the main app shell. */
+  onOpenMeshNetwork?: () => void;
+  /** From the main app; avoids a second USB probe in this panel. */
+  meshRadioConnected?: boolean | null;
+};
+
+export function RadioView({ onOpenMeshNetwork, meshRadioConnected }: RadioViewProps) {
   const lx = useLexicon();
   const [ports, setPorts] = useState<string[]>([]);
   const [selectedPort, setSelectedPort] = useState("");
@@ -102,6 +110,25 @@ export function RadioView() {
   const sdrAbortRef = useRef<AbortController | null>(null);
   const sdrRafRef = useRef<number | null>(null);
   const pageVisible = usePageVisible();
+  const [meshIdentity, setMeshIdentity] = useState<MeshRadioIdentity | null>(null);
+
+  const refreshMeshIdentity = useCallback(async () => {
+    try {
+      const id = await invoke<MeshRadioIdentity>("get_mesh_radio_identity");
+      setMeshIdentity(id);
+    } catch {
+      setMeshIdentity(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!onOpenMeshNetwork) return;
+    void refreshMeshIdentity();
+    const u = listen("athena:mesh-connection", () => void refreshMeshIdentity());
+    return () => {
+      void u.then((fn) => fn());
+    };
+  }, [onOpenMeshNetwork, refreshMeshIdentity]);
 
   const loadMeshMessages = useCallback(async () => {
     try {
@@ -580,12 +607,49 @@ export function RadioView() {
     }
   }
 
+  const meshUsbOk = meshRadioConnected === true || meshIdentity?.connected === true;
+
   return (
     <div className="radio-view-root glass-panel app-view-placeholder" style={{ display: "grid", gap: "0.9rem" }}>
       <h2 className="app-view-placeholder-title" style={{ marginBottom: "0.2rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
         <Radio size={22} strokeWidth={2} aria-hidden />
         {lx.radioTitle}
       </h2>
+      <p className="text-muted small" style={{ margin: 0 }}>
+        Comms is for serial packet radios, logs, and SDR listening. Meshtastic (long-range mesh handhelds over USB) has
+        its own inbox—use the card below so you are not hunting through technical menus.
+      </p>
+
+      {onOpenMeshNetwork ? (
+        <section className="glass-panel radio-meshtastic-bridge" style={{ padding: "0.9rem", display: "grid", gap: "0.5rem" }}>
+          <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.45rem", fontSize: "1.05rem" }}>
+            <Antenna size={20} strokeWidth={2} aria-hidden />
+            Meshtastic mesh inbox
+          </h3>
+          <p className="text-muted small" style={{ margin: 0 }}>
+            Read and send mesh text in plain language, manage who is allowed to talk to this station, and see whether
+            your USB radio is connected.
+          </p>
+          {meshUsbOk ? (
+            <p className="small" style={{ margin: 0 }}>
+              <span className="mesh-network-hub-dot mesh-network-hub-dot-ok" style={{ marginRight: "0.35rem" }} aria-hidden />
+              USB mesh radio:{" "}
+              <strong>
+                {meshIdentity?.displayName?.trim() ||
+                  (meshIdentity?.nodeId ? `Node ${meshIdentity.nodeId}` : "Connected")}
+              </strong>
+            </p>
+          ) : (
+            <p className="text-muted small" style={{ margin: 0 }}>
+              No USB Meshtastic device detected yet. Plug one in, wait a few seconds, then open the mesh screen—you can
+              still read help text there while offline.
+            </p>
+          )}
+          <button type="button" className="glass-action-btn" onClick={onOpenMeshNetwork} style={{ justifySelf: "start" }}>
+            Open mesh network screen
+          </button>
+        </section>
+      ) : null}
 
       <div className="radio-view-panels" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.65rem" }}>
         <div className="glass-panel radio-signal-panel">
