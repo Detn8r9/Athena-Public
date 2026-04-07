@@ -20,16 +20,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     cmake \
-    libssl-dev \
-    libsqlite3-dev \
-    libwebkit2gtk-4.0-dev:amd64 \
-    libjavascriptcoregtk-4.0-dev:amd64 \
+    clang \
+    lld \
+    llvm \
+    libssl-dev:amd64 \
+    libsqlite3-dev:amd64 \
+    libwebkit2gtk-4.1-dev:amd64 \
+    libjavascriptcoregtk-4.1-dev:amd64 \
+    libsoup-3.0-dev:amd64 \
     libgtk-3-dev:amd64 \
     libudev-dev:amd64 \
-    libayatana-appindicator3-dev \
-    librsvg2-dev \
+    libayatana-appindicator3-dev:amd64 \
+    librsvg2-dev:amd64 \
     patchelf \
-    gcc-aarch64-linux-gnu \
+    gcc-x86-64-linux-gnu \
     file \
     && rm -rf /var/lib/apt/lists/*
 
@@ -49,8 +53,8 @@ RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain stable \
         aarch64-unknown-linux-gnu
 
 RUN printf '%s\n' \
-    '[target.aarch64-unknown-linux-gnu]' \
-    'linker = "aarch64-linux-gnu-gcc"' \
+    '[target.x86_64-unknown-linux-gnu]' \
+    'linker = "x86_64-linux-gnu-gcc"' \
     >> /usr/local/cargo/config.toml
 
 RUN cargo install cargo-xwin

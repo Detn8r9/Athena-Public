@@ -7,7 +7,6 @@
     "core:default",
     "opener:default",
     "dialog:default",
-    "macos-permissions:default",
     {
       "identifier": "shell:allow-spawn",
       "allow": [
