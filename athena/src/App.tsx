@@ -24,17 +24,24 @@ import { hexToRgbCsv } from "./colorUtils";
 import type { AppView } from "./appView";
 import { APP_VIEW_LABELS, APP_VIEWS, readStartupView, saveStartupView } from "./appView";
 import { UniversalHeader } from "./UniversalHeader";
+import { useAuth } from "./auth/AuthContext";
+import { LockScreen } from "./LockScreen";
+import { LogisticsLogbookHub } from "./LogisticsLogbookHub";
+import { PersonnelHub } from "./PersonnelHub";
 import { DashboardView, type DashboardDestination } from "./DashboardView";
 import { usePageVisible } from "./usePageVisible";
-import { LogbookView } from "./LogbookView";
 import { CalendarView } from "./CalendarView";
+import { RankAvatar } from "./RankAvatar";
+import { RANK_DESCRIPTIONS, formatRomanRank } from "./romanRanks";
 import { AiModelManager } from "./AiModelManager";
 import { AcademyView } from "./AcademyView";
 import { ArchiveHub, type ArchiveNetworkSubTabId, type ArchivePrimaryTabId } from "./features/library-installer/ArchiveHub";
 import { getLexicon, LexiconProvider, type LexiconThemeId } from "./shared/lexicon";
+import { CommunicationsHub } from "./CommunicationsHub";
 import { RadioView } from "./features/radio/RadioView";
 import { RadioSettingsView } from "./features/radio/RadioSettingsView";
 import { ATHENA_ACRONYM_PARTS, ATHENA_FULL_NAME } from "./shared/branding";
+import { CommsHubIcon } from "./shared/CommsHubIcon";
 
 type UserAndInferenceSettings = {
   user_display_name: string | null;
@@ -53,6 +60,7 @@ type UserAndInferenceSettings = {
   openai_compatible_api_key_set: boolean;
   active_embedding_model_folder: string;
   active_reranker_model_folder: string;
+  ai_inference_sleep: boolean;
 };
 
 registerPmtilesMaplibreProtocolOnce();
@@ -411,6 +419,27 @@ interface ChatSummary {
   updated_at: number;
 }
 
+/** Mirrors `PersonnelPublic` from the Tauri backend for chat audit UI. */
+interface PersonnelPublicForChat {
+  id: string;
+  name: string;
+  division: string;
+  rank_level: number;
+  created_at: number;
+  display_name: string | null;
+}
+
+/** Payload from `athena:mesh-emergency` and local banner state. */
+interface MeshEmergencyUiRow {
+  nodeId: number;
+  username: string;
+  sosState: number;
+  isRegistered: boolean;
+  lat?: number | null;
+  lon?: number | null;
+  lastSeenAt?: number | null;
+}
+
 interface SavedChat {
   id: string;
   title: string;
@@ -721,6 +750,23 @@ function normalizeCustomThemeForSave(t: BackendCustomTheme): BackendCustomTheme 
 }
 
 function App() {
+  const { user, logout, rankLevel, setMyPersonnelDisplayName, setMyLoginName, setMyPin } = useAuth();
+  const [rosterDisplayDraft, setRosterDisplayDraft] = useState("");
+  useEffect(() => {
+    setRosterDisplayDraft(user?.display_name ?? "");
+  }, [user?.id, user?.display_name]);
+  const [loginNameDraft, setLoginNameDraft] = useState("");
+  useEffect(() => {
+    setLoginNameDraft(user?.name ?? "");
+  }, [user?.id, user?.name]);
+  const [meLoginErr, setMeLoginErr] = useState<string | null>(null);
+  const [meLoginSaving, setMeLoginSaving] = useState(false);
+  const [mePinErr, setMePinErr] = useState<string | null>(null);
+  const [mePinOk, setMePinOk] = useState(false);
+  const [pinCurrent, setPinCurrent] = useState("");
+  const [pinNew, setPinNew] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [pinBusy, setPinBusy] = useState(false);
   const [theme, setTheme] = useState<ThemeOrCustom>(() => loadTheme());
   const [customBg, setCustomBg] = useState<string>(() => loadCustomColors().bg);
   const [customPrimary, setCustomPrimary] = useState<string>(() => loadCustomColors().primary);
@@ -734,20 +780,6 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [offlineMapManagerOpen, setOfflineMapManagerOpen] = useState(false);
-  useEffect(() => {
-    let removeTimer: ReturnType<typeof setTimeout> | undefined;
-    const hideTimer = window.setTimeout(() => {
-      const el = document.getElementById("athena-splash");
-      if (el) {
-        el.classList.add("hidden");
-        removeTimer = window.setTimeout(() => el.remove(), 800);
-      }
-    }, 5000);
-    return () => {
-      window.clearTimeout(hideTimer);
-      if (removeTimer !== undefined) window.clearTimeout(removeTimer);
-    };
-  }, []);
   const [archivePrimaryTab, setArchivePrimaryTab] = useState<ArchivePrimaryTabId>("local");
   const [archiveNetworkSubTab, setArchiveNetworkSubTab] = useState<ArchiveNetworkSubTabId>("packages");
   const [meshOpen, setMeshOpen] = useState(false);
@@ -792,6 +824,7 @@ function App() {
   const [openaiModelId, setOpenaiModelId] = useState("");
   const [openaiApiKeyLocal, setOpenaiApiKeyLocal] = useState("");
   const [aiInferenceReady, setAiInferenceReady] = useState(false);
+  const [aiInferenceSleep, setAiInferenceSleep] = useState(false);
   const [availableChatModels, setAvailableChatModels] = useState<string[]>([]);
   const [availableEmbeddingModels, setAvailableEmbeddingModels] = useState<string[]>([]);
   const [availableRerankerModels, setAvailableRerankerModels] = useState<string[]>([]);
@@ -833,6 +866,13 @@ function App() {
   const [findInChatIndex, setFindInChatIndex] = useState(0);
   const [pinnedChatIds, setPinnedChatIds] = useState<string[]>(() => loadPinnedChatIds());
   const [lastOpenedMap, setLastOpenedMap] = useState<Record<string, number>>(() => loadLastOpenedMap());
+  const [chatAuditTargetUserId, setChatAuditTargetUserId] = useState<string | null>(null);
+  const [chatPersonnelForAudit, setChatPersonnelForAudit] = useState<PersonnelPublicForChat[]>([]);
+  const canAuditLocalChats = useMemo(() => (rankLevel ?? 0) >= 4, [rankLevel]);
+  const localChatHistoryReadOnly = useMemo(() => {
+    if (!canAuditLocalChats || chatAuditTargetUserId == null || !user?.id) return false;
+    return chatAuditTargetUserId !== user.id;
+  }, [canAuditLocalChats, chatAuditTargetUserId, user?.id]);
   const findInChatInputRef = useRef<HTMLInputElement>(null);
   const messageRefsRef = useRef<(HTMLDivElement | null)[]>([]);
 
@@ -851,6 +891,7 @@ function App() {
   const [usbExportModalKind, setUsbExportModalKind] = useState<"essentials" | "complete">("essentials");
   type SettingsPanel =
     | "menu"
+    | "me"
     | "general"
     | "ai"
     | "location"
@@ -869,6 +910,19 @@ function App() {
   const settingsBodyRef = useRef<HTMLDivElement>(null);
   const menuScrollPosRef = useRef(0);
   const [meshRadioConnected, setMeshRadioConnected] = useState<boolean | null>(null);
+  const [meshEmergencyRows, setMeshEmergencyRows] = useState(() => new Map<number, MeshEmergencyUiRow>());
+
+  const meshCommsHubEmergencyStrip = useMemo(() => {
+    const rows = [...meshEmergencyRows.values()];
+    if (rows.length === 0) return null;
+    const activeN = rows.filter((r) => r.sosState === 1).length;
+    const suspN = rows.filter((r) => r.sosState === 2).length;
+    if (activeN > 0 && suspN > 0) {
+      return `Mesh: ${activeN} emergency active, ${suspN} pending clear verification.`;
+    }
+    if (activeN > 0) return `Mesh: ${activeN} node(s) in active emergency.`;
+    return `Mesh: ${suspN} node(s) pending clear verification.`;
+  }, [meshEmergencyRows]);
 
   function goToSettingsSubpanel(panel: SettingsPanel) {
     if (settingsPanel === "menu" && settingsBodyRef.current) {
@@ -1072,6 +1126,20 @@ function App() {
     }
     return { userLat: null, userLon: null };
   }, [featureMapEnabled, currentView, mapViewCenter]);
+  useEffect(() => {
+    if (!user) return;
+    const r = user.rank_level;
+    if ((currentView === "comms_hub" || currentView === "mesh" || currentView === "radio") && r < 2) {
+      setCurrentView("chat");
+    }
+    if (currentView === "personnel" && r < 4) {
+      setCurrentView("home");
+    }
+    if (currentView === "map" && featureMapEnabled && r < 4) {
+      setCurrentView("home");
+    }
+  }, [user, currentView, featureMapEnabled]);
+
 
   const headerDownloadBar = useMemo(() => {
     const entries = Object.entries(downloadJobs);
@@ -2054,6 +2122,7 @@ function App() {
       if (!uis.openai_compatible_api_key_set) {
         setOpenaiApiKeyLocal("");
       }
+      setAiInferenceSleep(Boolean(uis.ai_inference_sleep));
       const dismissKey = `athena_birthday_modal_dismissed_${localDateYYYYMMDD()}`;
       try {
         if (uis.is_birthday_today && !localStorage.getItem(dismissKey)) {
@@ -2119,6 +2188,16 @@ function App() {
       setModelScannerPathsLoading(false);
     }
   }, []);
+
+  const toggleAiInferenceSleep = useCallback(async () => {
+    try {
+      const next = !aiInferenceSleep;
+      await invoke("set_ai_inference_sleep", { value: next });
+      setAiInferenceSleep(next);
+    } catch {
+      /* ignore */
+    }
+  }, [aiInferenceSleep]);
 
   function dismissBirthdayModal() {
     const key = `athena_birthday_modal_dismissed_${localDateYYYYMMDD()}`;
@@ -2211,9 +2290,13 @@ function App() {
     }
   }
 
-  async function loadChatList() {
+  const loadChatList = useCallback(async () => {
     try {
-      const list = await invoke<ChatSummary[]>("list_chats");
+      const payload: { targetUserId?: string } = {};
+      if (canAuditLocalChats && chatAuditTargetUserId) {
+        payload.targetUserId = chatAuditTargetUserId;
+      }
+      const list = await invoke<ChatSummary[]>("list_chats", payload);
       setChatList(list);
       setPinnedChatIds((prev) => {
         const next = prev.filter((id) => list.some((c) => c.id === id));
@@ -2223,12 +2306,16 @@ function App() {
     } catch (e) {
       logError(String(e));
     }
-  }
+  }, [canAuditLocalChats, chatAuditTargetUserId]);
 
   async function loadChat(id: string) {
     try {
       setTemporaryChat(false);
-      const chat = await invoke<SavedChat | null>("get_chat", { id });
+      const getPayload: { id: string; targetUserId?: string } = { id };
+      if (canAuditLocalChats && chatAuditTargetUserId) {
+        getPayload.targetUserId = chatAuditTargetUserId;
+      }
+      const chat = await invoke<SavedChat | null>("get_chat", getPayload);
       if (chat?.messages) {
         setMessages(chat.messages as ChatMessage[]);
         setCurrentChatId(chat.id);
@@ -2241,6 +2328,7 @@ function App() {
   }
 
   async function newChat() {
+    if (localChatHistoryReadOnly) return;
     try {
       const msgs = messages;
       if (msgs.length > 0 && currentChatId && !temporaryChat) {
@@ -2270,7 +2358,7 @@ function App() {
   }
 
   async function saveCurrentChat(msgs: ChatMessage[]): Promise<string | null> {
-    if (msgs.length === 0 || temporaryChat) return null;
+    if (localChatHistoryReadOnly || msgs.length === 0 || temporaryChat) return null;
     try {
       const payload: {
         id?: string;
@@ -2320,6 +2408,7 @@ function App() {
   }
 
   async function deleteChat(id: string) {
+    if (localChatHistoryReadOnly) return;
     try {
       setLibraryError(null);
       await invoke("delete_chat", { id });
@@ -2949,8 +3038,27 @@ function App() {
   }, [deviceOverlayEnabled, pageVisible]);
 
   useEffect(() => {
-    loadChatList();
-  }, []);
+    void loadChatList();
+  }, [loadChatList]);
+
+  useEffect(() => {
+    if (!canAuditLocalChats) {
+      setChatAuditTargetUserId(null);
+      setChatPersonnelForAudit([]);
+      return;
+    }
+    let cancelled = false;
+    void invoke<PersonnelPublicForChat[]>("list_personnel")
+      .then((list) => {
+        if (!cancelled) setChatPersonnelForAudit(Array.isArray(list) ? list : []);
+      })
+      .catch(() => {
+        if (!cancelled) setChatPersonnelForAudit([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canAuditLocalChats, user?.id]);
 
   /** Load profile + inference prefs on boot so birthday modal and AI state work before opening Settings. */
   useEffect(() => {
@@ -3011,7 +3119,17 @@ function App() {
 
   useEffect(() => {
     const unlisten = listen("athena:mesh-chats-updated", () => {
-      loadChatList();
+      void loadChatList();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [loadChatList]);
+
+  useEffect(() => {
+    const unlisten = listen<{ asleep?: boolean }>("athena:ai-inference-sleep-changed", (ev) => {
+      const v = ev.payload?.asleep;
+      if (typeof v === "boolean") setAiInferenceSleep(v);
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -3168,6 +3286,111 @@ function App() {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  useEffect(() => {
+    const unlisten = listen<{ node_id: number; preview: string; kind?: string }>(
+      "athena:mesh-operator-queue-message",
+      (event) => {
+        const p = event.payload;
+        if (p && typeof p.node_id === "number") {
+          const preview = typeof p.preview === "string" ? p.preview : "";
+          const kind = typeof p.kind === "string" ? p.kind : "";
+          let tag = "[//op]";
+          if (kind === "clearance") tag = "[//clearance]";
+          else if (kind === "emergency") tag = "[//emergency]";
+          const line = `${tag} Node ${p.node_id}: ${preview}`;
+          const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          setMeshMessages((prev) =>
+            appendMeshMessageCapped(prev, { id, senderId: p.node_id, text: line, at: Date.now() }),
+          );
+          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+            try {
+              new Notification("ATHENA: operator message", {
+                body: line.length > 180 ? `${line.slice(0, 177)}…` : line,
+              });
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      },
+    );
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const sync = async () => {
+      try {
+        const rows = await invoke<
+          Array<{
+            nodeId: number;
+            username: string;
+            sosState: number;
+            isRegistered?: boolean;
+          }>
+        >("mesh_emergency_list_active");
+        if (cancelled) return;
+        const m = new Map<number, MeshEmergencyUiRow>();
+        for (const r of rows) {
+          if (typeof r?.nodeId !== "number") continue;
+          const st = r.sosState;
+          if (st !== 1 && st !== 2) continue;
+          m.set(r.nodeId, {
+            nodeId: r.nodeId,
+            username: typeof r.username === "string" && r.username.trim() ? r.username : `Node ${r.nodeId}`,
+            sosState: st,
+            isRegistered: r.isRegistered !== false,
+          });
+        }
+        setMeshEmergencyRows(m);
+      } catch {
+        if (!cancelled) setMeshEmergencyRows(new Map());
+      }
+    };
+    void sync();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, meshRadioConnected]);
+
+  useEffect(() => {
+    const unlisten = listen<{
+      nodeId: number;
+      username: string;
+      sosState: number;
+      isRegistered: boolean;
+      lat?: number | null;
+      lon?: number | null;
+      lastSeenAt?: number | null;
+    }>("athena:mesh-emergency", (event) => {
+      const p = event.payload;
+      if (!p || typeof p.nodeId !== "number" || typeof p.sosState !== "number") return;
+      setMeshEmergencyRows((prev) => {
+        const n = new Map(prev);
+        if (p.sosState === 0) {
+          n.delete(p.nodeId);
+        } else {
+          n.set(p.nodeId, {
+            nodeId: p.nodeId,
+            username: typeof p.username === "string" && p.username.trim() ? p.username : `Node ${p.nodeId}`,
+            sosState: p.sosState,
+            isRegistered: p.isRegistered !== false,
+            lat: p.lat ?? null,
+            lon: p.lon ?? null,
+            lastSeenAt: p.lastSeenAt ?? null,
+          });
+        }
+        return n;
+      });
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
 
   useEffect(() => {
     if (currentView === "archive") {
@@ -3885,6 +4108,7 @@ ${tag}` : tag;
   async function handleSend(overrideText?: string) {
     const text = (overrideText !== undefined ? overrideText : input).trim();
     if (!text || sending) return;
+    if (localChatHistoryReadOnly) return;
     const attachNote =
       attachments.length > 0
         ? `\n\n[Attached files for this question: ${attachments
@@ -4379,11 +4603,84 @@ ${tag}` : tag;
 
   const lexiconThemeId: LexiconThemeId = activeThemeId === "fallout" ? "fallout" : "survival";
   const lx = useMemo(() => getLexicon(lexiconThemeId), [lexiconThemeId]);
+
+  const meshSosGlobalBanner = useMemo(() => {
+    if (meshEmergencyRows.size === 0) return null;
+    const rows = [...meshEmergencyRows.values()];
+    const anyActive = rows.some((r) => r.sosState === 1);
+    const cls = anyActive
+      ? "mesh-sos-banner mesh-sos-banner--global mesh-sos-banner--active"
+      : "mesh-sos-banner mesh-sos-banner--global mesh-sos-banner--suspended";
+    const title = anyActive ? "Mesh emergency active" : "Pending Clear Verification";
+    const detail = rows
+      .map((r) => {
+        const who =
+          r.username + (r.isRegistered === false ? " (unregistered)" : "") + ` · node ${r.nodeId}`;
+        if (r.sosState === 2) return `${who} — suspended`;
+        return `${who} — active`;
+      })
+      .join(" · ");
+    return (
+      <div className="mesh-sos-banner-global-host">
+        <div className={cls} role="alert" aria-live="assertive">
+          <div className="mesh-sos-banner-main">
+            <span className="mesh-sos-banner-title">{title}</span>
+            <span className="mesh-sos-banner-detail">{detail}</span>
+          </div>
+          {canAuditLocalChats ? (
+            <div className="mesh-sos-banner-actions">
+              {rows
+                .filter((r) => r.sosState === 2)
+                .map((r) => (
+                  <span key={r.nodeId} className="mesh-sos-banner-node-actions">
+                    <span className="mesh-sos-banner-node-label">{r.username || `Node ${r.nodeId}`}</span>
+                    <button
+                      type="button"
+                      className="mesh-sos-banner-btn mesh-sos-banner-btn-accept"
+                      onClick={async () => {
+                        try {
+                          await invoke("mesh_emergency_operator_resolve", {
+                            nodeId: r.nodeId,
+                            acceptClear: true,
+                          });
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                    >
+                      Accept clear
+                    </button>
+                    <button
+                      type="button"
+                      className="mesh-sos-banner-btn"
+                      onClick={async () => {
+                        try {
+                          await invoke("mesh_emergency_operator_resolve", {
+                            nodeId: r.nodeId,
+                            acceptClear: false,
+                          });
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                    >
+                      Reject clear
+                    </button>
+                  </span>
+                ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }, [meshEmergencyRows, canAuditLocalChats]);
+
   return (
     <LexiconProvider themeId={lexiconThemeId}>
     <div
       ref={appRef}
       className="app"
+      data-lock-screen={!user ? "1" : undefined}
       data-theme={displayTheme}
       data-persona={displayPersona}
       data-fx-scanlines={customThemeForFx?.scanlines_enabled ? "1" : undefined}
@@ -4392,12 +4689,15 @@ ${tag}` : tag;
       data-fx-sharp={customThemeForFx?.sharp_corners ? "1" : undefined}
       style={Object.keys(appStyle).length ? appStyle : undefined}
     >
+      {!user ? (
+        <LockScreen />
+      ) : (
+      <>
       <div className="app-shell">
         <UniversalHeader
           currentView={currentView}
           setCurrentView={setCurrentView}
           featureMapEnabled={featureMapEnabled}
-          meshRadioConnected={meshRadioConnected === true}
           onOpenArchive={() => {
             setCurrentView("archive");
             setArchivePrimaryTab("local");
@@ -4405,13 +4705,17 @@ ${tag}` : tag;
           }}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenHelp={() => setHelpOpen(true)}
-          onNavigateToMeshNetwork={() => setCurrentView("mesh")}
           onOpenCalendar={() => setCurrentView("calendar")}
           calendarDateTimeLabel={headerClockLabel}
           batteryState={batteryState}
           headerDownloadBar={headerDownloadBar}
           ingestionState={ingestionState}
+          authRank={user.rank_level}
+          onLogout={logout}
+          aiInferenceSleep={aiInferenceSleep}
+          onToggleAiInferenceSleep={toggleAiInferenceSleep}
         />
+        {meshSosGlobalBanner}
         {(triageMenuOpen || activeTriageId) &&
           createPortal(
             <div
@@ -4496,6 +4800,7 @@ ${tag}` : tag;
           {currentView === "home" ? (
             <div className="home-view-scroll">
               <DashboardView
+                authRank={user.rank_level}
                 onOpenTriage={() => setTriageMenuOpen(true)}
                 onNavigate={(destination: DashboardDestination) => {
                   if (destination === "library") {
@@ -4541,6 +4846,7 @@ ${tag}` : tag;
             className="sidebar-new-chat"
             onClick={newChat}
             title="New chat"
+            disabled={localChatHistoryReadOnly}
           >
             <span className="sidebar-new-chat-icon" aria-hidden>
               <span className="sidebar-new-chat-icon-mask" />
@@ -4557,6 +4863,7 @@ ${tag}` : tag;
             }}
             title="Temporary chat (not saved)"
             aria-label="Temporary chat (not saved)"
+            disabled={localChatHistoryReadOnly}
           >
             <span className="sidebar-temp-chat-icon" aria-hidden>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -4578,6 +4885,33 @@ ${tag}` : tag;
             aria-label="Search previous chats"
           />
         </div>
+        {canAuditLocalChats ? (
+          <div className="sidebar-chat-audit-wrap">
+            <label className="sidebar-chat-audit-label" htmlFor="athena-chat-history-user">
+              Offline chat history
+            </label>
+            <select
+              id="athena-chat-history-user"
+              className="sidebar-chat-audit-select"
+              value={chatAuditTargetUserId ?? ""}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setChatAuditTargetUserId(v.length === 0 ? null : v);
+                setMessages([]);
+                setCurrentChatId(null);
+                setTemporaryChat(false);
+              }}
+              aria-label="Whose offline chat history to show"
+            >
+              <option value="">My chats</option>
+              {chatPersonnelForAudit.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {(p.display_name?.trim() || p.name) || p.id} — {p.division} (L{p.rank_level})
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
         <ul className="sidebar-chat-list">
           {sortedChatList.length === 0 ? (
             <li className="sidebar-chat-empty text-muted">
@@ -4621,6 +4955,7 @@ ${tag}` : tag;
                   }}
                   title="Delete chat"
                   aria-label="Delete chat"
+                  disabled={localChatHistoryReadOnly}
                 >
                   ×
                 </button>
@@ -4661,10 +4996,11 @@ ${tag}` : tag;
           <button
             type="button"
             className="glass-action-btn chat-workspace-mesh-home-btn"
-            onClick={() => setCurrentView("mesh")}
-            title="Open the full Meshtastic screen (status, help, and mesh inbox)"
+            onClick={() => setCurrentView("comms_hub")}
+            title="Open Communications Hub (use Mesh Data to open the full mesh screen)"
           >
-            Mesh home
+            <CommsHubIcon size={16} strokeWidth={2} className="chat-workspace-mesh-home-btn-icon" />
+            Communications Hub
           </button>
           <button
             type="button"
@@ -4917,6 +5253,11 @@ ${tag}` : tag;
           <MeshChatView />
         ) : (
           <>
+        {localChatHistoryReadOnly ? (
+          <div className="chat-audit-readonly-banner" role="status">
+            Viewing another operator&apos;s saved offline chat history. Sending messages and saving edits are disabled.
+          </div>
+        ) : null}
         {findInChatOpen && (
           <div className="find-in-chat-bar" role="search">
             <input
@@ -5130,6 +5471,7 @@ ${tag}` : tag;
                 <button
                   type="button"
                   className={`chat-tools-btn conversation-mode-btn${conversationModeActive ? " conversation-mode-btn-active" : ""}`}
+                  disabled={localChatHistoryReadOnly}
                   onClick={() => {
                     if (conversationModeActive) {
                       setConversationModeActive(false);
@@ -5163,6 +5505,7 @@ ${tag}` : tag;
                   className="chat-tools-btn"
                   onClick={() => setToolsOpen((v) => !v)}
                   aria-expanded={toolsOpen}
+                  disabled={localChatHistoryReadOnly}
                 >
                   <span className="chat-tools-icon">＋</span>
                   <span className="chat-tools-label">Tools</span>
@@ -5241,14 +5584,14 @@ ${tag}` : tag;
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              disabled={sending}
+              disabled={sending || localChatHistoryReadOnly}
               rows={1}
             />
             <button
               type="button"
               className={`send-btn${input.trim() ? " send-btn-active" : ""}`}
               onClick={() => handleSend()}
-              disabled={sending || !input.trim()}
+              disabled={sending || !input.trim() || localChatHistoryReadOnly}
               title="Send (Enter)"
             >
               Send
@@ -5357,14 +5700,21 @@ ${tag}` : tag;
               }}
             />
           ) : null}
+          {currentView === "comms_hub" ? (
+            <CommunicationsHub
+              onOpenMesh={() => setCurrentView("mesh")}
+              onOpenVoiceComms={() => setCurrentView("radio")}
+              meshEmergencyStrip={meshCommsHubEmergencyStrip}
+            />
+          ) : null}
           {currentView === "radio" ? (
             <RadioView
-              onOpenMeshNetwork={() => setCurrentView("mesh")}
+              onOpenMeshNetwork={() => setCurrentView("comms_hub")}
               meshRadioConnected={meshRadioConnected}
             />
           ) : null}
           {currentView === "mesh" ? (
-            <div className="home-view-scroll mesh-network-hub-scroll">
+            <div className="home-view-scroll">
               <MeshNetworkHubView
                 meshRadioConnected={meshRadioConnected}
                 onOpenQuickSend={() => setMeshOpen(true)}
@@ -5376,11 +5726,13 @@ ${tag}` : tag;
                   setCurrentView("chat");
                   setChatWorkspaceTab("local");
                 }}
-                onGoToComms={() => setCurrentView("radio")}
+                onGoToComms={() => setCurrentView("comms_hub")}
               />
             </div>
           ) : null}
-          {currentView === "logbook" ? <LogbookView meshConnected={meshRadioConnected === true} /> : null}
+          {currentView === "logbook" ? (
+            <LogisticsLogbookHub meshConnected={meshRadioConnected === true} />
+          ) : null}
           {currentView === "calendar" ? (
             <CalendarView
               timeFormat={timeFormat}
@@ -5403,6 +5755,7 @@ ${tag}` : tag;
               }}
             />
           ) : null}
+          {currentView === "personnel" ? <PersonnelHub /> : null}
         </div>
       </div>
       {birthdayModalVisible && (
@@ -5660,9 +6013,11 @@ ${tag}` : tag;
               >
                 {settingsPanel === "menu"
                   ? lx.settingsMenuTitle
-                  : settingsPanel === "general"
-                    ? lx.settingsPanelGeneral
-                    : settingsPanel === "ai"
+                  : settingsPanel === "me"
+                    ? lx.settingsPanelMe
+                    : settingsPanel === "general"
+                      ? lx.settingsPanelGeneral
+                      : settingsPanel === "ai"
                       ? lx.settingsPanelAi
                       : settingsPanel === "location"
                         ? lx.settingsPanelLocation
@@ -5702,6 +6057,28 @@ ${tag}` : tag;
             <div className="settings-modal-body" ref={settingsBodyRef}>
             {settingsPanel === "menu" && (
               <nav className="settings-nav" aria-label={lx.settingsNavAria}>
+                <button
+                  type="button"
+                  className="settings-nav-me-card"
+                  onClick={() => goToSettingsSubpanel("me")}
+                  aria-label={`${lx.settingsPanelMe}: ${user.name}`}
+                >
+                  <div className="settings-nav-me-avatar" aria-hidden>
+                    <RankAvatar rankLevel={user.rank_level} variant="nav" />
+                  </div>
+                  <div className="settings-nav-me-card-text">
+                    <span className="settings-nav-me-card-name">
+                      {(user.display_name?.trim() || user.name || "").trim() || "—"}
+                    </span>
+                    <span className="settings-nav-me-card-sub text-muted">{lx.settingsNavMeAccountHint}</span>
+                    <span className="settings-nav-me-card-meta text-muted">
+                      {user.division} · {formatRomanRank(user.rank_level)}
+                    </span>
+                  </div>
+                  <span className="settings-nav-me-chevron" aria-hidden>
+                    ›
+                  </span>
+                </button>
                 <p className="settings-nav-intro text-muted">
                   {lx.settingsNavIntroLead}
                   {meshRadioConnected === true
@@ -5805,6 +6182,208 @@ ${tag}` : tag;
                 </div>
               </nav>
             )}
+            {settingsPanel === "me" && (
+              <>
+                <header className="settings-me-pane-header">
+                  <div className="settings-me-pane-icon" aria-hidden>
+                    <RankAvatar rankLevel={user.rank_level} variant="hero" />
+                  </div>
+                  <h3 className="settings-me-pane-title">{lx.settingsPanelMe}</h3>
+                  <p className="settings-me-pane-desc text-muted small">{lx.settingsMePaneDesc}</p>
+                </header>
+                <section className="library-section">
+                  <div
+                    className="glass-panel"
+                    style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "0.85rem" }}
+                  >
+                    <p className="text-muted small" style={{ margin: 0 }}>
+                      <strong>{user.division}</strong>
+                      {" · "}
+                      <strong>{formatRomanRank(user.rank_level)}</strong>
+                    </p>
+                    {RANK_DESCRIPTIONS[user.rank_level] ? (
+                      <p className="text-muted small" style={{ margin: "-0.2rem 0 0", lineHeight: 1.5 }}>
+                        {RANK_DESCRIPTIONS[user.rank_level]}
+                      </p>
+                    ) : null}
+                    <div>
+                      <label htmlFor="me-login-name" className="text-muted small">
+                        Login name
+                      </label>
+                      <p className="text-muted small" style={{ margin: "0.25rem 0 0.35rem" }}>
+                        Used at the lock screen with your PIN. Must be unique among personnel.
+                      </p>
+                      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+                        <input
+                          id="me-login-name"
+                          className="theme-select"
+                          style={{ flex: "1 1 12rem", minWidth: "8rem" }}
+                          autoComplete="username"
+                          value={loginNameDraft}
+                          onChange={(e) => {
+                            setLoginNameDraft(e.target.value);
+                            setMeLoginErr(null);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={meLoginSaving || loginNameDraft.trim() === user.name || loginNameDraft.trim() === ""}
+                          onClick={() => {
+                            setMeLoginSaving(true);
+                            setMeLoginErr(null);
+                            void setMyLoginName(loginNameDraft)
+                              .catch((ex) => {
+                                setMeLoginErr(ex != null ? String(ex) : "Could not update login name.");
+                              })
+                              .finally(() => {
+                                setMeLoginSaving(false);
+                              });
+                          }}
+                        >
+                          {meLoginSaving ? "Saving…" : "Save login name"}
+                        </button>
+                      </div>
+                      {meLoginErr ? (
+                        <p className="quartermaster-hub-err" role="alert" style={{ margin: "0.35rem 0 0" }}>
+                          {meLoginErr}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div>
+                      <p className="text-muted small" style={{ margin: 0, fontWeight: 600 }}>
+                        Change PIN
+                      </p>
+                      <p className="text-muted small" style={{ margin: "0.25rem 0 0.35rem" }}>
+                        Enter your current PIN, then choose a new one.
+                      </p>
+                      <form
+                        style={{ display: "grid", gap: "0.5rem", maxWidth: "22rem" }}
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          setMePinErr(null);
+                          setMePinOk(false);
+                          if (pinNew !== pinConfirm) {
+                            setMePinErr("New PIN and confirmation do not match.");
+                            return;
+                          }
+                          if (!pinNew.trim()) {
+                            setMePinErr("Enter a new PIN.");
+                            return;
+                          }
+                          setPinBusy(true);
+                          void setMyPin(pinCurrent, pinNew)
+                            .then(() => {
+                              setPinCurrent("");
+                              setPinNew("");
+                              setPinConfirm("");
+                              setMePinOk(true);
+                            })
+                            .catch((ex) => {
+                              setMePinErr(ex != null ? String(ex) : "Could not update PIN.");
+                            })
+                            .finally(() => {
+                              setPinBusy(false);
+                            });
+                        }}
+                      >
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          autoComplete="current-password"
+                          className="theme-select"
+                          placeholder="Current PIN"
+                          value={pinCurrent}
+                          onChange={(e) => {
+                            setPinCurrent(e.target.value);
+                            setMePinErr(null);
+                            setMePinOk(false);
+                          }}
+                        />
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          autoComplete="new-password"
+                          className="theme-select"
+                          placeholder="New PIN"
+                          value={pinNew}
+                          onChange={(e) => {
+                            setPinNew(e.target.value);
+                            setMePinErr(null);
+                            setMePinOk(false);
+                          }}
+                        />
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          autoComplete="new-password"
+                          className="theme-select"
+                          placeholder="Confirm new PIN"
+                          value={pinConfirm}
+                          onChange={(e) => {
+                            setPinConfirm(e.target.value);
+                            setMePinErr(null);
+                            setMePinOk(false);
+                          }}
+                        />
+                        <button type="submit" className="secondary" disabled={pinBusy}>
+                          {pinBusy ? "Updating…" : "Update PIN"}
+                        </button>
+                      </form>
+                      {mePinErr ? (
+                        <p className="quartermaster-hub-err" role="alert" style={{ margin: "0.35rem 0 0" }}>
+                          {mePinErr}
+                        </p>
+                      ) : null}
+                      {mePinOk ? (
+                        <p className="text-muted small" role="status" style={{ margin: "0.35rem 0 0" }}>
+                          PIN updated. Use the new PIN next time you unlock.
+                        </p>
+                      ) : null}
+                    </div>
+                    <div>
+                      <label htmlFor="me-roster-display" className="text-muted small">
+                        Roster display name
+                      </label>
+                      <p className="text-muted small" style={{ margin: "0.25rem 0 0.35rem" }}>
+                        Optional. Shown in the personnel registry and command-oriented views.
+                      </p>
+                      <input
+                        id="me-roster-display"
+                        className="theme-select"
+                        value={rosterDisplayDraft}
+                        onChange={(e) => setRosterDisplayDraft(e.target.value)}
+                        onBlur={() => {
+                          const v = rosterDisplayDraft.trim();
+                          void setMyPersonnelDisplayName(v.length > 0 ? v : null).catch(() => {});
+                        }}
+                        placeholder="e.g. Corvus — Caesar"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="me-ai-display-name" className="text-muted small">
+                        What the AI calls you
+                      </label>
+                      <p className="text-muted small" style={{ margin: "0.25rem 0 0.35rem" }}>
+                        Sent in chat context so assistants can address you naturally (separate from lock screen login).
+                      </p>
+                      <input
+                        id="me-ai-display-name"
+                        className="theme-select"
+                        value={userDisplayName}
+                        onChange={(e) => setUserDisplayName(e.target.value)}
+                        onBlur={() => {
+                          void invoke("set_user_display_name", {
+                            value: userDisplayName.trim() || null,
+                          }).then(() => loadModelSettings());
+                        }}
+                        placeholder="e.g. Alex"
+                      />
+                    </div>
+                  </div>
+                </section>
+              </>
+            )}
             {settingsPanel === "general" && (
               <>
                 <section className="library-section">
@@ -5828,27 +6407,12 @@ ${tag}` : tag;
                   </p>
                 </section>
                 <section className="library-section">
-                  <h3>User profile</h3>
+                  <h3>Age &amp; catalog access</h3>
                   <p className="text-muted small">
-                    Optional. Your name is added to AI context; birthdate stays on this device and unlocks 18+ options when
-                    applicable.
+                    Birthdate stays on this device. It unlocks age-gated catalog options when applicable. Use{" "}
+                    <strong>Settings → Me</strong> to set the name Athena uses in chat.
                   </p>
                   <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "0.65rem" }}>
-                    <label htmlFor="user-display-name" className="text-muted small">
-                      Preferred name
-                    </label>
-                    <input
-                      id="user-display-name"
-                      className="theme-select"
-                      value={userDisplayName}
-                      onChange={(e) => setUserDisplayName(e.target.value)}
-                      onBlur={() => {
-                        void invoke("set_user_display_name", {
-                          value: userDisplayName.trim() || null,
-                        }).then(() => loadModelSettings());
-                      }}
-                      placeholder="How Athena should address you"
-                    />
                     <label htmlFor="user-birthdate" className="text-muted small">
                       Birthdate (YYYY-MM-DD)
                     </label>
@@ -8196,6 +8760,8 @@ ${tag}` : tag;
         </div>
       )}
 
+      </>
+      )}
     </div>
     </LexiconProvider>
   );

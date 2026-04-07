@@ -111,6 +111,7 @@ export type Lexicon = {
   settingsMenuTitle: string;
   settingsMenuTitleAria: string;
   settingsPanelGeneral: string;
+  settingsPanelMe: string;
   settingsPanelAi: string;
   settingsPanelLocation: string;
   settingsPanelApiKeys: string;
@@ -136,6 +137,10 @@ export type Lexicon = {
   settingsNavGroupBackupHelp: string;
   settingsNavGeneral: string;
   settingsNavGeneralDesc: string;
+  /** Subtitle under the operator name on the Settings → Me nav card (Apple-style account row). */
+  settingsNavMeAccountHint: string;
+  /** Short intro under the large icon on the Me settings detail pane. */
+  settingsMePaneDesc: string;
   settingsNavCalendar: string;
   settingsNavCalendarDesc: string;
   settingsNavDateTime: string;
@@ -203,6 +208,12 @@ export type Lexicon = {
   helpTopicRepliesBlurb: string;
   helpTopicHelpAssistantLabel: string;
   helpTopicHelpAssistantBlurb: string;
+  helpTopicLoginSecurityLabel: string;
+  helpTopicLoginSecurityBlurb: string;
+  helpTopicCalendarHelpLabel: string;
+  helpTopicCalendarHelpBlurb: string;
+  helpTopicPersonnelHubLabel: string;
+  helpTopicPersonnelHubBlurb: string;
 
   headerBatteryAriaCharging: string;
   headerBatteryAriaOnBattery: string;
@@ -324,6 +335,21 @@ export type Lexicon = {
   logbookErrDelete: string;
   logbookErrMeshPull: string;
   logbookErrLoad: string;
+  logbookTacticalTitle: string;
+  logbookTacticalTagline: string;
+  logbookTacticalHelpToggleTitle: string;
+  logbookTacticalHelpAria: string;
+  logbookTacticalHelpBody: string;
+  logbookTacticalDraftPlaceholder: string;
+  logbookTacticalLocalOnly: string;
+
+  logisticsHubTitle: string;
+  logisticsHubSubtitle: string;
+  logisticsHubTabsAria: string;
+  logisticsHubTabNotes: string;
+  logisticsHubTabTactical: string;
+  logisticsHubTabInventory: string;
+  logisticsHubTabAudit: string;
 
   radioTitle: string;
   radioSignalHealth: string;
@@ -457,8 +483,8 @@ const SURVIVAL_LEXICON: Lexicon = {
   navArchive: "Archive",
   navMeshTitle: "Mesh network (LoRa inbox)",
   navMeshAria: "Open mesh network and Meshtastic inbox",
-  navRadio: "Comms",
-  navLogbook: "Logbook",
+  navRadio: "Communications Hub",
+  navLogbook: "Field & logistics",
   navCalendar: "Calendar",
   navOpenCalendar: "Open Calendar",
   navOpenCalendarAria: "Open calendar and date time settings",
@@ -491,6 +517,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   settingsMenuTitle: "Settings",
   settingsMenuTitleAria: "Settings",
   settingsPanelGeneral: "General",
+  settingsPanelMe: "Me",
   settingsPanelAi: "AI & Models",
   settingsPanelLocation: "Location",
   settingsPanelApiKeys: "API keys",
@@ -507,17 +534,20 @@ const SURVIVAL_LEXICON: Lexicon = {
   settingsPanelDeveloper: "Developer",
   settingsNavAria: "Settings sections",
   settingsNavIntroLead:
-    "Pick a section below. New to ATHENA? Start with General (what the name means and your library folder), then AI & Models for chat. Use Backup & help for USB transfer or the error log.",
+    "Pick a section below. New to ATHENA? Use Me for your operator account, then General (what the name means and your library folder), then AI & Models for chat. Backup & help covers USB transfer and the error log.",
   settingsNavMeshConnectedNote: " The mesh radio button appears when a Meshtastic device is connected.",
   settingsNavMeshDisconnectedNote:
     " No Meshtastic radio detected—mesh options are unavailable until a device is connected.",
-  settingsNavGroupProfileCalendar: "Profile & Calendar",
+  settingsNavGroupProfileCalendar: "General & calendar",
   settingsNavGroupAiKnowledge: "AI & Knowledge",
   settingsNavGroupMapsRadio: "Maps, Radio & Devices",
   settingsNavGroupLookFeel: "Look & feel",
   settingsNavGroupBackupHelp: "Backup & help",
   settingsNavGeneral: "General",
-  settingsNavGeneralDesc: "About ATHENA, profile, startup view, help, maintenance",
+  settingsNavGeneralDesc: "About ATHENA, startup view, help, maintenance",
+  settingsNavMeAccountHint: "Operator account",
+  settingsMePaneDesc:
+    "Lock screen login, roster display, PIN, and the name Athena uses for you in chat.",
   settingsNavCalendar: "Calendar",
   settingsNavCalendarDesc: "Holiday region, reminders, templates, ICS",
   settingsNavDateTime: "Date & Time",
@@ -588,6 +618,12 @@ const SURVIVAL_LEXICON: Lexicon = {
   helpTopicRepliesBlurb: "TTS, copy, and citations",
   helpTopicHelpAssistantLabel: "Ask Athena",
   helpTopicHelpAssistantBlurb: "AI help for using the app (beta)",
+  helpTopicLoginSecurityLabel: "Login & access",
+  helpTopicLoginSecurityBlurb: "PIN, ranks, and chat history rules",
+  helpTopicCalendarHelpLabel: "Calendar",
+  helpTopicCalendarHelpBlurb: "Events, ICS, mesh, reminders",
+  helpTopicPersonnelHubLabel: "Personnel & supply",
+  helpTopicPersonnelHubBlurb: "Roster, ranks, logistics hub",
 
   headerBatteryAriaCharging: "Battery {{pct}}%, charging",
   headerBatteryAriaOnBattery: "Battery {{pct}}%, on battery",
@@ -711,6 +747,22 @@ const SURVIVAL_LEXICON: Lexicon = {
   logbookErrDelete: "Could not delete entry.",
   logbookErrMeshPull: "Could not request notes from the mesh.",
   logbookErrLoad: "Could not load logbook.",
+  logbookTacticalTitle: "Tactical notes",
+  logbookTacticalTagline: "This device only · never sent over mesh",
+  logbookTacticalHelpToggleTitle: "About tactical notes",
+  logbookTacticalHelpAria: "Tactical notes help",
+  logbookTacticalHelpBody:
+    "Tactical notes stay on this device and are not broadcast on Meshtastic or LAN logbook sync. Use them for sensitive military or operational details. Replies must stay under another tactical note. Centurion rank (4+) or a military-style job title in your logbook profile unlocks this section.",
+  logbookTacticalDraftPlaceholder: "OPORD fragments, grid refs, call signs, timings…",
+  logbookTacticalLocalOnly: "Local only — not relayed over mesh or shared logbook sync.",
+
+  logisticsHubTitle: "Field log & logistics",
+  logisticsHubSubtitle: "Notes, tactical notebook, inventory, and audit trail",
+  logisticsHubTabsAria: "Field log and logistics sections",
+  logisticsHubTabNotes: "Field notes",
+  logisticsHubTabTactical: "Tactical",
+  logisticsHubTabInventory: "Inventory",
+  logisticsHubTabAudit: "Logistics log",
 
   radioTitle: "Radio Terminal",
   radioSignalHealth: "Signal health",
@@ -845,8 +897,8 @@ const FALLOUT_LEXICON: Lexicon = {
   navArchive: "Archive",
   navMeshTitle: "Mesh network (vault uplink)",
   navMeshAria: "Open mesh network inbox",
-  navRadio: "Comms",
-  navLogbook: "Field log",
+  navRadio: "Communications Hub",
+  navLogbook: "Field & logistics",
   navCalendar: "Schedule",
   navOpenCalendar: "Open schedule",
   navOpenCalendarAria: "Open schedule and chronometer settings",
@@ -879,6 +931,7 @@ const FALLOUT_LEXICON: Lexicon = {
   settingsMenuTitle: "Vault settings",
   settingsMenuTitleAria: "Vault settings",
   settingsPanelGeneral: "General",
+  settingsPanelMe: "Me",
   settingsPanelAi: "AI & Models",
   settingsPanelLocation: "Location",
   settingsPanelApiKeys: "API keys",
@@ -895,17 +948,20 @@ const FALLOUT_LEXICON: Lexicon = {
   settingsPanelDeveloper: "Overseer",
   settingsNavAria: "Vault settings sections",
   settingsNavIntroLead:
-    "Pick a section. New here? General explains ATHENA and your stash path; AI & Archives powers chat. Holotapes & diagnostics covers USB transfer and the error log.",
+    "Pick a section. New here? Me is your dweller account; General explains ATHENA and your stash path; AI & Archives powers chat. Holotapes & diagnostics covers USB transfer and the error log.",
   settingsNavMeshConnectedNote: " The mesh uplink icon appears when a Meshtastic device is tethered.",
   settingsNavMeshDisconnectedNote:
     " No Meshtastic uplink detected—mesh options stay locked until hardware is connected.",
-  settingsNavGroupProfileCalendar: "Dweller & Schedule",
+  settingsNavGroupProfileCalendar: "General & schedule",
   settingsNavGroupAiKnowledge: "AI & Archives",
   settingsNavGroupMapsRadio: "Maps, Radio & Gear",
   settingsNavGroupLookFeel: "Look & feel",
   settingsNavGroupBackupHelp: "Holotapes & diagnostics",
   settingsNavGeneral: "General",
-  settingsNavGeneralDesc: "About ATHENA, dweller profile, startup view, help, maintenance",
+  settingsNavGeneralDesc: "About ATHENA, startup view, help, maintenance",
+  settingsNavMeAccountHint: "Dweller account",
+  settingsMePaneDesc:
+    "Lock screen handle, roster stamp, PIN, and how Athena hails you in chat.",
   settingsNavCalendar: "Schedule",
   settingsNavCalendarDesc: "Holiday region, reminders, templates, ICS",
   settingsNavDateTime: "Date & Time",
@@ -974,6 +1030,12 @@ const FALLOUT_LEXICON: Lexicon = {
   helpTopicRepliesBlurb: "TTS, copy, citations",
   helpTopicHelpAssistantLabel: "Ask Athena",
   helpTopicHelpAssistantBlurb: "AI help for operating the app (beta)",
+  helpTopicLoginSecurityLabel: "Access & clearance",
+  helpTopicLoginSecurityBlurb: "PIN, tiers, chat audit",
+  helpTopicCalendarHelpLabel: "Schedule",
+  helpTopicCalendarHelpBlurb: "Events, ICS, mesh, reminders",
+  helpTopicPersonnelHubLabel: "Roster & logistics",
+  helpTopicPersonnelHubBlurb: "Personnel, ranks, supply",
 
   headerBatteryAriaCharging: "Cell {{pct}}%, charging",
   headerBatteryAriaOnBattery: "Cell {{pct}}%, on battery",
@@ -1097,6 +1159,22 @@ const FALLOUT_LEXICON: Lexicon = {
   logbookErrDelete: "Could not delete entry.",
   logbookErrMeshPull: "Could not request notes from the mesh.",
   logbookErrLoad: "Could not load logbook.",
+  logbookTacticalTitle: "Tactical notes",
+  logbookTacticalTagline: "Terminal hold only · no mesh egress",
+  logbookTacticalHelpToggleTitle: "Tactical notebook policy",
+  logbookTacticalHelpAria: "Tactical notes help",
+  logbookTacticalHelpBody:
+    "Tactical entries never leave this terminal via Meshtastic or logbook mesh/LAN sync. Thread replies under tactical parents only. Unlocked at Centurion (rank 4+) or when your field log occupation reads as a military role.",
+  logbookTacticalDraftPlaceholder: "Fragment orders, grids, brevity, timings…",
+  logbookTacticalLocalOnly: "Held locally — no mesh or shared logbook relay.",
+
+  logisticsHubTitle: "Field log & logistics",
+  logisticsHubSubtitle: "Notes, tactical pad, stores, audit",
+  logisticsHubTabsAria: "Field log and logistics",
+  logisticsHubTabNotes: "Field notes",
+  logisticsHubTabTactical: "Tactical",
+  logisticsHubTabInventory: "Stores",
+  logisticsHubTabAudit: "Logistics log",
 
   radioTitle: "Radio terminal",
   radioSignalHealth: "Signal health",

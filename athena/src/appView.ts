@@ -1,8 +1,31 @@
-export type AppView = "home" | "chat" | "map" | "radio" | "mesh" | "logbook" | "calendar" | "academy" | "archive";
+export type AppView =
+  | "home"
+  | "chat"
+  | "map"
+  | "comms_hub"
+  | "radio"
+  | "mesh"
+  | "logbook"
+  | "calendar"
+  | "academy"
+  | "archive"
+  | "personnel";
 
 const STORAGE_KEY_STARTUP_VIEW = "athena-startup-view";
 
-export const APP_VIEWS: readonly AppView[] = ["home", "chat", "map", "radio", "mesh", "logbook", "calendar", "academy", "archive"];
+export const APP_VIEWS: readonly AppView[] = [
+  "home",
+  "chat",
+  "map",
+  "comms_hub",
+  "radio",
+  "mesh",
+  "logbook",
+  "calendar",
+  "academy",
+  "archive",
+  "personnel",
+];
 
 function isAppView(value: string): value is AppView {
   return (APP_VIEWS as readonly string[]).includes(value);
@@ -14,18 +37,22 @@ export const APP_VIEW_LABELS: Record<AppView, string> = {
   home: "Home",
   chat: "Chat",
   map: "Map",
-  radio: "Comms",
+  comms_hub: "Communications Hub",
+  radio: "Voice comms",
   mesh: "Mesh network",
-  logbook: "Logbook",
+  logbook: "Field log & logistics",
   calendar: "Calendar",
   academy: "Academy",
   archive: "The Archive",
+  personnel: "Personnel",
 };
 
 export function readStartupView(): AppView {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_STARTUP_VIEW);
     if (raw === "installer") return "archive";
+    if (raw === "radio") return "comms_hub";
+    if (raw === "quartermaster") return "logbook";
     if (raw && isAppView(raw)) return raw;
   } catch {
     /* ignore */

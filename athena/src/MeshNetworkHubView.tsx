@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Antenna, MessageSquare, Radio, Settings } from "lucide-react";
+import { Antenna, MessageSquare, Settings } from "lucide-react";
 import { MeshChatView } from "./MeshChatView";
+import { CommsHubIcon } from "./shared/CommsHubIcon";
 
 export type MeshRadioIdentity = {
   connected: boolean;
@@ -109,7 +110,7 @@ export function MeshNetworkHubView({
             <MessageSquare size={16} strokeWidth={2} aria-hidden /> Offline chat (AI)
           </button>
           <button type="button" className="glass-action-btn" onClick={onGoToComms}>
-            <Radio size={16} strokeWidth={2} aria-hidden /> Open Comms (serial / logs)
+            <CommsHubIcon size={16} strokeWidth={2} /> Communications Hub
           </button>
         </div>
       </section>

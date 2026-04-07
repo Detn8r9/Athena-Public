@@ -161,7 +161,7 @@ Not exhaustive; see `src-tauri/src/lib.rs` `invoke_handler`:
 
 - `athena/src/HelpModal.tsx` — in-app help (categories).
 - `athena/src/MeshRadioModal.tsx` — mesh UI.
-- `docs/development/OPTIMIZATION_AUDIT.md`, `docs/product/PLATFORM_COMPATIBILITY.md`, `docs/development/CODE_REVIEW.md` — engineering notes.
+- `docs/product/PLATFORM_COMPATIBILITY.md` — OS / platform behavior notes.
 
 ---
 

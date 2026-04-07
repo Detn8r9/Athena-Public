@@ -32,6 +32,12 @@ pub fn chat_console_stream(app: tauri::AppHandle, message: String) -> Result<(),
 
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
+    if config.ai_inference_sleep.unwrap_or(false) {
+        return Err(
+            "Local AI is asleep. Meshtastic /ai and mesh auto-replies still run when enabled. Wake the AI from the lock screen or header."
+                .to_string(),
+        );
+    }
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
 

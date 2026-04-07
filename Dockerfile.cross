@@ -1,9 +1,18 @@
-# Cross-compilation image for ATHENA Tauri builds (Linux host in Docker → Windows GNU + Linux targets).
+# Cross-compilation image for ATHENA Tauri builds (Linux host in Docker → Windows MSVC + Linux targets).
 # Usage: see build_cross.sh at the repository root.
 
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PKG_CONFIG_ALLOW_CROSS=1
+ENV PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
+
+RUN dpkg --add-architecture amd64
+
+RUN sed -i '/^deb /s/^deb /deb [arch=arm64] /' /etc/apt/sources.list \
+    && echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse" >> /etc/apt/sources.list \
+    && echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list \
+    && echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse" >> /etc/apt/sources.list
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -13,18 +22,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     libssl-dev \
     libsqlite3-dev \
-    libwebkit2gtk-4.1-dev \
-    libjavascriptcoregtk-4.1-dev \
-    libgtk-3-dev \
+    libwebkit2gtk-4.0-dev:amd64 \
+    libjavascriptcoregtk-4.0-dev:amd64 \
+    libgtk-3-dev:amd64 \
+    libudev-dev:amd64 \
     libayatana-appindicator3-dev \
     librsvg2-dev \
     patchelf \
-    mingw-w64 \
     gcc-aarch64-linux-gnu \
     file \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -34,20 +44,15 @@ ENV PATH=/usr/local/cargo/bin:$PATH
 
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain stable \
     && rustup target add \
-        x86_64-pc-windows-gnu \
-        i686-pc-windows-gnu \
+        x86_64-pc-windows-msvc \
         x86_64-unknown-linux-gnu \
         aarch64-unknown-linux-gnu
 
 RUN printf '%s\n' \
-    '[target.x86_64-pc-windows-gnu]' \
-    'linker = "x86_64-w64-mingw32-gcc"' \
-    '' \
-    '[target.i686-pc-windows-gnu]' \
-    'linker = "i686-w64-mingw32-gcc"' \
-    '' \
     '[target.aarch64-unknown-linux-gnu]' \
     'linker = "aarch64-linux-gnu-gcc"' \
     >> /usr/local/cargo/config.toml
+
+RUN cargo install cargo-xwin
 
 WORKDIR /workspace

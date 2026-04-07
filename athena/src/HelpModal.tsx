@@ -5,7 +5,9 @@ import { useLexicon } from "./shared/lexicon";
 
 export type HelpSectionId =
   | "overview"
+  | "login_security"
   | "home"
+  | "calendar"
   | "tactical_map"
   | "maps_offline"
   | "chat"
@@ -16,6 +18,7 @@ export type HelpSectionId =
   | "meshtastic"
   | "radio_comms"
   | "settings"
+  | "personnel_hub"
   | "replies"
   | "help_assistant";
 
@@ -53,10 +56,22 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
         keywords: ["ollama", "local", "offline"],
       },
       {
+        id: "login_security",
+        label: lx.helpTopicLoginSecurityLabel,
+        blurb: lx.helpTopicLoginSecurityBlurb,
+        keywords: ["pin", "password", "lock", "login", "operator", "rank", "audit", "personnel"],
+      },
+      {
         id: "home",
         label: lx.helpTopicHomeLabel,
         blurb: lx.helpTopicHomeBlurb,
         keywords: ["dashboard", "launcher", "system"],
+      },
+      {
+        id: "calendar",
+        label: lx.helpTopicCalendarHelpLabel,
+        blurb: lx.helpTopicCalendarHelpBlurb,
+        keywords: ["schedule", "event", "ics", "reminder", "holiday", "mesh"],
       },
       {
         id: "tactical_map",
@@ -117,6 +132,12 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
         label: lx.helpTopicSettingsLabel,
         blurb: lx.helpTopicSettingsBlurb,
         keywords: ["preferences", "theme", "watch folder", "location", "api key", "usb", "export", "backup"],
+      },
+      {
+        id: "personnel_hub",
+        label: lx.helpTopicPersonnelHubLabel,
+        blurb: lx.helpTopicPersonnelHubBlurb,
+        keywords: ["roster", "quartermaster", "logistics", "inventory", "division", "admin"],
       },
       {
         id: "replies",
@@ -215,7 +236,9 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
             ) : (
               <>
                 {active === "overview" && <OverviewPanel />}
+                {active === "login_security" && <LoginSecurityPanel />}
                 {active === "home" && <HomePanel />}
+                {active === "calendar" && <CalendarHelpPanel />}
                 {active === "tactical_map" && <TacticalMapPanel />}
                 {active === "maps_offline" && <MapsOfflinePanel />}
                 {active === "chat" && <ChatPanel />}
@@ -226,6 +249,7 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
                 {active === "meshtastic" && <MeshtasticPanel />}
                 {active === "radio_comms" && <RadioCommsPanel />}
                 {active === "settings" && <SettingsPanel />}
+                {active === "personnel_hub" && <PersonnelHubPanel />}
                 {active === "replies" && <RepliesPanel />}
                 {active === "help_assistant" && <AskAthenaPanel />}
               </>
@@ -249,6 +273,84 @@ function AthenaAcronymCheatsheet() {
   );
 }
 
+function LoginSecurityPanel() {
+  return (
+    <>
+      <h3 className="help-detail-title">Login &amp; access</h3>
+      <p>
+        The app opens on a <strong>login</strong> screen. Enter your <strong>operator name</strong> and <strong>PIN</strong> exactly as
+        stored in the local personnel roster. PIN verification runs on this device only.
+      </p>
+      <h4>Rank levels (summary)</h4>
+      <ul>
+        <li>
+          Lower ranks (typically levels 1–3) use the app day-to-day; saved <strong>offline chat</strong> history is scoped to their own
+          account.
+        </li>
+        <li>
+          Higher ranks (typically 4–5) can open an <strong>Offline chat history</strong> selector in the chat sidebar to review another
+          operator&apos;s saved local threads (read-only while viewing someone else). Sending, new chat, delete, and saves apply only
+          to your own history.
+        </li>
+      </ul>
+      <h4>Lock screen tips</h4>
+      <ul>
+        <li>
+          The <strong>moon / sun</strong> control toggles <strong>local AI sleep</strong> so the main model stays idle; mesh-related AI
+          paths may still run depending on your settings.
+        </li>
+        <li>
+          The small <strong>CPU</strong> graph and system lines are a live snapshot only—they are not uploaded anywhere.
+        </li>
+      </ul>
+    </>
+  );
+}
+
+function CalendarHelpPanel() {
+  return (
+    <>
+      <h3 className="help-detail-title">Calendar</h3>
+      <p>
+        Open <strong>Calendar</strong> from the navigation strip. You get month, week, day, and agenda views, quick templates for common
+        field tasks, and optional <strong>holiday</strong> overlays based on your region in Settings.
+      </p>
+      <ul>
+        <li>
+          <strong>ICS</strong> — Import or export standard <code>.ics</code> files for interoperability with other calendar apps.
+        </li>
+        <li>
+          <strong>Mesh</strong> — When your build exposes it, you can pull or share schedule-related payloads over the mesh stack;
+          treat mesh as best-effort and verify critical times locally.
+        </li>
+        <li>
+          <strong>Map pins</strong> — Events can reference tactical map POIs where that integration is enabled.
+        </li>
+      </ul>
+    </>
+  );
+}
+
+function PersonnelHubPanel() {
+  return (
+    <>
+      <h3 className="help-detail-title">Personnel &amp; supply</h3>
+      <p>
+        <strong>Personnel</strong> (from Home or the dashboard) is where administrators manage the roster: divisions, display names,
+        rank levels, and PINs. Access is restricted to elevated ranks.
+      </p>
+      <ul>
+        <li>
+          <strong>Logistics Hub</strong> — Inventory and supply workflows for tracked items and logs; open it from the header or dashboard when your rank allows.
+        </li>
+        <li>
+          Changes apply to this installation&apos;s database; back up before bulk edits (see Settings → backup / USB export).
+        </li>
+      </ul>
+    </>
+  );
+}
+
 function OverviewPanel() {
   return (
     <>
@@ -266,6 +368,11 @@ function OverviewPanel() {
         If you place a folder named <code>data</code> next to the ATHENA app (for example on a USB stick), the app can run in{" "}
         <strong>portable mode</strong> and keep settings and indexes on that drive. Use <strong>Settings → Backup &amp; help → USB export</strong>{" "}
         to copy the app and a full <code>data</code> tree to a flash drive; optional whole-disk formatting is available on macOS when you pick a drive in the export dialog.
+      </p>
+      <h4>Login</h4>
+      <p>
+        Each session starts at the <strong>login</strong> screen (operator name + PIN). See <strong>Login &amp; access</strong> in this help
+        for ranks, chat history audit rules, and lock-screen controls.
       </p>
       <h4>What you need</h4>
       <ul>
@@ -311,9 +418,12 @@ function ChatPanel() {
     <>
       <h3 className="help-detail-title">Chat &amp; composer</h3>
       <p>
-        The main area shows your messages and Athena&apos;s replies. Type in the box at the bottom and press{" "}
-        <kbd>Enter</kbd> to send, or click <strong>Send</strong>. Use <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line without
-        sending.
+        The main area shows your messages and Athena&apos;s replies. Use the <strong>Offline chat</strong> / <strong>LoRa mesh</strong>{" "}
+        tabs to switch between local LLM threads and mesh-integrated chat when both are available.
+      </p>
+      <p>
+        Type in the box at the bottom and press <kbd>Enter</kbd> to send, or click <strong>Send</strong>. Use{" "}
+        <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line without sending.
       </p>
       <h4>Keyboard shortcuts</h4>
       <ul>
@@ -338,6 +448,12 @@ function ChatPanel() {
         If your build exposes microphone features, you may see <strong>Conversation</strong> mode and dictation under Tools.
         Conversation mode listens for speech, sends it as a message, and can read replies aloud—useful for hands-free use. Grant
         microphone permission in your OS settings if prompted.
+      </p>
+      <h4>Officer review of saved offline chats</h4>
+      <p>
+        If your account rank is high enough, an <strong>Offline chat history</strong> dropdown appears above the chat list. Pick another
+        operator to load their saved threads for audit; the UI switches to read-only for their history. Lower ranks never see this
+        control.
       </p>
     </>
   );
@@ -382,10 +498,13 @@ function SidebarPanel() {
       </p>
       <ul>
         <li>
+          <strong>Offline chat history</strong> — When your rank allows it, choose whose saved local chats to list (see Chat topic).
+        </li>
+        <li>
           <strong>Pin</strong> (<span aria-hidden>📌</span>) — Keep important chats at the top of the list.
         </li>
         <li>
-          <strong>Delete</strong> — Remove a chat permanently.
+          <strong>Delete</strong> — Remove a chat permanently (disabled while auditing another user&apos;s history).
         </li>
         <li>
           <strong>Search</strong> — Filter the chat list by title or content.
@@ -548,6 +667,10 @@ function SettingsPanel() {
           <strong>About ATHENA</strong> — Official acronym expansion and what each letter emphasizes in this app.
         </li>
         <li>
+          <strong>Me / roster</strong> — When personnel login is enabled, you can adjust how your name appears to the roster and change
+          your PIN from the signed-in profile area; administrators manage other accounts from the Personnel hub.
+        </li>
+        <li>
           <strong>User profile</strong> — Optional display name (used in AI context) and birthdate (stored only on this device). At age
           18+ you can enable the unrestricted model catalog for <strong>local</strong> uncensored models you install yourself.
         </li>
@@ -670,6 +793,12 @@ function HomePanel() {
       <ul>
         <li>
           <strong>Academy</strong> (when shown on your dashboard) opens guided lessons inside the app—work through them at your own pace alongside Chat and the Archive.
+        </li>
+        <li>
+          <strong>Calendar</strong> opens the schedule workspace (events, ICS, reminders)—see the Calendar topic in Help.
+        </li>
+        <li>
+          <strong>Personnel</strong> and <strong>Logistics Hub</strong> (when visible) depend on your rank and build; use them for roster and supply workflows.
         </li>
         <li>
           On <strong>short or narrow screens</strong>, the page scrolls so nothing is cut off below the header.

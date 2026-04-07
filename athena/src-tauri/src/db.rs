@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::chats::{ChatSummary, SavedChat, SavedMessage};
 use crate::config::load_config;
 use crate::embeddings;
 
@@ -126,6 +127,57 @@ fn fts_keywords_to_match_query(keywords: &[String]) -> Option<String> {
     }
 }
 
+
+/// SHA-256 hex digest of trimmed UTF-8 PIN bytes (interim; prefer Argon2 for production hardening).
+pub fn personnel_pin_hash(pin: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(pin.trim().as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+#[derive(Debug, Clone)]
+pub struct PersonnelRow {
+    pub id: String,
+    pub name: String,
+    pub division: String,
+    pub rank_level: i32,
+    pub pin_hash: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PersonnelPublic {
+    pub id: String,
+    pub name: String,
+    pub division: String,
+    pub rank_level: i32,
+    pub created_at: i64,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InventoryItemRow {
+    pub id: String,
+    pub division: String,
+    pub item_name: String,
+    pub quantity: i64,
+    pub last_updated: i64,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InventoryLogRow {
+    pub id: String,
+    pub item_id: String,
+    pub user_id: String,
+    pub action_type: String,
+    pub old_qty: Option<i64>,
+    pub new_qty: Option<i64>,
+    pub timestamp: i64,
+    pub caesar_fingerprint: Option<String>,
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -174,10 +226,13 @@ pub struct HybridSearchHit {
 /// Reranked child chunks (with parent context) passed to the LLM for library RAG (`hybrid_search`).
 pub const HYBRID_SEARCH_TOP_CHUNKS: usize = 15;
 
+/// Row bundle for hybrid RAG diversification.
 #[derive(Debug, Clone)]
 struct HybridChunkRow {
     retrieval_text: String,
     chunk_text: String,
+    /// Populated from SQL for future parent-context expansion in hybrid RAG.
+    #[allow(dead_code)]
     parent_id: Option<i64>,
     file_path: String,
     page_start: Option<i64>,
@@ -282,7 +337,28 @@ pub struct MeshProfile {
     pub username: String,
     pub counter_sign: String,
     pub created_at: i64,
+    /// 0 = normal, 1 = active emergency, 2 = suspended pending verification.
+    #[serde(default)]
+    pub sos_state: i32,
+    #[serde(default = "default_mesh_profile_registered")]
+    pub is_registered: bool,
+    #[serde(default = "default_mesh_profile_rank")]
+    pub rank_level: i32,
 }
+
+fn default_mesh_profile_registered() -> bool {
+    true
+}
+
+fn default_mesh_profile_rank() -> i32 {
+    1
+}
+
+/// SOS state values for `mesh_profiles.sos_state`.
+pub const SOS_STATE_NORMAL: i32 = 0;
+pub const SOS_STATE_ACTIVE: i32 = 1;
+pub const SOS_STATE_SUSPENDED: i32 = 2;
+
 
 /// One row in the mesh network chat log (remote, operator, or AI).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,6 +390,10 @@ pub struct RadioChannel {
     pub created_at: String,
 }
 
+fn default_logbook_notebook() -> String {
+    "general".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogbookEntry {
     pub id: String,
@@ -327,6 +407,9 @@ pub struct LogbookEntry {
     pub author_occupation: String,
     #[serde(default)]
     pub parent_entry_id: Option<String>,
+    /// `general` = field logbook; `tactical` = restricted military / tactical notes (never sent over mesh).
+    #[serde(default = "default_logbook_notebook")]
+    pub notebook: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,6 +466,9 @@ impl Database {
         db.migrate_map_schema()?;
         db.migrate_radio_telemetry_schema()?;
         db.migrate_logbook_schema()?;
+        db.migrate_personnel_inventory_schema()?;
+        db.migrate_roman_rbac_column_updates()?;
+        db.migrate_mesh_sos_schema()?;
         Ok(db)
     }
 
@@ -409,6 +495,9 @@ impl Database {
         db.migrate_map_schema()?;
         db.migrate_radio_telemetry_schema()?;
         db.migrate_logbook_schema()?;
+        db.migrate_personnel_inventory_schema()?;
+        db.migrate_roman_rbac_column_updates()?;
+        db.migrate_mesh_sos_schema()?;
         Ok(db)
     }
 
@@ -486,7 +575,8 @@ impl Database {
                 from_node_id INTEGER,
                 author_name TEXT NOT NULL DEFAULT '',
                 author_occupation TEXT NOT NULL DEFAULT '',
-                parent_entry_id TEXT REFERENCES logbook_entries(id)
+                parent_entry_id TEXT REFERENCES logbook_entries(id),
+                notebook TEXT NOT NULL DEFAULT 'general'
             );
             CREATE INDEX IF NOT EXISTS idx_logbook_created_at ON logbook_entries(created_at DESC);
             CREATE TABLE IF NOT EXISTS calendar_events (
@@ -585,14 +675,17 @@ impl Database {
                 node_id INTEGER NOT NULL UNIQUE,
                 username TEXT NOT NULL,
                 counter_sign TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                sos_state INTEGER NOT NULL DEFAULT 0,
+                is_registered INTEGER NOT NULL DEFAULT 1,
+                rank_level INTEGER NOT NULL DEFAULT 1
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_mesh_profiles_node_id ON mesh_profiles(node_id);
             CREATE TABLE IF NOT EXISTS mesh_chats (
                 id TEXT PRIMARY KEY NOT NULL,
                 node_id INTEGER NOT NULL,
                 sender_type TEXT NOT NULL CHECK (sender_type IN ('human','ai','remote')),
-                message_type TEXT NOT NULL CHECK (message_type IN ('auth','chat','prompt','response')),
+                message_type TEXT NOT NULL CHECK (message_type IN ('auth','chat','prompt','response','operator','emergency','clearance')),
                 content TEXT NOT NULL,
                 created_at INTEGER NOT NULL
             );
@@ -618,6 +711,17 @@ impl Database {
                 created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_archive_watch_roots_sort ON archive_watch_roots(sort_index ASC, id ASC);
+            CREATE TABLE IF NOT EXISTS local_chats (
+                id TEXT PRIMARY KEY NOT NULL,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                messages_json TEXT NOT NULL,
+                context_summary TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_chats_user_updated ON local_chats(user_id, updated_at DESC);
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -970,6 +1074,12 @@ END;
                 [],
             );
         }
+        if !cols.iter().any(|c| c == "notebook") {
+            let _ = conn.execute(
+                "ALTER TABLE logbook_entries ADD COLUMN notebook TEXT NOT NULL DEFAULT 'general'",
+                [],
+            );
+        }
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_logbook_parent_entry_id ON logbook_entries(parent_entry_id)",
             [],
@@ -977,7 +1087,555 @@ END;
         Ok(())
     }
 
+    /// Roman-tier RBAC personnel, quartermaster inventory, and audit log (idempotent).
+    fn migrate_personnel_inventory_schema(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let _ = conn.execute("PRAGMA foreign_keys = ON", []);
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS personnel (
+                id TEXT PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL UNIQUE,
+                division TEXT NOT NULL,
+                rank_level INTEGER NOT NULL,
+                pin_hash TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_personnel_division ON personnel(division);
+
+            CREATE TABLE IF NOT EXISTS inventory (
+                id TEXT PRIMARY KEY NOT NULL,
+                division TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                quantity INTEGER NOT NULL DEFAULT 0,
+                last_updated INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_inventory_division ON inventory(division);
+
+            CREATE TABLE IF NOT EXISTS inventory_log (
+                id TEXT PRIMARY KEY NOT NULL,
+                item_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                old_qty INTEGER,
+                new_qty INTEGER,
+                timestamp INTEGER NOT NULL,
+                caesar_fingerprint TEXT,
+                FOREIGN KEY (item_id) REFERENCES inventory(id),
+                FOREIGN KEY (user_id) REFERENCES personnel(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_inventory_log_item ON inventory_log(item_id);
+            CREATE INDEX IF NOT EXISTS idx_inventory_log_ts ON inventory_log(timestamp DESC);
+            ",
+        )
+        .map_err(|e| e.to_string())?;
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM personnel", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if count == 0 {
+            use rand::Rng;
+            let pin_num: u32 = rand::thread_rng().gen_range(100_000..=999_999);
+            let pin_str = format!("{pin_num:06}");
+            let hash = personnel_pin_hash(&pin_str);
+            let id = uuid::Uuid::new_v4().to_string();
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            println!(
+                "[athena] ROMAN RBAC: default operator Caesar created (division COMMAND, rank 5). SAVE THIS PIN (shown once): {pin_str}"
+            );
+            conn.execute(
+                "INSERT INTO personnel (id, name, division, rank_level, pin_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, "Caesar", "COMMAND", 5i64, hash, now_ms],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Adds personnel.display_name and inventory.category for existing DBs (idempotent).
+    fn migrate_roman_rbac_column_updates(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let personnel_cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(personnel)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        if !personnel_cols.iter().any(|c| c == "display_name") {
+            conn.execute("ALTER TABLE personnel ADD COLUMN display_name TEXT", [])
+                .map_err(|e| e.to_string())?;
+        }
+        let inv_cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(inventory)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        if !inv_cols.is_empty() && !inv_cols.iter().any(|c| c == "category") {
+            conn.execute(
+                "ALTER TABLE inventory ADD COLUMN category TEXT NOT NULL DEFAULT 'general'",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+
+    /// Mesh SOS columns on `mesh_profiles` and expanded `mesh_chats` message types (idempotent).
+    fn migrate_mesh_sos_schema(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let profile_cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(mesh_profiles)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        if !profile_cols.iter().any(|c| c == "sos_state") {
+            conn.execute(
+                "ALTER TABLE mesh_profiles ADD COLUMN sos_state INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !profile_cols.iter().any(|c| c == "is_registered") {
+            conn.execute(
+                "ALTER TABLE mesh_profiles ADD COLUMN is_registered INTEGER NOT NULL DEFAULT 1",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !profile_cols.iter().any(|c| c == "rank_level") {
+            conn.execute(
+                "ALTER TABLE mesh_profiles ADD COLUMN rank_level INTEGER NOT NULL DEFAULT 1",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let tbl_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='mesh_chats'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        if !tbl_sql.contains("'clearance'") {
+            conn.execute_batch(
+                "
+                CREATE TABLE mesh_chats_new (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    node_id INTEGER NOT NULL,
+                    sender_type TEXT NOT NULL CHECK (sender_type IN ('human','ai','remote')),
+                    message_type TEXT NOT NULL CHECK (message_type IN ('auth','chat','prompt','response','operator','emergency','clearance')),
+                    content TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                INSERT INTO mesh_chats_new SELECT * FROM mesh_chats;
+                DROP TABLE mesh_chats;
+                ALTER TABLE mesh_chats_new RENAME TO mesh_chats;
+                CREATE INDEX IF NOT EXISTS idx_mesh_chats_node_created ON mesh_chats(node_id, created_at ASC);
+                ",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+
+    pub fn personnel_fetch_by_name(&self, name: &str) -> Result<Option<PersonnelRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let name_t = name.trim();
+        if name_t.is_empty() {
+            return Ok(None);
+        }
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, division, rank_level, pin_hash, display_name FROM personnel WHERE LOWER(name) = LOWER(?1) LIMIT 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![name_t], |row| {
+                Ok(PersonnelRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    division: row.get(2)?,
+                    rank_level: row.get(3)?,
+                    pin_hash: row.get(4)?,
+                    display_name: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            None => Ok(None),
+            Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
+        }
+    }
+
+    pub fn personnel_list_public(&self) -> Result<Vec<PersonnelPublic>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, division, rank_level, created_at, display_name FROM personnel ORDER BY name COLLATE NOCASE",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(PersonnelPublic {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    division: row.get(2)?,
+                    rank_level: row.get(3)?,
+                    created_at: row.get(4)?,
+                    display_name: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn personnel_insert(
+        &self,
+        id: &str,
+        name: &str,
+        division: &str,
+        rank_level: i32,
+        pin_hash: &str,
+        display_name: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now_ms = Utc::now().timestamp_millis();
+        let disp: Option<String> = display_name
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        conn.execute(
+            "INSERT INTO personnel (id, name, division, rank_level, pin_hash, created_at, display_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, name.trim(), division.trim(), rank_level as i64, pin_hash, now_ms, disp],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn personnel_delete_by_id(&self, id: &str) -> Result<u64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute("DELETE FROM personnel WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(n as u64)
+    }
+
+    pub fn personnel_set_display_name(&self, id: &str, display_name: Option<&str>) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let disp: Option<String> = display_name
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let n = conn
+            .execute(
+                "UPDATE personnel SET display_name = ?1 WHERE id = ?2",
+                params![disp, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("Personnel record not found.".to_string());
+        }
+        Ok(())
+    }
+
+    /// Lock-screen login name; must stay unique case-insensitively among personnel.
+    pub fn personnel_set_name(&self, id: &str, new_name: &str) -> Result<(), String> {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err("Login name cannot be empty.".to_string());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let clash: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM personnel WHERE LOWER(name) = LOWER(?1) AND id != ?2",
+                params![new_name, id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if clash > 0 {
+            return Err("That login name is already in use.".to_string());
+        }
+        let n = conn
+            .execute(
+                "UPDATE personnel SET name = ?1 WHERE id = ?2",
+                params![new_name, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("Personnel record not found.".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn personnel_set_pin_hash(&self, id: &str, pin_hash: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE personnel SET pin_hash = ?1 WHERE id = ?2",
+                params![pin_hash, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("Personnel record not found.".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn personnel_fetch_public_by_id(&self, id: &str) -> Result<Option<PersonnelPublic>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, division, rank_level, created_at, display_name FROM personnel WHERE id = ?1 LIMIT 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![id], |row| {
+                Ok(PersonnelPublic {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    division: row.get(2)?,
+                    rank_level: row.get(3)?,
+                    created_at: row.get(4)?,
+                    display_name: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            None => Ok(None),
+            Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
+        }
+    }
+
+    pub fn personnel_fetch_by_id(&self, id: &str) -> Result<Option<PersonnelRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, division, rank_level, pin_hash, display_name FROM personnel WHERE id = ?1 LIMIT 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![id], |row| {
+                Ok(PersonnelRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    division: row.get(2)?,
+                    rank_level: row.get(3)?,
+                    pin_hash: row.get(4)?,
+                    display_name: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            None => Ok(None),
+            Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
+        }
+    }
+
+    pub fn inventory_list(&self) -> Result<Vec<InventoryItemRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, division, item_name, quantity, last_updated, category FROM inventory ORDER BY category COLLATE NOCASE, division COLLATE NOCASE, item_name COLLATE NOCASE",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(InventoryItemRow {
+                    id: row.get(0)?,
+                    division: row.get(1)?,
+                    item_name: row.get(2)?,
+                    quantity: row.get(3)?,
+                    last_updated: row.get(4)?,
+                    category: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn inventory_get(&self, id: &str) -> Result<Option<InventoryItemRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, division, item_name, quantity, last_updated, category FROM inventory WHERE id = ?1 LIMIT 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(params![id], |row| {
+                Ok(InventoryItemRow {
+                    id: row.get(0)?,
+                    division: row.get(1)?,
+                    item_name: row.get(2)?,
+                    quantity: row.get(3)?,
+                    last_updated: row.get(4)?,
+                    category: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            None => Ok(None),
+            Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
+        }
+    }
+
+    pub fn inventory_insert(
+        &self,
+        id: &str,
+        division: &str,
+        item_name: &str,
+        quantity: i64,
+        category: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now_ms = Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO inventory (id, division, item_name, quantity, last_updated, category) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, division.trim(), item_name.trim(), quantity, now_ms, category],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Returns previous quantity if the row existed and was updated.
+    pub fn inventory_set_quantity(&self, id: &str, new_qty: i64) -> Result<Option<i64>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let old: Option<i64> = conn
+            .query_row("SELECT quantity FROM inventory WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if old.is_none() {
+            return Ok(None);
+        }
+        let now_ms = Utc::now().timestamp_millis();
+        conn.execute(
+            "UPDATE inventory SET quantity = ?1, last_updated = ?2 WHERE id = ?3",
+            params![new_qty, now_ms, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(old)
+    }
+
+    pub fn inventory_set_category(&self, id: &str, category: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now_ms = Utc::now().timestamp_millis();
+        let n = conn
+            .execute(
+                "UPDATE inventory SET category = ?1, last_updated = ?2 WHERE id = ?3",
+                params![category, now_ms, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("Inventory item not found.".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn inventory_log_insert(
+        &self,
+        log_id: &str,
+        item_id: &str,
+        user_id: &str,
+        action_type: &str,
+        old_qty: Option<i64>,
+        new_qty: Option<i64>,
+        timestamp_ms: i64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO inventory_log (id, item_id, user_id, action_type, old_qty, new_qty, timestamp, caesar_fingerprint) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+            params![
+                log_id,
+                item_id,
+                user_id,
+                action_type,
+                old_qty,
+                new_qty,
+                timestamp_ms
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn inventory_log_list(&self) -> Result<Vec<InventoryLogRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, item_id, user_id, action_type, old_qty, new_qty, timestamp, caesar_fingerprint FROM inventory_log ORDER BY timestamp DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(InventoryLogRow {
+                    id: row.get(0)?,
+                    item_id: row.get(1)?,
+                    user_id: row.get(2)?,
+                    action_type: row.get(3)?,
+                    old_qty: row.get(4)?,
+                    new_qty: row.get(5)?,
+                    timestamp: row.get(6)?,
+                    caesar_fingerprint: row.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn inventory_log_append_fingerprint(
+        &self,
+        log_id: &str,
+        note: &str,
+    ) -> Result<(), String> {
+        let note = note.trim();
+        if note.is_empty() {
+            return Err("Correction note is empty.".to_string());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE inventory_log SET caesar_fingerprint = CASE \
+                 WHEN caesar_fingerprint IS NULL OR caesar_fingerprint = '' THEN ?2 \
+                 ELSE caesar_fingerprint || char(10) || ?2 END \
+                 WHERE id = ?1",
+                params![log_id, note],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("Log entry not found.".to_string());
+        }
+        Ok(())
+    }
+
+
     /// Returns (file_size, last_modified) for a stable `relative_path` key when present.
+
     pub fn get_file_metadata(&self, relative_path: &str) -> Result<Option<(i64, Option<i64>)>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -2841,6 +3499,8 @@ LIMIT ?2
         Ok(map)
     }
 
+    /// Reserved for expanding child hits with parent `chunk_text` in hybrid RAG (not wired yet).
+    #[allow(dead_code)]
     fn load_parent_chunk_texts(
         conn: &Connection,
         parent_ids: &[i64],
@@ -3203,13 +3863,14 @@ LIMIT ?2
         }
     }
 
-    pub fn list_logbook_entries(&self) -> Result<Vec<LogbookEntry>, String> {
+    pub fn list_logbook_entries(&self, include_tactical: bool) -> Result<Vec<LogbookEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id FROM logbook_entries ORDER BY created_at DESC",
-            )
-            .map_err(|e| e.to_string())?;
+        let sql = if include_tactical {
+            "SELECT id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id, notebook FROM logbook_entries ORDER BY created_at DESC"
+        } else {
+            "SELECT id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id, notebook FROM logbook_entries WHERE lower(COALESCE(notebook, 'general')) != 'tactical' ORDER BY created_at DESC"
+        };
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
                 let from_raw: Option<i64> = row.get(3)?;
@@ -3221,6 +3882,7 @@ LIMIT ?2
                     author_name: row.get(4).unwrap_or_default(),
                     author_occupation: row.get(5).unwrap_or_default(),
                     parent_entry_id: row.get(6)?,
+                    notebook: Self::logbook_notebook_cell(row)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -3229,6 +3891,13 @@ LIMIT ?2
             out.push(r.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    fn logbook_notebook_cell(row: &rusqlite::Row) -> Result<String, rusqlite::Error> {
+        match row.get::<_, Option<String>>(7)? {
+            Some(s) if !s.is_empty() => Ok(s),
+            _ => Ok("general".to_string()),
+        }
     }
 
     pub fn list_logbook_entries_since(
@@ -3240,9 +3909,10 @@ LIMIT ?2
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id
+                "SELECT id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id, notebook
                  FROM logbook_entries
                  WHERE created_at > ?1
+                   AND lower(COALESCE(notebook, 'general')) != 'tactical'
                  ORDER BY created_at DESC
                  LIMIT ?2",
             )
@@ -3258,6 +3928,7 @@ LIMIT ?2
                     author_name: row.get(4).unwrap_or_default(),
                     author_occupation: row.get(5).unwrap_or_default(),
                     parent_entry_id: row.get(6)?,
+                    notebook: Self::logbook_notebook_cell(row)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -3285,7 +3956,7 @@ LIMIT ?2
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id FROM logbook_entries ORDER BY created_at DESC LIMIT ?1",
+                "SELECT id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id, notebook FROM logbook_entries WHERE lower(COALESCE(notebook, 'general')) != 'tactical' ORDER BY created_at DESC LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -3299,6 +3970,7 @@ LIMIT ?2
                     author_name: row.get(4).unwrap_or_default(),
                     author_occupation: row.get(5).unwrap_or_default(),
                     parent_entry_id: row.get(6)?,
+                    notebook: Self::logbook_notebook_cell(row)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -3312,7 +3984,7 @@ LIMIT ?2
     pub fn get_logbook_entry(&self, id: &str) -> Result<Option<LogbookEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id FROM logbook_entries WHERE id = ?1 LIMIT 1")
+            .prepare("SELECT id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id, notebook FROM logbook_entries WHERE id = ?1 LIMIT 1")
             .map_err(|e| e.to_string())?;
         let mut rows = stmt.query(params![id]).map_err(|e| e.to_string())?;
         if let Some(row) = rows.next().map_err(|e| e.to_string())? {
@@ -3325,6 +3997,7 @@ LIMIT ?2
                 author_name: row.get(4).unwrap_or_default(),
                 author_occupation: row.get(5).unwrap_or_default(),
                 parent_entry_id: row.get(6).map_err(|e| e.to_string())?,
+                notebook: Self::logbook_notebook_cell(&row).map_err(|e| e.to_string())?,
             }))
         } else {
             Ok(None)
@@ -3339,11 +4012,12 @@ LIMIT ?2
         author_name: &str,
         author_occupation: &str,
         parent_entry_id: Option<&str>,
+        notebook: &str,
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO logbook_entries (id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)",
-            params![id, body, created_at, author_name, author_occupation, parent_entry_id],
+            "INSERT INTO logbook_entries (id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id, notebook) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7)",
+            params![id, body, created_at, author_name, author_occupation, parent_entry_id, notebook],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -3372,9 +4046,15 @@ LIMIT ?2
     pub fn try_insert_logbook_from_lan(&self, entry: &LogbookEntry) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let from_raw: Option<i64> = entry.from_node_id.map(|n| n as i64);
+        let nb = entry.notebook.trim();
+        let notebook = if nb.is_empty() {
+            "general"
+        } else {
+            nb
+        };
         let n = conn
             .execute(
-                "INSERT OR IGNORE INTO logbook_entries (id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT OR IGNORE INTO logbook_entries (id, body, created_at, from_node_id, author_name, author_occupation, parent_entry_id, notebook) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     entry.id.trim(),
                     entry.body.as_str(),
@@ -3383,6 +4063,7 @@ LIMIT ?2
                     entry.author_name.as_str(),
                     entry.author_occupation.as_str(),
                     entry.parent_entry_id.as_deref(),
+                    notebook,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -3634,6 +4315,7 @@ LIMIT ?2
         node_id: i64,
         username: &str,
         counter_sign: &str,
+        rank_level: i32,
     ) -> Result<MeshProfile, String> {
         let username = username.trim();
         let counter_sign = counter_sign.trim();
@@ -3655,16 +4337,176 @@ LIMIT ?2
             .map_err(|e| e.to_string())?;
         let id = existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         conn.execute(
-            "INSERT INTO mesh_profiles (id, node_id, username, counter_sign, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO mesh_profiles (id, node_id, username, counter_sign, created_at, sos_state, is_registered, rank_level)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 1, ?6)
              ON CONFLICT(node_id) DO UPDATE SET
                username = excluded.username,
-               counter_sign = excluded.counter_sign",
-            params![id.clone(), node_id, username, counter_sign, now],
+               counter_sign = excluded.counter_sign,
+               is_registered = 1,
+               rank_level = excluded.rank_level",
+            params![id.clone(), node_id, username, counter_sign, now, rank_level as i64],
         )
         .map_err(|e| e.to_string())?;
         drop(conn);
         self.mesh_profile_get_by_node(node_id)?.ok_or_else(|| "Profile upsert failed.".to_string())
+    }
+
+    pub fn mesh_profile_insert_sos_unknown_node(&self, node_id: i64) -> Result<MeshProfile, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let username = format!("UNKNOWN-{}", node_id);
+        let counter_sign: String = uuid::Uuid::new_v4()
+            .to_string()
+            .chars()
+            .filter(|c| *c != '-')
+            .take(10)
+            .collect();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM mesh_profiles WHERE node_id = ?1 LIMIT 1",
+                params![node_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if existing.is_some() {
+            return Err("Mesh profile already exists for this node.".to_string());
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO mesh_profiles (id, node_id, username, counter_sign, created_at, sos_state, is_registered, rank_level)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1)",
+            params![
+                id,
+                node_id,
+                username,
+                counter_sign,
+                now,
+                SOS_STATE_ACTIVE as i64
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        drop(conn);
+        self.mesh_profile_get_by_node(node_id)?.ok_or_else(|| "Emergency profile insert failed.".to_string())
+    }
+
+    pub fn mesh_profile_set_sos_state(&self, node_id: i64, state: i32) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE mesh_profiles SET sos_state = ?2 WHERE node_id = ?1",
+                params![node_id, state],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("No mesh profile for that node.".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn mesh_profile_sos_state(&self, node_id: i64) -> i32 {
+        self.mesh_profile_get_by_node(node_id)
+            .ok()
+            .flatten()
+            .map(|p| p.sos_state)
+            .unwrap_or(SOS_STATE_NORMAL)
+    }
+
+    pub fn mesh_emergency_operator_resolve(
+        &self,
+        node_id: i64,
+        accept_clear: bool,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        if accept_clear {
+            conn.execute(
+                "UPDATE mesh_profiles SET sos_state = ?2 WHERE node_id = ?1",
+                params![node_id, SOS_STATE_NORMAL],
+            )
+        } else {
+            conn.execute(
+                "UPDATE mesh_profiles SET sos_state = ?2 WHERE node_id = ?1 AND sos_state = ?3",
+                params![node_id, SOS_STATE_ACTIVE, SOS_STATE_SUSPENDED],
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_mesh_profiles_sos_non_normal(&self) -> Result<Vec<MeshProfile>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, node_id, username, counter_sign, created_at, sos_state, is_registered, rank_level
+                 FROM mesh_profiles WHERE sos_state != 0 ORDER BY sos_state DESC, username ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(MeshProfile {
+                    id: row.get(0)?,
+                    node_id: row.get(1)?,
+                    username: row.get(2)?,
+                    counter_sign: row.get(3)?,
+                    created_at: row.get(4)?,
+                    sos_state: row.get::<_, i64>(5)? as i32,
+                    is_registered: row.get::<_, i64>(6)? != 0,
+                    rank_level: row.get::<_, i64>(7)? as i32,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn upsert_mesh_node_position_live(
+        &self,
+        node_num: u32,
+        lat: f64,
+        lon: f64,
+        now_ms: i64,
+        label: &str,
+    ) -> Result<(), String> {
+        let node_id = format!("{}", node_num);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO mesh_node_locations (node_id, label, lat, lon, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(node_id) DO UPDATE SET
+               lat = excluded.lat,
+               lon = excluded.lon,
+               last_seen_at = excluded.last_seen_at,
+               label = CASE
+                 WHEN length(trim(excluded.label)) > 0 THEN excluded.label
+                 ELSE mesh_node_locations.label
+               END",
+            params![node_id, label.trim(), lat, lon, now_ms],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn mesh_last_position_for_node(
+        &self,
+        node_num: u32,
+    ) -> Result<Option<(f64, f64, i64)>, String> {
+        let node_id = format!("{}", node_num);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let r: Option<(f64, f64, i64)> = conn
+            .query_row(
+                "SELECT lat, lon, last_seen_at FROM mesh_node_locations WHERE node_id = ?1 LIMIT 1",
+                params![node_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(r)
     }
 
     pub fn mesh_profile_delete_by_id(&self, id: &str) -> Result<bool, String> {
@@ -3683,7 +4525,8 @@ LIMIT ?2
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, node_id, username, counter_sign, created_at FROM mesh_profiles ORDER BY username ASC",
+                "SELECT id, node_id, username, counter_sign, created_at, sos_state, is_registered, rank_level
+                 FROM mesh_profiles ORDER BY username ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -3694,6 +4537,9 @@ LIMIT ?2
                     username: row.get(2)?,
                     counter_sign: row.get(3)?,
                     created_at: row.get(4)?,
+                    sos_state: row.get::<_, i64>(5)? as i32,
+                    is_registered: row.get::<_, i64>(6)? != 0,
+                    rank_level: row.get::<_, i64>(7)? as i32,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -3708,7 +4554,8 @@ LIMIT ?2
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, node_id, username, counter_sign, created_at FROM mesh_profiles WHERE node_id = ?1 LIMIT 1",
+                "SELECT id, node_id, username, counter_sign, created_at, sos_state, is_registered, rank_level
+                 FROM mesh_profiles WHERE node_id = ?1 LIMIT 1",
             )
             .map_err(|e| e.to_string())?;
         let mut rows = stmt.query(params![node_id]).map_err(|e| e.to_string())?;
@@ -3720,6 +4567,13 @@ LIMIT ?2
                 username: row.get(2).map_err(|e| e.to_string())?,
                 counter_sign: row.get(3).map_err(|e| e.to_string())?,
                 created_at: row.get(4).map_err(|e| e.to_string())?,
+                sos_state: row
+                    .get::<_, i64>(5)
+                    .map_err(|e| e.to_string())? as i32,
+                is_registered: row.get::<_, i64>(6).map_err(|e| e.to_string())? != 0,
+                rank_level: row
+                    .get::<_, i64>(7)
+                    .map_err(|e| e.to_string())? as i32,
             }))
         } else {
             Ok(None)
@@ -3832,6 +4686,352 @@ LIMIT ?2
         )
         .map_err(|e| e.to_string())?;
         drop(conn);
+        Ok(())
+    }
+}
+
+// --- Local (in-app) chat sessions: one row per chat, scoped by personnel user_id ---
+
+impl Database {
+    /// One-time import from legacy `chats/*.json` into `local_chats`, attributed to the earliest-created personnel row.
+    pub fn migrate_local_chats_from_legacy_json(&self, app_data_dir: &Path) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM local_chats", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            return Ok(());
+        }
+        let default_uid: Option<String> = conn
+            .query_row(
+                "SELECT id FROM personnel ORDER BY created_at ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(owner) = default_uid else {
+            return Ok(());
+        };
+        let chats_dir = app_data_dir.join("chats");
+        if !chats_dir.is_dir() {
+            return Ok(());
+        }
+        let entries = std::fs::read_dir(&chats_dir).map_err(|e| e.to_string())?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let data = match std::fs::read_to_string(&path) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let chat: SavedChat = match serde_json::from_str(&data) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let uid = chat
+                .user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| owner.clone());
+            let messages_json =
+                serde_json::to_string(&chat.messages).map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT OR REPLACE INTO local_chats (id, user_id, title, description, messages_json, context_summary, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    chat.id,
+                    uid,
+                    chat.title,
+                    chat.description,
+                    messages_json,
+                    chat.context_summary,
+                    chat.created_at,
+                    chat.updated_at,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        drop(conn);
+        let legacy = app_data_dir.join(format!(
+            "chats__legacy_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        ));
+        if let Err(e) = std::fs::rename(&chats_dir, &legacy) {
+            eprintln!("[athena] local_chats migration: could not rename chats dir to {:?}: {}", legacy, e);
+        }
+        Ok(())
+    }
+
+    pub fn local_chat_list_summaries(&self, user_id: &str) -> Result<Vec<ChatSummary>, String> {
+        let uid = user_id.trim();
+        if uid.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, title, description, updated_at FROM local_chats WHERE user_id = ?1 ORDER BY updated_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![uid], |row| {
+                Ok(ChatSummary {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    description: row.get(2)?,
+                    updated_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn local_chat_get(&self, chat_id: &str, user_id: &str) -> Result<Option<SavedChat>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, user_id, title, description, messages_json, context_summary, created_at, updated_at
+                 FROM local_chats WHERE id = ?1 AND user_id = ?2 LIMIT 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query(params![chat_id, user_id])
+            .map_err(|e| e.to_string())?;
+        let row = match rows.next().map_err(|e| e.to_string())? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let mj: String = row.get(4).map_err(|e| e.to_string())?;
+        let messages: Vec<SavedMessage> =
+            serde_json::from_str(mj.as_str()).map_err(|e| e.to_string())?;
+        Ok(Some(SavedChat {
+            id: row.get(0).map_err(|e| e.to_string())?,
+            user_id: Some(row.get::<_, String>(1).map_err(|e| e.to_string())?),
+            title: row.get(2).map_err(|e| e.to_string())?,
+            description: row.get(3).map_err(|e| e.to_string())?,
+            messages,
+            context_summary: row.get(5).map_err(|e| e.to_string())?,
+            created_at: row.get(6).map_err(|e| e.to_string())?,
+            updated_at: row.get(7).map_err(|e| e.to_string())?,
+        }))
+    }
+
+    fn local_chat_find_duplicate_id(
+        &self,
+        user_id: &str,
+        messages: &[SavedMessage],
+    ) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, messages_json FROM local_chats WHERE user_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            let (id, json): (String, String) = r.map_err(|e| e.to_string())?;
+            let existing: Vec<SavedMessage> =
+                serde_json::from_str(&json).unwrap_or_default();
+            if existing.len() == messages.len()
+                && existing
+                    .iter()
+                    .zip(messages.iter())
+                    .all(|(a, b)| a.role == b.role && a.content == b.content)
+            {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn local_chat_save(
+        &self,
+        owner_user_id: &str,
+        id: Option<String>,
+        title: String,
+        messages: Vec<SavedMessage>,
+        description: Option<String>,
+    ) -> Result<String, String> {
+        let owner = owner_user_id.trim();
+        if owner.is_empty() {
+            return Err("user_id is required.".to_string());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let messages_json = serde_json::to_string(&messages).map_err(|e| e.to_string())?;
+
+        let mut resolved_id = id;
+        if resolved_id.is_none() {
+            if let Some(dup) = self.local_chat_find_duplicate_id(owner, &messages)? {
+                resolved_id = Some(dup);
+            }
+        }
+
+        let (chat_id, created_at, existing_summary) = if let Some(ref existing_id) = resolved_id {
+            let row = self.local_chat_get(existing_id, owner)?;
+            if row.is_none() {
+                return Err("Chat not found.".to_string());
+            }
+            let c = row.unwrap();
+            (
+                existing_id.clone(),
+                c.created_at,
+                c.context_summary,
+            )
+        } else {
+            let new_id = format!("chat_{}", now);
+            (new_id, now, None)
+        };
+
+        let title = if title.trim().is_empty() {
+            "New chat".to_string()
+        } else {
+            title
+        };
+
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO local_chats (id, user_id, title, description, messages_json, context_summary, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+               user_id = excluded.user_id,
+               title = excluded.title,
+               description = excluded.description,
+               messages_json = excluded.messages_json,
+               context_summary = excluded.context_summary,
+               updated_at = excluded.updated_at",
+            params![
+                chat_id,
+                owner,
+                title,
+                description,
+                messages_json,
+                existing_summary,
+                created_at,
+                now,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(chat_id)
+    }
+
+    pub fn local_chat_delete(&self, owner_user_id: &str, chat_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "DELETE FROM local_chats WHERE id = ?1 AND user_id = ?2",
+                params![chat_id, owner_user_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("Chat not found.".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn local_chat_update_metadata(
+        &self,
+        owner_user_id: &str,
+        chat_id: &str,
+        title: Option<String>,
+        description: Option<String>,
+    ) -> Result<(), String> {
+        let row = self
+            .local_chat_get(chat_id, owner_user_id)?
+            .ok_or_else(|| "Chat not found.".to_string())?;
+        let mut new_title = row.title;
+        let mut new_desc = row.description;
+        if let Some(t) = title {
+            new_title = t;
+        }
+        if let Some(d) = description {
+            new_desc = Some(d);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let messages_json = serde_json::to_string(&row.messages).map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE local_chats SET title = ?1, description = ?2, updated_at = ?3, messages_json = ?4 WHERE id = ?5 AND user_id = ?6",
+            params![
+                new_title,
+                new_desc,
+                now,
+                messages_json,
+                chat_id,
+                owner_user_id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn local_chat_update_context_summary(
+        &self,
+        owner_user_id: &str,
+        chat_id: &str,
+        last_user_msg: &str,
+        last_assistant_msg: &str,
+    ) -> Result<(), String> {
+        let row = self
+            .local_chat_get(chat_id, owner_user_id)?
+            .ok_or_else(|| "Chat not found.".to_string())?;
+        let combined = format!("{} {}", last_user_msg, last_assistant_msg);
+        let words: Vec<&str> = combined
+            .split_whitespace()
+            .filter(|w| {
+                w.len() >= 3 && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'')
+            })
+            .take(50)
+            .collect();
+        let new_line = words.join(" ");
+        let updated = if let Some(ref existing) = row.context_summary {
+            let trimmed = existing.trim();
+            if trimmed.is_empty() {
+                new_line
+            } else {
+                format!("{} {}", trimmed, new_line)
+            }
+        } else {
+            new_line
+        };
+        let summary = if updated.len() > 600 {
+            updated
+                .chars()
+                .skip(updated.len() - 600)
+                .collect::<String>()
+        } else {
+            updated
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let messages_json = serde_json::to_string(&row.messages).map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE local_chats SET context_summary = ?1, updated_at = ?2, messages_json = ?3 WHERE id = ?4 AND user_id = ?5",
+            params![summary, now, messages_json, chat_id, owner_user_id],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 }

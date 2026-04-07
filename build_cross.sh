@@ -13,11 +13,15 @@ echo "[build_cross] running builds (this may take a long time)..."
 docker run --rm \
   -v "$ROOT:/workspace" \
   -w /workspace/athena \
+  -e PKG_CONFIG_ALLOW_CROSS=1 \
+  -e PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig \
   "$IMAGE" \
   bash -lc '
 set -euo pipefail
 export PATH="/usr/local/cargo/bin:$PATH"
 export CI="true"
+export PKG_CONFIG_ALLOW_CROSS=1
+export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
 
 npm ci
 
@@ -36,23 +40,17 @@ copy_if() {
   fi
 }
 
-# Windows x86_64 GNU (binary only; skip installers in container)
-if npm run tauri build -- --target x86_64-pc-windows-gnu --no-bundle; then
-  copy_if "src-tauri/target/x86_64-pc-windows-gnu/release/athena.exe" \
+# Windows x86_64 MSVC (cargo-xwin supplies Windows SDK libs for ONNX / MSVC toolchain)
+if npm run tauri build -- --target x86_64-pc-windows-msvc --runner cargo-xwin --no-bundle; then
+  copy_if "src-tauri/target/x86_64-pc-windows-msvc/release/athena.exe" \
     "$PAYLOAD/Windows/64-bit/ATHENA.exe"
 else
-  echo "[build_cross] warning: x86_64-pc-windows-gnu build failed"
+  echo "[build_cross] warning: x86_64-pc-windows-msvc build failed"
 fi
 
-# Windows i686 GNU
-if npm run tauri build -- --target i686-pc-windows-gnu --no-bundle; then
-  copy_if "src-tauri/target/i686-pc-windows-gnu/release/athena.exe" \
-    "$PAYLOAD/Windows/32-bit/ATHENA.exe"
-else
-  echo "[build_cross] warning: i686-pc-windows-gnu build failed"
-fi
+echo "[build_cross] note: Windows 32-bit GNU build removed (MSVC x64 only in this image); payload/Windows/32-bit unused."
 
-# Windows ARM64: no stable rustup mingw triple in this image; keep placeholder or manual build.
+# Windows ARM64: not produced in this image; leave payload/Windows/ARM or build separately.
 echo "[build_cross] note: Windows ARM binary not produced in this image; leave payload/Windows/ARM or build separately."
 
 # Linux x86_64 AppImage (bundling enabled for this target)

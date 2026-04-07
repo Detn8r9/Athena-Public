@@ -1,8 +1,9 @@
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { AppView } from "./appView";
 import { ATHENA_FULL_NAME } from "./shared/branding";
 import { substLexicon, useLexicon } from "./shared/lexicon";
 import {
-  Antenna,
   BookOpen,
   CalendarDays,
   HelpCircle,
@@ -10,9 +11,14 @@ import {
   Library,
   Map,
   MessageSquare,
-  Radio,
+  LogOut,
+  Moon,
+  Power,
   Settings,
+  Sun,
+  Users,
 } from "lucide-react";
+import { CommsHubIcon } from "./shared/CommsHubIcon";
 
 export type UniversalHeaderBatteryState = {
   percentage: number | null;
@@ -43,17 +49,19 @@ export interface UniversalHeaderProps {
   currentView: AppView;
   setCurrentView: (view: AppView) => void;
   featureMapEnabled: boolean;
-  meshRadioConnected: boolean;
   onOpenArchive: () => void;
   onOpenSettings: () => void;
   onOpenHelp: () => void;
-  /** Open the full Meshtastic / mesh network screen (not only the quick-send modal). */
-  onNavigateToMeshNetwork: () => void;
   onOpenCalendar: () => void;
   calendarDateTimeLabel: string;
   batteryState: UniversalHeaderBatteryState | null;
   headerDownloadBar: HeaderDownloadBarState | null;
   ingestionState: UniversalHeaderIngestionState | null;
+  authRank: number;
+  onLogout: () => void | Promise<void>;
+  /** When true, local chat / Help AI are paused; mesh /ai queue may still run but auto-reply is off in minimal mode. */
+  aiInferenceSleep: boolean;
+  onToggleAiInferenceSleep: () => void | Promise<void>;
 }
 
 function viewButtonClass(active: boolean): string {
@@ -64,18 +72,23 @@ export function UniversalHeader({
   currentView,
   setCurrentView,
   featureMapEnabled,
-  meshRadioConnected,
   onOpenArchive,
   onOpenSettings,
   onOpenHelp,
-  onNavigateToMeshNetwork,
   onOpenCalendar,
   calendarDateTimeLabel,
   batteryState,
   headerDownloadBar,
   ingestionState,
+  authRank,
+  onLogout,
+  aiInferenceSleep,
+  onToggleAiInferenceSleep,
 }: UniversalHeaderProps) {
   const lx = useLexicon();
+  const [powerMenuOpen, setPowerMenuOpen] = useState(false);
+  const powerWrapRef = useRef<HTMLDivElement>(null);
+
   const pctRounded = batteryState?.percentage != null ? Math.round(batteryState.percentage) : 0;
   const mins = batteryState?.time_to_empty_minutes;
   const batteryAria =
@@ -85,10 +98,89 @@ export function UniversalHeader({
         : substLexicon(lx.headerBatteryAriaOnBattery, { pct: pctRounded }) +
           (mins != null ? substLexicon(lx.headerBatteryAriaMinsSuffix, { mins }) : "")
       : "";
+
+  useEffect(() => {
+    if (!powerMenuOpen) return;
+    const onDocMouse = (e: MouseEvent) => {
+      const el = powerWrapRef.current;
+      if (el && !el.contains(e.target as Node)) setPowerMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPowerMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDocMouse);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouse);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [powerMenuOpen]);
+
+  async function runStationMinimalMode() {
+    setPowerMenuOpen(false);
+    try {
+      await invoke("enter_station_minimal_mode");
+    } catch {
+      /* still log out */
+    }
+    await Promise.resolve(onLogout());
+  }
+
+  async function runLogoutOnly() {
+    setPowerMenuOpen(false);
+    await Promise.resolve(onLogout());
+  }
+
+  async function runWakeAi() {
+    setPowerMenuOpen(false);
+    await Promise.resolve(onToggleAiInferenceSleep());
+  }
+
   return (
     <header className="universal-header glass-panel" role="banner" aria-label={ATHENA_FULL_NAME}>
       <div className="universal-header-toolbar">
         <div className="universal-header-left">
+          <div className="universal-header-power-wrap" ref={powerWrapRef}>
+            <button
+              type="button"
+              className={`universal-header-icon-btn${aiInferenceSleep ? " universal-header-ai-asleep" : ""}`}
+              aria-expanded={powerMenuOpen}
+              aria-haspopup="menu"
+              title="Power and station options"
+              aria-label="Power and station options"
+              onClick={() => setPowerMenuOpen((o) => !o)}
+            >
+              <Power size={22} strokeWidth={2} aria-hidden />
+            </button>
+            {powerMenuOpen ? (
+              <div className="universal-header-power-menu glass-panel" role="menu" aria-label="Station power options">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="universal-header-power-menu-item universal-header-power-menu-item-primary"
+                  onClick={() => void runStationMinimalMode()}
+                >
+                  <span className="universal-header-power-menu-label">Station minimal mode</span>
+                  <span className="universal-header-power-menu-hint">
+                    Log out, pause local AI, disable mesh auto-reply, and stop the bundled Ollama sidecar if Athena
+                    started it.
+                  </span>
+                </button>
+                <button type="button" role="menuitem" className="universal-header-power-menu-item" onClick={() => void runLogoutOnly()}>
+                  <LogOut size={18} strokeWidth={2} aria-hidden className="universal-header-power-menu-icon" />
+                  <span>Log out only</span>
+                </button>
+                <button type="button" role="menuitem" className="universal-header-power-menu-item" onClick={() => void runWakeAi()}>
+                  {aiInferenceSleep ? (
+                    <Sun size={18} strokeWidth={2} aria-hidden className="universal-header-power-menu-icon" />
+                  ) : (
+                    <Moon size={18} strokeWidth={2} aria-hidden className="universal-header-power-menu-icon" />
+                  )}
+                  <span>{aiInferenceSleep ? "Wake local AI" : "Sleep local AI only"}</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
           <button
             type="button"
             className={viewButtonClass(currentView === "home")}
@@ -121,7 +213,7 @@ export function UniversalHeader({
           >
             <MessageSquare size={22} strokeWidth={2} aria-hidden />
           </button>
-          {featureMapEnabled ? (
+          {featureMapEnabled && authRank >= 4 ? (
             <button
               type="button"
               className={viewButtonClass(currentView === "map")}
@@ -133,6 +225,18 @@ export function UniversalHeader({
               <Map size={22} strokeWidth={2} aria-hidden />
             </button>
           ) : null}
+          {authRank >= 2 ? (
+            <button
+              type="button"
+              className={viewButtonClass(currentView === "comms_hub" || currentView === "mesh" || currentView === "radio")}
+              onClick={() => setCurrentView("comms_hub")}
+              title={lx.navRadio}
+              aria-label={lx.navRadio}
+              aria-current={currentView === "comms_hub" || currentView === "mesh" || currentView === "radio" ? "page" : undefined}
+            >
+              <CommsHubIcon size={22} strokeWidth={2} />
+            </button>
+          ) : null}
           <button
             type="button"
             className="universal-header-icon-btn"
@@ -142,26 +246,18 @@ export function UniversalHeader({
           >
             <Library size={22} strokeWidth={2} aria-hidden />
           </button>
-          <button
-            type="button"
-            className={viewButtonClass(currentView === "mesh")}
-            onClick={onNavigateToMeshNetwork}
-            title={meshRadioConnected ? lx.navMeshTitle : `${lx.navMeshTitle} (open setup)`}
-            aria-label={lx.navMeshAria}
-            aria-current={currentView === "mesh" ? "page" : undefined}
-          >
-            <Antenna size={22} strokeWidth={2} aria-hidden />
-          </button>
-          <button
-            type="button"
-            className={viewButtonClass(currentView === "radio")}
-            onClick={() => setCurrentView("radio")}
-            title={lx.navRadio}
-            aria-label={lx.navRadio}
-            aria-current={currentView === "radio" ? "page" : undefined}
-          >
-            <Radio size={22} strokeWidth={2} aria-hidden />
-          </button>
+          {authRank >= 4 ? (
+            <button
+              type="button"
+              className={viewButtonClass(currentView === "personnel")}
+              onClick={() => setCurrentView("personnel")}
+              title="Personnel registry"
+              aria-label="Personnel registry"
+              aria-current={currentView === "personnel" ? "page" : undefined}
+            >
+              <Users size={22} strokeWidth={2} aria-hidden />
+            </button>
+          ) : null}
           <button
             type="button"
             className={viewButtonClass(currentView === "logbook")}
@@ -174,22 +270,16 @@ export function UniversalHeader({
           </button>
           <button
             type="button"
-            className={viewButtonClass(currentView === "calendar")}
-            onClick={onOpenCalendar}
-            title={lx.navCalendar}
-            aria-label={lx.navCalendar}
-            aria-current={currentView === "calendar" ? "page" : undefined}
-          >
-            <CalendarDays size={22} strokeWidth={2} aria-hidden />
-          </button>
-          <button
-            type="button"
-            className="universal-header-clock-btn"
+            className={`universal-header-clock-btn universal-header-calendar-merge${
+              currentView === "calendar" ? " universal-header-calendar-merge-active" : ""
+            }`}
             onClick={onOpenCalendar}
             title={lx.navOpenCalendar}
             aria-label={lx.navOpenCalendarAria}
+            aria-current={currentView === "calendar" ? "page" : undefined}
           >
-            {calendarDateTimeLabel}
+            <CalendarDays size={18} strokeWidth={2} aria-hidden className="universal-header-calendar-merge-icon" />
+            <span className="universal-header-calendar-merge-text">{calendarDateTimeLabel}</span>
           </button>
           <button
             type="button"

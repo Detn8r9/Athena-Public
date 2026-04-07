@@ -15,6 +15,8 @@ pub struct SavedMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedChat {
     pub id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
     pub title: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -49,6 +51,7 @@ fn sanitize_id(id: &str) -> String {
         .collect()
 }
 
+#[allow(dead_code)] // Legacy file-backed listing; local UI uses SQLite `local_chats`.
 pub fn list_chats(app_data_dir: &Path) -> Result<Vec<ChatSummary>, String> {
     let dir = chats_dir(app_data_dir);
     if !dir.exists() {
@@ -151,6 +154,7 @@ pub fn save_chat(
 
     let chat = SavedChat {
         id: id.clone(),
+        user_id: None,
         title: if title.is_empty() {
             "New chat".to_string()
         } else {
@@ -170,6 +174,7 @@ pub fn save_chat(
 
 /// Update the context summary from the last exchange. Appends a short retrieval-friendly line so
 /// follow-up questions (e.g. "what brand is the doorbell?") can resolve "doorbell" from context.
+#[allow(dead_code)] // Legacy file-backed path; mesh JSON chats may still use file helpers elsewhere.
 pub fn update_chat_context_summary(
     app_data_dir: &Path,
     id: String,
@@ -221,6 +226,7 @@ pub fn update_chat_context_summary(
 }
 
 /// Update only title and/or description of an existing chat. Preserves messages and created_at.
+#[allow(dead_code)]
 pub fn update_chat_metadata(
     app_data_dir: &Path,
     id: String,
@@ -248,6 +254,7 @@ pub fn update_chat_metadata(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn delete_chat(app_data_dir: &Path, id: String) -> Result<(), String> {
     let path = chat_path(app_data_dir, &id);
     if path.exists() {

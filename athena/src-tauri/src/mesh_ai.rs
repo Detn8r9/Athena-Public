@@ -214,6 +214,7 @@ pub fn generate_mesh_slash_ai_reply(
             continue;
         }
         match (row.sender_type.as_str(), row.message_type.as_str()) {
+            ("remote", "operator") => {}
             ("remote", "chat") | ("remote", "prompt") | ("human", "chat") | ("human", "prompt") => {
                 messages.push(ChatMessage {
                     role: "user".to_string(),

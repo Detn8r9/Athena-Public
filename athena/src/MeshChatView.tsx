@@ -21,6 +21,7 @@ type MeshNetworkNodeSummary = {
 function labelForRow(r: MeshChatRow): string {
   if (r.senderType === "human") return "Operator";
   if (r.senderType === "ai") return "Athena";
+  if (r.senderType === "remote" && r.messageType === "operator") return "Operator request";
   return "Mesh";
 }
 

@@ -70,6 +70,8 @@ riff-wave = { version = "0.1", optional = true }
 base64 = "0.22"
 tauri-plugin-shell = "2"
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+rand = "0.8"
 geoconvert = "1.0"
 sqlite-vec = "0.1.8-alpha.1"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "ndarray", "tls-rustls"] }

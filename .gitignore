@@ -84,3 +84,14 @@ logs/
 .cursor/*
 !.cursor/rules/
 !.cursor/rules/**
+
+# --- Personal / machine-specific (avoid committing) ---
+*.code-workspace
+.envrc
+.direnv/
+**/*.local.json
+**/*.private.json
+**/personal/
+**/user-profile-local/
+athena/**/screenshots/
+athena/**/.env.local

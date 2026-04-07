@@ -1,4 +1,5 @@
 mod academy;
+mod auth;
 mod athena_map_protocol;
 mod athena_mbtiles_tile_protocol;
 mod chats;
@@ -10,8 +11,10 @@ mod downloader;
 mod neural_embed;
 mod rerank;
 mod embeddings;
+mod hardware_map;
 mod indexer;
 mod inference;
+mod inventory;
 mod kiwix;
 mod kiwix_tools;
 mod lan_cluster;
@@ -32,6 +35,7 @@ mod mesh_calendar;
 mod mesh_router;
 mod mesh_listener;
 mod mesh_logbook;
+mod mesh_sos;
 mod mesh_radio;
 mod moondream;
 mod ocr;
@@ -46,8 +50,10 @@ mod pmtiles_region_extract;
 mod quarantine;
 mod radio_manager;
 mod rag_indexer;
+mod remote_queue;
 mod satellite_region_download;
 mod sdr_manager;
+mod sdr_radio;
 mod spatial;
 mod system;
 mod telemetry;
@@ -79,11 +85,7 @@ use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
-use chats::{
-    delete_chat as delete_saved_chat, get_chat as get_saved_chat, list_chats as list_saved_chats,
-    save_chat as save_saved_chat, update_chat_context_summary as update_saved_chat_context_summary,
-    update_chat_metadata as update_saved_chat_metadata, ChatSummary, SavedChat, SavedMessage,
-};
+use chats::{ChatSummary, SavedChat, SavedMessage};
 use config::{
     effective_embedding_folder, effective_reranker_folder, ensure_model_directories, load_config,
     save_config, AppConfig, CustomTheme, ModelDirectoryPaths,
@@ -246,7 +248,40 @@ fn add_mesh_profile(
         .db
         .lock()
         .map_err(|e| e.to_string())?
-        .mesh_profile_upsert(node_id, &username, &counter_sign)
+        .mesh_profile_upsert(node_id, &username, &counter_sign, 1)
+}
+
+#[tauri::command]
+fn mesh_emergency_list_active(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::MeshProfile>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_mesh_profiles_sos_non_normal()
+}
+
+#[tauri::command]
+fn mesh_emergency_operator_resolve(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+    node_id: i64,
+    accept_clear: bool,
+) -> Result<(), String> {
+    let u = auth::authenticated_user(&session)?;
+    if u.rank_level < 4 {
+        return Err("Centurion rank (4+) required.".to_string());
+    }
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .mesh_emergency_operator_resolve(node_id, accept_clear)?;
+    let n = u32::try_from(node_id).map_err(|_| "Invalid node id.".to_string())?;
+    crate::mesh_router::emit_mesh_emergency(&app, &state.db, n);
+    Ok(())
 }
 
 #[tauri::command]
@@ -337,13 +372,70 @@ async fn send_mesh_operator_chat_message(
 static LOGBOOK_ENTRY_SEQ: AtomicU64 = AtomicU64::new(1);
 static CALENDAR_ENTRY_SEQ: AtomicU64 = AtomicU64::new(1);
 
+/// Logbook profile occupation (Settings) — substring match unlocks tactical notes for ranks below 4.
+fn tactical_occupation_matches(occ: &str) -> bool {
+    let o = occ.to_lowercase();
+    [
+        "soldier",
+        "marine",
+        "infantry",
+        "sergeant",
+        "officer",
+        "tactical",
+        "operator",
+        "security",
+        "military",
+        "army",
+        "navy",
+        "airman",
+        "air force",
+        "national guard",
+        "guard",
+        "mp",
+        "mps",
+        "corpsman",
+        "sailor",
+        "coast guard",
+        "ranger",
+        "artillery",
+        "cavalry",
+        "commando",
+        "recon",
+        "scout",
+    ]
+    .iter()
+    .any(|k| o.contains(k))
+}
+
+fn can_access_tactical_logbook(session: &auth::AuthSession, occupation_cfg: &str) -> bool {
+    if auth::authenticated_user(session)
+        .map(|u| u.rank_level >= 4)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    tactical_occupation_matches(occupation_cfg)
+}
+
 #[tauri::command]
-fn logbook_list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<LogbookEntry>, String> {
+fn logbook_list_entries(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+) -> Result<Vec<LogbookEntry>, String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let cfg = load_config(&app_data_dir);
+    let occ = cfg
+        .logbook_author_occupation
+        .as_deref()
+        .unwrap_or("")
+        .trim();
+    let include_tactical = can_access_tactical_logbook(&session, occ);
     state
         .db
         .lock()
         .map_err(|e| e.to_string())?
-        .list_logbook_entries()
+        .list_logbook_entries(include_tactical)
 }
 
 #[tauri::command]
@@ -351,7 +443,9 @@ async fn logbook_add_entry(
     app: tauri::AppHandle,
     body: String,
     parent_entry_id: Option<String>,
+    notebook: Option<String>,
     state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
     control: tauri::State<'_, mesh_listener::MeshRadioControl>,
 ) -> Result<LogbookEntry, String> {
     let body = body.trim().to_string();
@@ -373,19 +467,41 @@ async fn logbook_add_entry(
         .as_deref()
         .unwrap_or("")
         .trim();
+    let nb_raw = notebook
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("general");
+    let nb_norm = if nb_raw.eq_ignore_ascii_case("tactical") {
+        "tactical"
+    } else {
+        "general"
+    };
+    if nb_norm == "tactical" && !can_access_tactical_logbook(&session, author_occupation) {
+        return Err(
+            "Tactical notes require Centurion rank (4+) or a military-style job title in your logbook profile."
+                .to_string(),
+        );
+    }
     let parent = parent_entry_id
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
     if let Some(pid) = parent {
-        let exists = state
+        let prow = state
             .db
             .lock()
             .map_err(|e| e.to_string())?
-            .get_logbook_entry(pid)?
-            .is_some();
-        if !exists {
+            .get_logbook_entry(pid)?;
+        let Some(p) = prow else {
             return Err("Parent log entry was not found.".to_string());
+        };
+        let p_tac = p.notebook.eq_ignore_ascii_case("tactical");
+        if nb_norm == "tactical" && !p_tac {
+            return Err("Tactical notes must reply under another tactical note.".to_string());
+        }
+        if nb_norm == "general" && p_tac {
+            return Err("Field notes cannot be threaded under tactical notes.".to_string());
         }
     }
     let created_at = std::time::SystemTime::now()
@@ -406,6 +522,7 @@ async fn logbook_add_entry(
             author_name,
             author_occupation,
             parent,
+            nb_norm,
         )?;
     }
     let entry = state
@@ -414,7 +531,7 @@ async fn logbook_add_entry(
         .map_err(|e| e.to_string())?
         .get_logbook_entry(&id)?
         .ok_or_else(|| "Logbook insert failed.".to_string())?;
-    if mesh_listener::mesh_radio_is_connected() {
+    if mesh_listener::mesh_radio_is_connected() && nb_norm == "general" {
         let wire =
             mesh_logbook::wire_from_logbook_entry(&entry, mesh_listener::mesh_local_node_id());
         if let Ok(packet) = mesh_logbook::encode_logbook_packet(&wire) {
@@ -484,6 +601,9 @@ async fn logbook_broadcast_entry(
         .map_err(|e| e.to_string())?
         .get_logbook_entry(&id)?
         .ok_or_else(|| "Log entry not found.".to_string())?;
+    if entry.notebook.eq_ignore_ascii_case("tactical") {
+        return Err("Tactical notes are not sent over the mesh.".to_string());
+    }
     let wire = mesh_logbook::wire_from_logbook_entry(&entry, mesh_listener::mesh_local_node_id());
     let packet = mesh_logbook::encode_logbook_packet(&wire)?;
     control
@@ -733,6 +853,41 @@ fn set_mesh_ai_auto_reply(app: tauri::AppHandle, value: bool) -> Result<(), Stri
     let mut cfg = load_config(&app_data_dir);
     cfg.mesh_ai_auto_reply = Some(value);
     save_config(&app_data_dir, &cfg)
+}
+
+#[tauri::command]
+fn get_ai_inference_sleep(app: tauri::AppHandle) -> Result<bool, String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    Ok(load_config(&app_data_dir).ai_inference_sleep.unwrap_or(false))
+}
+
+#[tauri::command]
+fn set_ai_inference_sleep(app: tauri::AppHandle, value: bool) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut cfg = load_config(&app_data_dir);
+    cfg.ai_inference_sleep = Some(value);
+    save_config(&app_data_dir, &cfg)?;
+    let _ = app.emit(
+        AI_INFERENCE_SLEEP_EVENT,
+        serde_json::json!({ "asleep": value }),
+    );
+    Ok(())
+}
+
+/// Power menu: pause local AI, turn off mesh auto-reply, stop Athena-managed Ollama sidecar. Caller should log out next.
+#[tauri::command]
+fn enter_station_minimal_mode(app: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut cfg = load_config(&app_data_dir);
+    cfg.ai_inference_sleep = Some(true);
+    cfg.mesh_ai_auto_reply = Some(false);
+    save_config(&app_data_dir, &cfg)?;
+    let _ = app.emit(
+        AI_INFERENCE_SLEEP_EVENT,
+        serde_json::json!({ "asleep": true }),
+    );
+    kill_ollama_sidecar_if_running(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1419,6 +1574,7 @@ struct UserAndInferenceSettings {
     active_embedding_model_folder: String,
     /// Effective ONNX reranker folder under `models/rerankers`.
     active_reranker_model_folder: String,
+    ai_inference_sleep: bool,
 }
 
 #[tauri::command]
@@ -1452,6 +1608,7 @@ fn get_user_and_inference_settings(
             .unwrap_or(false),
         active_embedding_model_folder: effective_embedding_folder(&c),
         active_reranker_model_folder: effective_reranker_folder(&c),
+        ai_inference_sleep: c.ai_inference_sleep.unwrap_or(false),
     })
 }
 
@@ -2202,50 +2359,90 @@ fn get_memory_estimate(app: tauri::AppHandle) -> Result<MemoryEstimate, String> 
     })
 }
 
-#[tauri::command]
-fn list_chats(app: tauri::AppHandle) -> Result<Vec<ChatSummary>, String> {
-    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
-    list_saved_chats(&app_data_dir)
+fn resolve_local_chat_target_user_id(
+    actor: &auth::AuthenticatedPersonnel,
+    target_user_id: Option<&str>,
+    db: &Database,
+) -> Result<String, String> {
+    if actor.rank_level < 4 {
+        return Ok(actor.id.clone());
+    }
+    let tid = target_user_id.map(str::trim).filter(|s| !s.is_empty());
+    match tid {
+        None => Ok(actor.id.clone()),
+        Some(t) if t == actor.id.as_str() => Ok(actor.id.clone()),
+        Some(t) => {
+            if db.personnel_fetch_by_id(t)?.is_none() {
+                return Err("Unknown personnel id.".to_string());
+            }
+            Ok(t.to_string())
+        }
+    }
 }
 
 #[tauri::command]
-fn get_chat(app: tauri::AppHandle, id: String) -> Result<Option<SavedChat>, String> {
-    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
-    get_saved_chat(&app_data_dir, id)
+fn list_chats(
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+    target_user_id: Option<String>,
+) -> Result<Vec<ChatSummary>, String> {
+    let u = auth::authenticated_user(&session)?;
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    let tid = resolve_local_chat_target_user_id(&u, target_user_id.as_deref(), &*g)?;
+    g.local_chat_list_summaries(&tid)
+}
+
+#[tauri::command]
+fn get_chat(
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+    id: String,
+    target_user_id: Option<String>,
+) -> Result<Option<SavedChat>, String> {
+    let u = auth::authenticated_user(&session)?;
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    let tid = resolve_local_chat_target_user_id(&u, target_user_id.as_deref(), &*g)?;
+    g.local_chat_get(&id, &tid)
 }
 
 #[tauri::command]
 fn save_chat(
-    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
     id: Option<String>,
     title: String,
     messages: Vec<SavedMessage>,
     description: Option<String>,
 ) -> Result<String, String> {
-    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
-    save_saved_chat(&app_data_dir, id, title, messages, description)
+    let u = auth::authenticated_user(&session)?;
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    g.local_chat_save(&u.id, id, title, messages, description)
 }
 
 #[tauri::command]
 fn update_chat_metadata(
-    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
     id: String,
     title: Option<String>,
     description: Option<String>,
 ) -> Result<(), String> {
-    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
-    update_saved_chat_metadata(&app_data_dir, id, title, description)
+    let u = auth::authenticated_user(&session)?;
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    g.local_chat_update_metadata(&u.id, &id, title, description)
 }
 
 #[tauri::command]
 fn update_chat_context_summary(
-    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
     id: String,
     last_user_msg: String,
     last_assistant_msg: String,
 ) -> Result<(), String> {
-    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
-    update_saved_chat_context_summary(&app_data_dir, id, &last_user_msg, &last_assistant_msg)
+    let u = auth::authenticated_user(&session)?;
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    g.local_chat_update_context_summary(&u.id, &id, &last_user_msg, &last_assistant_msg)
 }
 
 /// Synthesize speech for character voices (fallout, ultron). Returns WAV as base64 or error.
@@ -2273,6 +2470,9 @@ fn synthesize_speech(
 fn generate_chat_title(app: tauri::AppHandle, first_message: String) -> Result<String, String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
+    if config.ai_inference_sleep.unwrap_or(false) {
+        return Ok("New chat".to_string());
+    }
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
     generate_chat_title_unified(&config, &models, &first_message)
@@ -2285,6 +2485,9 @@ fn generate_chat_description(
 ) -> Result<String, String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
+    if config.ai_inference_sleep.unwrap_or(false) {
+        return Ok(String::new());
+    }
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
     let chat_messages: Vec<ChatMessage> = messages
@@ -2298,9 +2501,14 @@ fn generate_chat_description(
 }
 
 #[tauri::command]
-fn delete_chat(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
-    delete_saved_chat(&app_data_dir, id)
+fn delete_chat(
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+    id: String,
+) -> Result<(), String> {
+    let u = auth::authenticated_user(&session)?;
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    g.local_chat_delete(&u.id, &id)
 }
 
 const ERROR_LOG_FILENAME: &str = "athena_error_log.txt";
@@ -3230,6 +3438,12 @@ fn send_message(
 ) -> Result<String, String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
+    if config.ai_inference_sleep.unwrap_or(false) {
+        return Err(
+            "Local AI is asleep. Meshtastic /ai and mesh auto-replies still run when enabled. Wake the AI from the lock screen or header."
+                .to_string(),
+        );
+    }
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
 
@@ -3344,6 +3558,9 @@ const STREAM_CHUNK_EVENT: &str = "athena:stream-chunk";
 const STREAM_DONE_EVENT: &str = "athena:stream-done";
 const STREAM_ERROR_EVENT: &str = "athena:stream-error";
 pub(crate) const STREAM_SOURCES_EVENT: &str = "athena:stream-sources";
+
+/// Emitted when `ai_inference_sleep` toggles (lock screen or header power control).
+pub const AI_INFERENCE_SLEEP_EVENT: &str = "athena:ai-inference-sleep-changed";
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -4033,6 +4250,12 @@ fn help_assistant_ask(app: tauri::AppHandle, question: String) -> Result<String,
     }
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
+    if config.ai_inference_sleep.unwrap_or(false) {
+        return Err(
+            "Local AI is asleep. Meshtastic /ai and mesh auto-replies still run when enabled. Wake the AI from the lock screen or header."
+                .to_string(),
+        );
+    }
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
     let mut system = format!(
@@ -4064,6 +4287,7 @@ Be concise (under 8 short paragraphs). Do not invent features.",
 #[tauri::command]
 fn send_message_stream(
     app: tauri::AppHandle,
+    session: tauri::State<'_, auth::AuthSession>,
     message: String,
     history: Option<Vec<HistoryMessage>>,
     user_lat: Option<f64>,
@@ -4073,9 +4297,18 @@ fn send_message_stream(
 ) -> Result<(), String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
+    if config.ai_inference_sleep.unwrap_or(false) {
+        let _ = app.emit(
+            STREAM_ERROR_EVENT,
+            "Local AI is asleep. Meshtastic /ai and mesh auto-replies still run when enabled. Wake the AI from the lock screen or header.",
+        );
+        let _ = app.emit(STREAM_DONE_EVENT, ());
+        return Ok(());
+    }
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
 
+    let session_user_id = auth::authenticated_user(&session)?.id.clone();
     let state = app.state::<AppState>();
     let db_arc = Arc::clone(&state.db);
     let model_opts_for_stream = model_options;
@@ -4083,6 +4316,7 @@ fn send_message_stream(
     let history_clone = history;
     let app_data_dir_clone = app_data_dir.clone();
     let chat_id_clone = chat_id.clone();
+    let history_owner_id = session_user_id.clone();
     std::thread::spawn(move || {
         let app_data_dir = app_data_dir_clone;
         let config = load_config(&app_data_dir);
@@ -4096,7 +4330,12 @@ fn send_message_stream(
         // the current user message before stale summary) so one document does not dominate every turn.
         let (retrieval_query, conversation_context_prompt, library_lookup_query) =
             if let Some(ref cid) = chat_id_clone {
-                if let Ok(Some(chat)) = get_saved_chat(&app_data_dir, cid.clone()) {
+                let chat_opt = db_arc
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.local_chat_get(cid, &history_owner_id).ok())
+                    .flatten();
+                if let Some(chat) = chat_opt {
                     if chat.messages.len() >= 2 {
                         let (rq, cp) =
                             build_retrieval_from_saved_messages(&chat.messages, &message_for_model);
@@ -4476,6 +4715,7 @@ pub fn run() {
             {
                 let g = db.lock().map_err(|e| e.to_string())?;
                 g.migrate_archive_watch_roots_from_config(&app_data_dir)?;
+                g.migrate_local_chats_from_legacy_json(&app_data_dir)?;
             }
             let startup_cfg = load_config(&app_data_dir);
             let embedding_dir_active = model_paths
@@ -4553,6 +4793,12 @@ pub fn run() {
                 app_data_dir.clone(),
                 Arc::clone(&db),
             );
+            remote_queue::spawn_remote_ai_queue_worker(
+                app.handle().clone(),
+                app_data_dir.clone(),
+                Arc::clone(&db),
+                mesh_control.clone(),
+            );
             app.manage(mesh_control);
             lan_sync::spawn_lan_sync(
                 app.handle().clone(),
@@ -4620,6 +4866,7 @@ pub fn run() {
 
             app.manage(OllamaState(Mutex::new(ollama_child)));
             app.manage(radio_manager::RadioState::new());
+            app.manage(auth::AuthSession::default());
 
             if use_legacy_ollama_launch {
                 let app_data_for_ollama = app_data_dir.clone();
@@ -4691,6 +4938,25 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            auth::authenticate_pin,
+            auth::logout,
+            auth::set_my_personnel_display_name,
+            auth::set_my_personnel_login_name,
+            auth::set_my_personnel_pin,
+            auth::refresh_auth_session,
+            auth::set_personnel_display_name,
+            auth::add_personnel,
+            auth::remove_personnel,
+            auth::list_personnel,
+            inventory::list_inventory,
+            inventory::add_inventory_item,
+            inventory::update_inventory_quantity,
+            inventory::update_inventory_category,
+            inventory::list_inventory_log,
+            inventory::edit_log_fingerprint,
+            hardware_map::check_hardware_status,
+            remote_queue::get_queue_status,
+            remote_queue::enqueue_request,
             scan_chat_models,
             scan_embedding_models,
             scan_reranker_models,
@@ -4841,11 +5107,16 @@ pub fn run() {
             add_mesh_profile,
             remove_mesh_profile,
             list_mesh_profiles,
+            mesh_emergency_list_active,
+            mesh_emergency_operator_resolve,
             list_mesh_network_nodes_cmd,
             list_mesh_chats_for_node_cmd,
             send_mesh_operator_chat_message,
             get_mesh_ai_auto_reply,
             set_mesh_ai_auto_reply,
+            get_ai_inference_sleep,
+            set_ai_inference_sleep,
+            enter_station_minimal_mode,
             is_mesh_radio_connected,
             get_mesh_radio_identity,
             is_mesh_remote_registration_enabled,

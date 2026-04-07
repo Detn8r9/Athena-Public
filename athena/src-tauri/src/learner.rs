@@ -26,6 +26,9 @@ pub fn ensure_learned_note_for_text(
     source_name: &str,
     source_text: &str,
 ) -> Result<(), String> {
+    if config.ai_inference_sleep.unwrap_or(false) {
+        return Ok(());
+    }
     let learned_path = learned_path_for(source_path);
     if db.get_by_path(&learned_path)?.is_some() {
         return Ok(());

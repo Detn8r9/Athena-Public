@@ -112,6 +112,9 @@ pub struct AppConfig {
     /// When true, inbound Meshtastic text triggers Ollama and replies by DM to the sender. Default true.
     #[serde(default)]
     pub mesh_ai_auto_reply: Option<bool>,
+    /// When true, local UI inference (main chat, Help assistant, console chat) is paused. Meshtastic `/ai` and mesh auto-replies still run.
+    #[serde(default)]
+    pub ai_inference_sleep: Option<bool>,
     /// When set, this `ollama` (or `ollama.exe`) binary is tried first for `ollama serve` before PATH / defaults.
     #[serde(default)]
     pub ollama_athena_cli_path: Option<String>,

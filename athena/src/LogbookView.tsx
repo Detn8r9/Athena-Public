@@ -11,6 +11,8 @@ export interface LogbookEntryRow {
   author_name: string;
   author_occupation: string;
   parent_entry_id: string | null;
+  /** `general` field logbook; `tactical` restricted (no mesh). */
+  notebook?: string;
 }
 
 interface LogbookAuthorProfile {
@@ -20,6 +22,8 @@ interface LogbookAuthorProfile {
 
 interface LogbookViewProps {
   meshConnected: boolean;
+  notebookScope?: "general" | "tactical";
+  onProfileSaved?: () => void;
 }
 
 type SortKey = "date" | "author" | "occupation";
@@ -45,6 +49,11 @@ function previewLine(body: string, maxChars: number, emptyLabel: string): string
   return `${oneLine.slice(0, maxChars - 1)}…`;
 }
 
+function entryNotebook(e: LogbookEntryRow): "general" | "tactical" {
+  const n = (e.notebook ?? "general").trim().toLowerCase();
+  return n === "tactical" ? "tactical" : "general";
+}
+
 function sortRoots(a: LogbookEntryRow, b: LogbookEntryRow, key: SortKey): number {
   if (key === "author") {
     const c = (a.author_name || "").localeCompare(b.author_name || "", undefined, { sensitivity: "base" });
@@ -57,7 +66,7 @@ function sortRoots(a: LogbookEntryRow, b: LogbookEntryRow, key: SortKey): number
   return b.created_at - a.created_at;
 }
 
-export function LogbookView({ meshConnected }: LogbookViewProps) {
+export function LogbookView({ meshConnected, notebookScope = "general", onProfileSaved }: LogbookViewProps) {
   const lx = useLexicon();
   const [entries, setEntries] = useState<LogbookEntryRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -117,6 +126,7 @@ export function LogbookView({ meshConnected }: LogbookViewProps) {
         author_name: e.author_name ?? "",
         author_occupation: e.author_occupation ?? "",
         parent_entry_id: e.parent_entry_id ?? null,
+        notebook: e.notebook ?? "general",
       }));
       setEntries(normalized);
     } catch (e) {
@@ -158,10 +168,13 @@ export function LogbookView({ meshConnected }: LogbookViewProps) {
   }, [entries, selectedId]);
 
   const filteredEntries = useMemo(() => {
+    const scoped = entries.filter((e) =>
+      notebookScope === "tactical" ? entryNotebook(e) === "tactical" : entryNotebook(e) !== "tactical",
+    );
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return entries;
-    return entries.filter((e) => e.body.toLowerCase().includes(q));
-  }, [entries, searchQuery]);
+    if (!q) return scoped;
+    return scoped.filter((e) => e.body.toLowerCase().includes(q));
+  }, [entries, searchQuery, notebookScope]);
 
   const sidebarRows = useMemo(() => {
     const idSet = new Set(filteredEntries.map((e) => e.id));
@@ -201,6 +214,7 @@ export function LogbookView({ meshConnected }: LogbookViewProps) {
       await invoke("set_logbook_author_profile", { name: n, occupation: o });
       setAuthorProfile({ name: n, occupation: o });
       setProfileModalOpen(false);
+      onProfileSaved?.();
     } catch (e) {
       setError(e != null ? String(e) : lx.logbookErrSaveProfile);
     } finally {
@@ -217,6 +231,7 @@ export function LogbookView({ meshConnected }: LogbookViewProps) {
       const row = await invoke<LogbookEntryRow>("logbook_add_entry", {
         body,
         parent_entry_id: replyParentId,
+        notebook: notebookScope === "tactical" ? "tactical" : "general",
       });
       setDraft("");
       setReplyParentId(null);
@@ -306,8 +321,12 @@ export function LogbookView({ meshConnected }: LogbookViewProps) {
 
       <aside className="chat-sidebar logbook-sidebar" aria-label={lx.logbookSidebarAria}>
         <div className="sidebar-brand">
-          <h1 className="sidebar-title">{lx.logbookTitle}</h1>
-          <p className="sidebar-tagline text-muted">{lx.logbookTagline}</p>
+          <h1 className="sidebar-title">
+            {notebookScope === "tactical" ? lx.logbookTacticalTitle : lx.logbookTitle}
+          </h1>
+          <p className="sidebar-tagline text-muted">
+            {notebookScope === "tactical" ? lx.logbookTacticalTagline : lx.logbookTagline}
+          </p>
         </div>
         <div className="sidebar-chat-actions" style={{ flexDirection: "column", alignItems: "stretch", gap: "0.45rem" }}>
           <input
@@ -375,30 +394,41 @@ export function LogbookView({ meshConnected }: LogbookViewProps) {
           <div className="logbook-main-header-row">
             <h2 className="logbook-main-title">{selected ? lx.logbookEntryHeader : lx.logbookNewNoteTitle}</h2>
             <div className="logbook-main-header-actions">
-              <button
-                type="button"
-                className="logbook-pull-mesh logbook-pull-mesh--header"
-                onClick={() => void handlePullFromMesh()}
-                disabled={!meshConnected || pullingFromMesh}
-                title={!meshConnected ? lx.logbookPullMeshTitleOff : lx.logbookPullMeshTitleOn}
-              >
-                {pullingFromMesh ? lx.stateRequesting : lx.logbookPullMesh}
-              </button>
+              {notebookScope === "general" ? (
+                <button
+                  type="button"
+                  className="logbook-pull-mesh logbook-pull-mesh--header"
+                  onClick={() => void handlePullFromMesh()}
+                  disabled={!meshConnected || pullingFromMesh}
+                  title={!meshConnected ? lx.logbookPullMeshTitleOff : lx.logbookPullMeshTitleOn}
+                >
+                  {pullingFromMesh ? lx.stateRequesting : lx.logbookPullMesh}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={`logbook-help-toggle${logbookHelpOpen ? " is-open" : ""}`}
                 onClick={() => setLogbookHelpOpen((o) => !o)}
                 aria-expanded={logbookHelpOpen}
                 aria-controls={logbookHelpId}
-                title={lx.logbookHelpToggleTitle}
+                title={
+                  notebookScope === "tactical" ? lx.logbookTacticalHelpToggleTitle : lx.logbookHelpToggleTitle
+                }
               >
                 ?
               </button>
             </div>
           </div>
           {logbookHelpOpen ? (
-            <div id={logbookHelpId} className="logbook-help-panel" role="region" aria-label={lx.logbookHelpAria}>
-              <p className="logbook-help-desc text-muted">{lx.logbookHelpBody}</p>
+            <div
+              id={logbookHelpId}
+              className="logbook-help-panel"
+              role="region"
+              aria-label={notebookScope === "tactical" ? lx.logbookTacticalHelpAria : lx.logbookHelpAria}
+            >
+              <p className="logbook-help-desc text-muted">
+                {notebookScope === "tactical" ? lx.logbookTacticalHelpBody : lx.logbookHelpBody}
+              </p>
             </div>
           ) : null}
         </header>
@@ -463,7 +493,9 @@ export function LogbookView({ meshConnected }: LogbookViewProps) {
             className="logbook-textarea"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder={lx.logbookDraftPlaceholder}
+            placeholder={
+              notebookScope === "tactical" ? lx.logbookTacticalDraftPlaceholder : lx.logbookDraftPlaceholder
+            }
             rows={4}
             disabled={saving || composeDisabled}
           />
@@ -473,8 +505,14 @@ export function LogbookView({ meshConnected }: LogbookViewProps) {
             </p>
           ) : null}
           <div className="logbook-compose-meta text-muted">
-            {lx.logbookMeshBudget} {draftBytes} / {maxBodyBytes} bytes (UTF-8)
-            {!meshConnected ? lx.logbookMeshNoRadioHint : lx.logbookMeshTruncateHint}
+            {notebookScope === "tactical" ? (
+              <span>{lx.logbookTacticalLocalOnly}</span>
+            ) : (
+              <>
+                {lx.logbookMeshBudget} {draftBytes} / {maxBodyBytes} bytes (UTF-8)
+                {!meshConnected ? lx.logbookMeshNoRadioHint : lx.logbookMeshTruncateHint}
+              </>
+            )}
           </div>
           <div className="logbook-compose-actions">
             {replyParentId ? (

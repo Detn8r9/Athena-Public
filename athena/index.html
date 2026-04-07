@@ -215,7 +215,40 @@
         </mask>
       </defs>
     </svg>
-    <div id="root"></div>
+    <div id="root">
+      <p
+        id="athena-boot-placeholder"
+        style="
+          position: fixed;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin: 0;
+          font: 500 15px system-ui, sans-serif;
+          color: #94a3b8;
+          background: #050505;
+          z-index: 1;
+        "
+      >
+        Loading interface…
+      </p>
+    </div>
+    <!-- Dismiss splash on a timer before the Vite bundle parses (avoids waiting on React / lazy chunks). -->
+    <script>
+      (function () {
+        var HIDE_MS = 3600;
+        var REMOVE_MS = 800;
+        window.setTimeout(function () {
+          var el = document.getElementById("athena-splash");
+          if (!el) return;
+          el.classList.add("hidden");
+          window.setTimeout(function () {
+            el.remove();
+          }, REMOVE_MS);
+        }, HIDE_MS);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

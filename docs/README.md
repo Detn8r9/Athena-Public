@@ -6,15 +6,7 @@ All paths below are relative to the **repository root** (parent of `athena/`).
 
 | Document | Contents |
 |----------|----------|
-| [`product/LOCAL_DATA_AND_MAPS_PHASES.md`](product/LOCAL_DATA_AND_MAPS_PHASES.md) | Local data, maps, phased rollout notes |
 | [`product/PLATFORM_COMPATIBILITY.md`](product/PLATFORM_COMPATIBILITY.md) | OS-specific behavior (device metrics, fullscreen, etc.) |
-
-## Engineering
-
-| Document | Contents |
-|----------|----------|
-| [`development/CODE_REVIEW.md`](development/CODE_REVIEW.md) | Code review notes |
-| [`development/OPTIMIZATION_AUDIT.md`](development/OPTIMIZATION_AUDIT.md) | Performance / optimization audit |
 
 ## Archived reference (not part of the build)
 

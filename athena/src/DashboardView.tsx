@@ -5,18 +5,18 @@ import type { AppView } from "./appView";
 import type { ReactNode } from "react";
 import {
   AlertTriangle,
-  Antenna,
+  BookOpen,
   CalendarDays,
   ChevronDown,
   ChevronUp,
   ChevronRight,
-  Home,
   Map,
   MessageSquare,
-  Radio,
   Library,
   GraduationCap,
+  Users,
 } from "lucide-react";
+import { CommsHubIcon } from "./shared/CommsHubIcon";
 
 interface SystemStatsPayload {
   total_memory: number;
@@ -79,6 +79,7 @@ interface DeviceStatsPayload {
 interface DashboardViewProps {
   onNavigate: (destination: DashboardDestination) => void;
   onOpenTriage: () => void;
+  authRank: number;
 }
 
 function LauncherIcon({ children }: { children: ReactNode }) {
@@ -102,15 +103,6 @@ function LauncherIcon({ children }: { children: ReactNode }) {
 }
 
 function buildLauncherItems(): Array<{ key: DashboardDestination; label: string; icon: ReactNode }> { return [
-  {
-    key: "home",
-    label: "Home",
-    icon: (
-      <LauncherIcon>
-        <Home size={20} strokeWidth={2} aria-hidden />
-      </LauncherIcon>
-    ),
-  },
   {
     key: "chat",
     label: "Chat",
@@ -157,15 +149,47 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     ),
   },
   {
-    key: "mesh",
-    label: "Mesh network",
+    key: "comms_hub",
+    label: "Communications Hub",
     icon: (
       <LauncherIcon>
-        <Antenna size={20} strokeWidth={2} aria-hidden />
+        <CommsHubIcon size={20} strokeWidth={2} />
       </LauncherIcon>
     ),
   },
-]; }
+  {
+    key: "logbook",
+    label: "Field log & logistics",
+    icon: (
+      <LauncherIcon>
+        <BookOpen size={20} strokeWidth={2} aria-hidden />
+      </LauncherIcon>
+    ),
+  },
+  {
+    key: "personnel",
+    label: "Personnel",
+    icon: (
+      <LauncherIcon>
+        <Users size={20} strokeWidth={2} aria-hidden />
+      </LauncherIcon>
+    ),
+  },
+];
+}
+
+function filterLauncherByRank(
+  items: Array<{ key: DashboardDestination; label: string; icon: ReactNode }>,
+  rank: number,
+): Array<{ key: DashboardDestination; label: string; icon: ReactNode }> {
+  return items.filter((item) => {
+    const k = item.key;
+    if (k === "map") return rank >= 4;
+    if (k === "comms_hub") return rank >= 2;
+    if (k === "personnel") return rank >= 4;
+    return true;
+  });
+}
 
 
 function formatUptime(sec: number): string {
@@ -193,8 +217,8 @@ function ThinBar({ percent }: { percent: number }) {
   );
 }
 
-export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) {
-  const launcherItems = useMemo(() => buildLauncherItems(), []);
+export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardViewProps) {
+  const launcherItems = useMemo(() => filterLauncherByRank(buildLauncherItems(), authRank), [authRank]);
   const pageVisible = usePageVisible();
   const [stats, setStats] = useState<SystemStatsPayload | null>(null);
   const [statsErr, setStatsErr] = useState<string | null>(null);
@@ -578,7 +602,7 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
               <button
                 type="button"
                 className="glass-action-btn"
-                onClick={() => onNavigate("mesh")}
+                onClick={() => onNavigate("comms_hub")}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -586,27 +610,10 @@ export function DashboardView({ onNavigate, onOpenTriage }: DashboardViewProps) 
                   fontSize: "0.82rem",
                   padding: "0.35rem 0.65rem",
                 }}
-                aria-label="Open mesh network"
+                aria-label="Open Communications Hub"
               >
-                <Antenna size={16} strokeWidth={2} aria-hidden />
-                Mesh network
-                <ChevronRight size={16} strokeWidth={2} aria-hidden />
-              </button>
-              <button
-                type="button"
-                className="glass-action-btn"
-                onClick={() => onNavigate("radio")}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "0.35rem",
-                  fontSize: "0.82rem",
-                  padding: "0.35rem 0.65rem",
-                }}
-                aria-label="Open Comms"
-              >
-                <Radio size={16} strokeWidth={2} aria-hidden />
-                Open Comms
+                <CommsHubIcon size={16} strokeWidth={2} />
+                Communications Hub
                 <ChevronRight size={16} strokeWidth={2} aria-hidden />
               </button>
             </div>
