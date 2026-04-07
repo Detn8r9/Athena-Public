@@ -1,0 +1,37 @@
+# Validates Dockerfile.cross on the same platform family as Apple Silicon Docker (linux/arm64).
+# Full Tauri cross-builds stay on local ./build_cross.sh or workflow_dispatch heavy job if added later.
+
+name: Docker cross image
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-cross-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-linux-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Dockerfile.cross (linux/arm64)
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --file Dockerfile.cross \
+            --tag athena-cross:ci \
+            --load \
+            .
