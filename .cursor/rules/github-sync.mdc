@@ -18,4 +18,29 @@ When the user asks to **push**, **sync**, **commit to GitHub**, **update the rep
 6. **Never** `git push --force` to `main` (or the default branch) unless the user **explicitly** requests a force push and understands the risk.
 7. If push fails (auth, rejected, conflicts), report the error and suggest fixes (e.g. `git pull --rebase` then push, or GitHub login / SSH).
 
-Trigger phrases include: *push to GitHub*, *commit and push*, *sync the repo*, *upload these changes*.
+## Workflow files and Cursor pushes
+
+If the repo contains `.github/workflows/*.yml`, GitHub requires a token with the **`workflow` scope** (classic PAT) or equivalent fine-grained permission to **edit GitHub Actions workflows**. Without it, pushes that add or change workflow files fail with: `refusing to allow a Personal Access Token to create or update workflow ... without workflow scope`.
+
+To make “push to GitHub” from Cursor actually work for this project:
+
+1. GitHub → Settings → Developer settings → Personal access tokens: create or edit a token that includes **`workflow`** (classic) or fine-grained “Actions: Read and write” / workflow permissions on this repository.
+2. Configure Cursor / Git credential helper to use that token for `https://github.com/Detn8r9/Athena.git`, **or** switch `origin` to SSH (`git remote set-url origin git@github.com:Detn8r9/Athena.git`) and use an SSH key with repo access (SSH is not subject to PAT workflow scope limits the same way).
+
+Until credentials allow workflow updates, the agent can still commit and merge locally, but **`git push` may fail** when workflow files changed.
+
+## Sync everything with `main` on GitHub
+
+When the user asks to **push**, **sync with main**, **get everything on GitHub**, or **align with main** (and they intend the default branch to carry all merged work):
+
+1. `git fetch origin`.
+2. `git status` and `git branch --show-current`.
+3. If there are uncommitted changes the user wants published: stage, commit (clear message), then continue.
+4. If the current branch is **not** `main` and the goal is for **`origin/main` to include this branch’s commits**:
+   - `git checkout main` and `git pull origin main` (or `git merge origin/main` if already on main).
+   - `git merge <previous-branch>` (prefer fast-forward when possible; use `--no-ff` only if the user wants an explicit merge commit).
+5. `git push origin main`.
+6. If work should also remain on a feature branch: `git push origin <branch>` (after checking out that branch if needed).
+7. If `main` is behind remote only: `git checkout main && git pull origin main` then push any local-only commits on `main`.
+
+Trigger phrases include: *push to GitHub*, *commit and push*, *sync the repo*, *sync with main*, *upload these changes*.
