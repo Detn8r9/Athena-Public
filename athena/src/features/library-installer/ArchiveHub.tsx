@@ -1,11 +1,11 @@
 import { KnowledgeCatalogView } from "../../KnowledgeCatalogView";
 import { useLexicon } from "../../shared/lexicon";
-import { ArchiveLocalPanel, ArchivePackagesPanel } from "./LibraryInstaller";
+import { ArchiveAcademyDownloadsPanel, ArchiveLocalPanel, ArchivePackagesPanel } from "./LibraryInstaller";
 import { ArchiveMapsTab, type ArchiveMapsTabProps } from "./ArchiveMapsTab";
 
 export type ArchivePrimaryTabId = "local" | "network";
 
-export type ArchiveNetworkSubTabId = "packages" | "documents" | "maps";
+export type ArchiveNetworkSubTabId = "packages" | "academy" | "documents" | "maps";
 
 export interface ArchiveHubProps {
   primaryTab: ArchivePrimaryTabId;
@@ -104,6 +104,17 @@ export function ArchiveHub({
               <button
                 type="button"
                 role="tab"
+                id="archive-sub-academy"
+                aria-selected={networkSubTab === "academy"}
+                aria-controls="archive-subpanel-academy"
+                className={"library-tab" + (networkSubTab === "academy" ? " library-tab-active" : "")}
+                onClick={() => onNetworkSubTabChange("academy")}
+              >
+                {lx.tabArchiveAcademy}
+              </button>
+              <button
+                type="button"
+                role="tab"
                 id="archive-sub-documents"
                 aria-selected={networkSubTab === "documents"}
                 aria-controls="archive-subpanel-documents"
@@ -128,6 +139,11 @@ export function ArchiveHub({
             {networkSubTab === "packages" ? (
               <div id="archive-subpanel-packages" role="tabpanel" aria-labelledby="archive-sub-packages">
                 <ArchivePackagesPanel />
+              </div>
+            ) : null}
+            {networkSubTab === "academy" ? (
+              <div id="archive-subpanel-academy" role="tabpanel" aria-labelledby="archive-sub-academy">
+                <ArchiveAcademyDownloadsPanel />
               </div>
             ) : null}
             {networkSubTab === "documents" ? (

@@ -2257,6 +2257,50 @@ body.theme-survival-manual .app[data-theme="custom"] {
   outline-offset: 2px;
 }
 
+.logbook-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* Native <select> defaults to a light OS chrome; match logbook search field + hide system arrow. */
+.logbook-sort-select {
+  flex: 1;
+  min-width: 0;
+  min-height: 2rem;
+  padding: 0.35rem 1.85rem 0.35rem 0.65rem;
+  box-sizing: border-box;
+  font-family: var(--font);
+  font-size: 0.8rem;
+  line-height: 1.25;
+  color: var(--text);
+  background-color: color-mix(in srgb, var(--glass-bg) 90%, transparent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.45rem center;
+  background-size: 0.75rem;
+  border: var(--glass-border-subtle);
+  border-radius: 12px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.logbook-sort-select::-ms-expand {
+  display: none;
+}
+
+.logbook-sort-select:focus-visible {
+  outline: 2px solid rgba(var(--theme-accent-rgb, 56, 189, 248), 0.45);
+  outline-offset: 2px;
+}
+
+.logbook-sort-select option {
+  background: var(--surface-solid);
+  color: var(--text);
+}
+
 .logbook-compose-meta {
   font-size: 0.8rem;
 }
@@ -2267,31 +2311,42 @@ body.theme-survival-manual .app[data-theme="custom"] {
   gap: 0.5rem;
 }
 
+/* Match .sidebar-new-chat: solid primary pill; avoid whole-button opacity when disabled (blends with glass and looks like a different color). */
 .logbook-save-note {
-  min-height: 44px;
+  min-height: 40px;
   min-width: 9rem;
   padding: 0 1.5rem;
   margin: 0;
   font-family: var(--font);
-  font-size: 0.95rem;
-  font-weight: 600;
+  font-size: 0.9rem;
+  font-weight: 500;
   color: var(--bg);
   background: var(--primary);
   border: none;
   border-radius: 999px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: background var(--transition-fast) var(--ease-out), box-shadow var(--transition-fast) var(--ease-out),
-    transform var(--transition-fast) var(--ease-out), opacity var(--transition-fast) var(--ease-out);
+    transform var(--transition-fast) var(--ease-out);
 }
 
 .logbook-save-note:hover:not(:disabled) {
-  filter: brightness(1.06);
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--primary) 35%, transparent);
+  background: var(--secondary);
+  box-shadow: 0 2px 8px var(--glow);
+}
+
+.logbook-save-note:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .logbook-save-note:disabled {
-  opacity: 0.45;
   cursor: not-allowed;
+  background: color-mix(in srgb, var(--primary) 42%, var(--surface-solid));
+  color: color-mix(in srgb, var(--bg) 72%, var(--text-muted));
+  box-shadow: none;
 }
 
 /* Left sidebar: new chat + search + chat list + footer */

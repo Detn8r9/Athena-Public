@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Build Docker cross image, run Tauri builds inside the container, and copy artifacts into
 # athena/src-tauri/payload (mounted from the host, so outputs land in your repo).
+#
+# Set SKIP_ARM64_LINUX=1 to skip the ARM64 Linux Docker image and aarch64 build (faster iteration
+# when only Windows + amd64 Linux artifacts are needed).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -14,8 +17,12 @@ echo "[build_cross] building x64 image from Dockerfile.cross..."
 # On Apple Silicon hosts, `docker build` defaults to linux/arm64; use linux/amd64 for x86_64 Linux builds.
 docker buildx build --platform linux/amd64 -f "$ROOT/Dockerfile.cross" -t "$IMAGE_X64:latest" --load "$ROOT"
 
-echo "[build_cross] building arm64 image from Dockerfile.cross.arm64..."
-docker buildx build --platform linux/arm64 -f "$ROOT/Dockerfile.cross.arm64" -t "$IMAGE_ARM64:latest" --load "$ROOT"
+if [[ "${SKIP_ARM64_LINUX:-}" != "1" ]]; then
+  echo "[build_cross] building arm64 image from Dockerfile.cross.arm64..."
+  docker buildx build --platform linux/arm64 -f "$ROOT/Dockerfile.cross.arm64" -t "$IMAGE_ARM64:latest" --load "$ROOT"
+else
+  echo "[build_cross] skipping ARM64 Linux image (SKIP_ARM64_LINUX=1)"
+fi
 
 echo "[build_cross] running builds (this may take a long time)..."
 docker run --rm \
@@ -86,13 +93,14 @@ fi
 echo "[build_cross] done. Payload tree is under $PAYLOAD on the host."
 '
 
-echo "[build_cross] running native arm64 Linux build..."
-docker run --rm \
-  --platform linux/arm64 \
-  -v "$ROOT:/workspace" \
-  -w /workspace/athena \
-  "$IMAGE_ARM64:latest" \
-  bash -lc '
+if [[ "${SKIP_ARM64_LINUX:-}" != "1" ]]; then
+  echo "[build_cross] running native arm64 Linux build..."
+  docker run --rm \
+    --platform linux/arm64 \
+    -v "$ROOT:/workspace" \
+    -w /workspace/athena \
+    "$IMAGE_ARM64:latest" \
+    bash -lc '
 set -euo pipefail
 export PATH="/usr/local/cargo/bin:$PATH"
 export CI="true"
@@ -125,5 +133,8 @@ else
   echo "[build_cross] warning: aarch64-unknown-linux-gnu build failed"
 fi
 '
+else
+  echo "[build_cross] skipping aarch64 Linux build (SKIP_ARM64_LINUX=1)"
+fi
 
 echo "[build_cross] finished."

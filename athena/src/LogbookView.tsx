@@ -338,12 +338,12 @@ export function LogbookView({ meshConnected, notebookScope = "general", onProfil
             onChange={(e) => setSearchQuery(e.target.value)}
             aria-label={lx.logbookSearchAria}
           />
-          <label className="text-muted small" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+          <label className="logbook-sort-row text-muted small">
             {lx.logbookSortLabel}
             <select
+              className="logbook-sort-select"
               value={sortKey}
               onChange={(e) => setSortKey(e.target.value as SortKey)}
-              style={{ flex: 1, minWidth: 0 }}
             >
               <option value="date">{lx.logbookSortDate}</option>
               <option value="author">{lx.logbookSortAuthor}</option>

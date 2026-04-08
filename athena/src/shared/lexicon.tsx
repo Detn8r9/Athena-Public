@@ -36,6 +36,9 @@ export type Lexicon = {
   sectionAcademyCurriculum: string;
   sectionAcademyCurriculumBody: string;
   academyOtherDownloads: string;
+  archiveAcademyNetworkTitle: string;
+  archiveAcademyNetworkSubtitle: string;
+  academyNetworkEmpty: string;
   archiveLocalNoMatches: string;
   archiveLocalTitle: string;
   archiveLocalSubtitle: string;
@@ -417,7 +420,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   tabLocalArchive: "Local Archive",
   tabDownloadNetwork: "Download Network",
   archiveHubIntro:
-    "Local Archive lists files already in your data sources — use All, Packages, Documents, Maps, and Academy tabs with search and sort. Download Network adds Packages (tiers, Academy by grade/subject, à la carte), Documents (RAG / Kiwix), and Maps.",
+    "Local Archive lists files already in your data sources — use All, Packages, Documents, Maps, and Academy tabs with search and sort. Download Network adds Packages (tiers, à la carte), Academy (curriculum Kiwix archives), Documents (RAG / Kiwix), and Maps.",
   archivePrimaryTablistAria: "Archive: local files or download network",
   archiveNetworkTablistAria: "Download network sections",
   tabArchivePackages: "Packages",
@@ -437,6 +440,11 @@ const SURVIVAL_LEXICON: Lexicon = {
   sectionAcademyCurriculumBody:
     "Kiwix archives for the Academy curriculum, grouped by grade band and subject. They install into library/academy/ like other tier files.",
   academyOtherDownloads: "Other academy files",
+  archiveAcademyNetworkTitle: "Academy downloads",
+  archiveAcademyNetworkSubtitle:
+    "Offline Kiwix packages aligned with the Academy curriculum—literacy, reference, and subject tracks—installed under library/academy/ for lessons and search.",
+  academyNetworkEmpty:
+    "No Academy catalog entries are listed in the network manifest yet. Tier bundles may still include Academy files under Packages.",
   archiveLocalNoMatches: "No files match this category or search.",
   archiveLocalTitle: "Your archive",
   archiveLocalSubtitle:
@@ -832,7 +840,7 @@ const FALLOUT_LEXICON: Lexicon = {
   tabLocalArchive: "Vault Storage",
   tabDownloadNetwork: "Wasteland Network",
   archiveHubIntro:
-    "Vault Storage: same category tabs as the network (All, Packages, Documents, Maps, Academy) plus search and sort. Wasteland Network: Packages (bundles, Academy drops by clearance, single pulls), Documents, Maps.",
+    "Vault Storage: same category tabs as the network (All, Packages, Documents, Maps, Academy) plus search and sort. Wasteland Network: Packages (bundles, à la carte), Academy (curriculum holotapes), Documents, Maps.",
   archivePrimaryTablistAria: "Archive: vault storage or wasteland network",
   archiveNetworkTablistAria: "Wasteland network sections",
   tabArchivePackages: "Packages",
@@ -852,6 +860,11 @@ const FALLOUT_LEXICON: Lexicon = {
   sectionAcademyCurriculumBody:
     "Kiosk ZIMs by clearance band and course track. Deliveries route to library/academy/ like other sanctioned packs.",
   academyOtherDownloads: "Unfiled academy payloads",
+  archiveAcademyNetworkTitle: "Academy holotapes",
+  archiveAcademyNetworkSubtitle:
+    "Sanctioned kiosk ZIMs for the Academy—reading, reference, and tracks by clearance—routed to library/academy/.",
+  academyNetworkEmpty:
+    "No Academy entries in the wasteland manifest yet. Bundles under Packages may still include holotapes.",
   archiveLocalNoMatches: "No holotapes match this filter.",
   archiveLocalTitle: "Vault inventory",
   archiveLocalSubtitle: "Registered tower paths and indexed files — filter like the Wasteland Network tabs, with search and sort.",

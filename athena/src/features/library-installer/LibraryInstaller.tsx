@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -57,6 +58,8 @@ function clampPct(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, n));
 }
+
+export type LibraryManifestRow = LibraryManifestFile & { tierName: string };
 
 function joinPath(a: string, b: string): string {
   const left = a.replace(/[\\/]+$/, "");
@@ -458,7 +461,7 @@ export function ArchiveLocalPanel() {
   );
 }
 
-export function ArchivePackagesPanel() {
+function useLibraryNetworkInstaller() {
   const lx = useLexicon();
   const [manifest, setManifest] = useState<LibraryManifest | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -564,10 +567,8 @@ export function ArchivePackagesPanel() {
 
   const tiers = useMemo(() => manifest?.tiers ?? [], [manifest]);
 
-  type ManifestRow = LibraryManifestFile & { tierName: string };
-
   const alacarteFiles = useMemo(() => {
-    const map = new Map<string, ManifestRow>();
+    const map = new Map<string, LibraryManifestRow>();
     for (const t of tiers) {
       for (const f of t.files) {
         if (f.category === "Academy") continue;
@@ -582,7 +583,7 @@ export function ArchivePackagesPanel() {
   }, [tiers]);
 
   const academyDownloadRows = useMemo(() => {
-    const map = new Map<string, ManifestRow>();
+    const map = new Map<string, LibraryManifestRow>();
     for (const t of tiers) {
       for (const f of t.files) {
         if (f.category !== "Academy") continue;
@@ -667,7 +668,7 @@ export function ArchivePackagesPanel() {
     }
   }
 
-  async function installSingleFile(entry: ManifestRow) {
+  async function installSingleFile(entry: LibraryManifestRow) {
     if (!primaryRootPath) {
       setInstallErr(lx.noDataSourcesHint);
       return;
@@ -736,6 +737,68 @@ export function ArchivePackagesPanel() {
     setShowLocationModal(true);
   }
 
+  return {
+    lx,
+    manifest,
+    loadErr,
+    watchRoots,
+    primaryRootPath,
+    installerLocation,
+    showLocationModal,
+    setShowLocationModal,
+    locationQuery,
+    setLocationQuery,
+    locationBusy,
+    locationModalErr,
+    installingTier,
+    activeDownloadId,
+    progressById,
+    installErr,
+    installNote,
+    singleBusyId,
+    academyCurriculum,
+    tiers,
+    alacarteFiles,
+    academyDownloadRows,
+    orphanAcademyRows,
+    installTier,
+    installSingleFile,
+    saveLocationFromGeocode,
+    saveLocationNycDefault,
+    openLocationModal,
+  };
+}
+
+type ArchiveNetworkInstallerShellMode = "packages" | "academy";
+
+function ArchiveNetworkInstallerShell({
+  mode,
+  v,
+  children,
+}: {
+  mode: ArchiveNetworkInstallerShellMode;
+  v: ReturnType<typeof useLibraryNetworkInstaller>;
+  children: ReactNode;
+}) {
+  const {
+    lx,
+    loadErr,
+    primaryRootPath,
+    installerLocation,
+    showLocationModal,
+    setShowLocationModal,
+    locationQuery,
+    setLocationQuery,
+    locationBusy,
+    locationModalErr,
+    installingTier,
+    saveLocationFromGeocode,
+    saveLocationNycDefault,
+    openLocationModal,
+    installErr,
+    installNote,
+  } = v;
+
   return (
     <div className="glass-panel app-view-placeholder library-installer-view" style={{ display: "grid", gap: "0.85rem", padding: "1rem", position: "relative" }}>
       {showLocationModal ? (
@@ -781,10 +844,10 @@ export function ArchivePackagesPanel() {
       <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <h2 className="app-view-placeholder-title" style={{ margin: 0 }}>
-            {lx.archiveScreenTitle}
+            {mode === "packages" ? lx.archiveScreenTitle : lx.archiveAcademyNetworkTitle}
           </h2>
           <p className="text-muted" style={{ margin: "0.25rem 0 0", maxWidth: "42rem" }}>
-            {lx.archiveScreenSubtitle}
+            {mode === "packages" ? lx.archiveScreenSubtitle : lx.archiveAcademyNetworkSubtitle}
           </p>
         </div>
       </div>
@@ -808,9 +871,11 @@ export function ArchivePackagesPanel() {
 
       <div style={{ display: "grid", gap: "0.85rem" }}>
         <div className="glass-panel" style={{ padding: "0.75rem" }}>
-          <div style={{ fontWeight: 650, marginBottom: "0.35rem" }}>{lx.sectionTierPackages}</div>
+          <div style={{ fontWeight: 650, marginBottom: "0.35rem" }}>
+            {mode === "packages" ? lx.sectionTierPackages : lx.sectionAcademyCurriculum}
+          </div>
           <p className="text-muted small" style={{ margin: "0 0 0.5rem" }}>
-            {lx.catalogDuplicateNote}
+            {mode === "packages" ? lx.catalogDuplicateNote : lx.sectionAcademyCurriculumBody}
           </p>
           <div className="glass-panel" style={{ padding: "0.75rem", display: "grid", gap: "0.35rem" }}>
             <div style={{ fontWeight: 650 }}>{lx.destinationSummary}</div>
@@ -834,6 +899,229 @@ export function ArchivePackagesPanel() {
           </div>
         </div>
 
+        {children}
+      </div>
+
+      {installErr ? (
+        <p className="error" role="alert" style={{ margin: 0 }}>
+          {installErr}
+        </p>
+      ) : null}
+      {installNote ? (
+        <p className="text-muted small" role="status" style={{ margin: 0 }}>
+          {installNote}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function AcademyNetworkDownloadsContent({
+  lx,
+  academyCurriculum,
+  academyDownloadRows,
+  orphanAcademyRows,
+  installingTier,
+  singleBusyId,
+  progressById,
+  primaryRootPath,
+  installSingleFile,
+}: {
+  lx: ReturnType<typeof useLexicon>;
+  academyCurriculum: AcademyCurriculumRoot | null;
+  academyDownloadRows: LibraryManifestRow[];
+  orphanAcademyRows: LibraryManifestRow[];
+  installingTier: string | null;
+  singleBusyId: string | null;
+  progressById: Record<string, DownloadProgressPayload>;
+  primaryRootPath: string;
+  installSingleFile: (entry: LibraryManifestRow) => void | Promise<void>;
+}) {
+  if (academyDownloadRows.length === 0) {
+    return (
+      <div className="glass-panel" style={{ padding: "0.9rem" }}>
+        <p className="text-muted small" style={{ margin: 0, lineHeight: 1.45 }}>
+          {lx.academyNetworkEmpty}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "grid", gap: "0.75rem" }}>
+      {academyCurriculum ? (
+        <>
+          {academyCurriculum.ageGroups.map((age) => (
+            <div key={age.id} className="glass-panel" style={{ padding: "0.65rem 0.75rem", display: "grid", gap: "0.55rem" }}>
+              <div style={{ fontWeight: 750 }}>{age.label}</div>
+              {age.subjects.map((subject) => {
+                const rows = academyDownloadRows.filter(
+                  (f) =>
+                    (f.academy_age_group_id ?? "").trim() === age.id && (f.academy_subject_id ?? "").trim() === subject.id,
+                );
+                if (rows.length === 0) return null;
+                return (
+                  <div key={subject.id} style={{ display: "grid", gap: "0.4rem" }}>
+                    <div className="text-muted small" style={{ fontWeight: 650, color: "var(--text)" }}>
+                      {subject.label}
+                    </div>
+                    <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.35rem" }}>
+                      {rows.map((f) => {
+                        const downloadId = `single::${encodeURIComponent(f.url)}::${f.destination}`;
+                        const busy = singleBusyId === downloadId;
+                        const p = progressById[downloadId] ?? null;
+                        const pct = p && p.totalBytes && p.totalBytes > 0 ? (p.downloadedBytes / p.totalBytes) * 100 : p ? 5 : 0;
+                        return (
+                          <li
+                            key={downloadId}
+                            className="glass-panel"
+                            style={{
+                              padding: "0.55rem 0.65rem",
+                              display: "flex",
+                              flexWrap: "wrap",
+                              gap: "0.5rem",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                            }}
+                          >
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
+                              <div className="text-muted small">
+                                {f.tierName} ·{" "}
+                                {f.size_bytes != null && typeof f.size_bytes === "number" && f.size_bytes > 0
+                                  ? formatDownloadSizeGb(f.size_bytes)
+                                  : lx.sizeUnknown}
+                              </div>
+                              {busy && pct > 0 ? (
+                                <div style={{ marginTop: "0.35rem", maxWidth: "18rem" }}>
+                                  <ThinBar percent={pct} />
+                                </div>
+                              ) : null}
+                            </div>
+                            <button
+                              type="button"
+                              className="glass-action-btn"
+                              disabled={!!installingTier || busy || !primaryRootPath}
+                              onClick={() => void installSingleFile(f)}
+                            >
+                              {busy ? "Downloading…" : lx.actionRequisitionFile}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {orphanAcademyRows.length > 0 ? (
+            <div style={{ display: "grid", gap: "0.4rem" }}>
+              <div className="text-muted small" style={{ fontWeight: 650, color: "var(--text)" }}>
+                {lx.academyOtherDownloads}
+              </div>
+              <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.35rem" }}>
+                {orphanAcademyRows.map((f) => {
+                  const downloadId = `single::${encodeURIComponent(f.url)}::${f.destination}`;
+                  const busy = singleBusyId === downloadId;
+                  return (
+                    <li
+                      key={downloadId}
+                      className="glass-panel"
+                      style={{
+                        padding: "0.55rem 0.65rem",
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: "0.5rem",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
+                        <div className="text-muted small">{f.tierName}</div>
+                      </div>
+                      <button
+                        type="button"
+                        className="glass-action-btn"
+                        disabled={!!installingTier || busy || !primaryRootPath}
+                        onClick={() => void installSingleFile(f)}
+                      >
+                        {busy ? "Downloading…" : lx.actionRequisitionFile}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.4rem" }}>
+          {academyDownloadRows.map((f) => {
+            const downloadId = `single::${encodeURIComponent(f.url)}::${f.destination}`;
+            const busy = singleBusyId === downloadId;
+            return (
+              <li
+                key={downloadId}
+                className="glass-panel"
+                style={{
+                  padding: "0.55rem 0.65rem",
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "0.5rem",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
+                  <div className="text-muted small">{f.tierName}</div>
+                </div>
+                <button
+                  type="button"
+                  className="glass-action-btn"
+                  disabled={!!installingTier || busy || !primaryRootPath}
+                  onClick={() => void installSingleFile(f)}
+                >
+                  {busy ? "Downloading…" : lx.actionRequisitionFile}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export function ArchiveAcademyDownloadsPanel() {
+  const v = useLibraryNetworkInstaller();
+  const { lx, academyCurriculum, academyDownloadRows, orphanAcademyRows, installingTier, singleBusyId, progressById, primaryRootPath, installSingleFile } = v;
+
+  return (
+    <ArchiveNetworkInstallerShell mode="academy" v={v}>
+      <AcademyNetworkDownloadsContent
+        lx={lx}
+        academyCurriculum={academyCurriculum}
+        academyDownloadRows={academyDownloadRows}
+        orphanAcademyRows={orphanAcademyRows}
+        installingTier={installingTier}
+        singleBusyId={singleBusyId}
+        progressById={progressById}
+        primaryRootPath={primaryRootPath}
+        installSingleFile={installSingleFile}
+      />
+    </ArchiveNetworkInstallerShell>
+  );
+}
+
+export function ArchivePackagesPanel() {
+  const v = useLibraryNetworkInstaller();
+  const { lx, primaryRootPath, installingTier, activeDownloadId, progressById, singleBusyId, tiers, alacarteFiles, installTier, installSingleFile } = v;
+
+  return (
+    <ArchiveNetworkInstallerShell mode="packages" v={v}>
         <div style={{ display: "grid", gap: "0.75rem" }}>
           {tiers.map((t) => {
             const isActive = installingTier === t.name;
@@ -907,157 +1195,6 @@ export function ArchivePackagesPanel() {
           })}
         </div>
 
-        {academyDownloadRows.length > 0 ? (
-          <div className="glass-panel" style={{ padding: "0.9rem", display: "grid", gap: "0.75rem" }}>
-            <div style={{ fontWeight: 750 }}>{lx.sectionAcademyCurriculum}</div>
-            <p className="text-muted small" style={{ margin: 0, lineHeight: 1.45 }}>
-              {lx.sectionAcademyCurriculumBody}
-            </p>
-            {academyCurriculum ? (
-              <>
-                {academyCurriculum.ageGroups.map((age) => (
-                  <div key={age.id} className="glass-panel" style={{ padding: "0.65rem 0.75rem", display: "grid", gap: "0.55rem" }}>
-                    <div style={{ fontWeight: 750 }}>{age.label}</div>
-                    {age.subjects.map((subject) => {
-                      const rows = academyDownloadRows.filter(
-                        (f) =>
-                          (f.academy_age_group_id ?? "").trim() === age.id && (f.academy_subject_id ?? "").trim() === subject.id,
-                      );
-                      if (rows.length === 0) return null;
-                      return (
-                        <div key={subject.id} style={{ display: "grid", gap: "0.4rem" }}>
-                          <div className="text-muted small" style={{ fontWeight: 650, color: "var(--text)" }}>
-                            {subject.label}
-                          </div>
-                          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.35rem" }}>
-                            {rows.map((f) => {
-                              const downloadId = `single::${encodeURIComponent(f.url)}::${f.destination}`;
-                              const busy = singleBusyId === downloadId;
-                              const p = progressById[downloadId] ?? null;
-                              const pct = p && p.totalBytes && p.totalBytes > 0 ? (p.downloadedBytes / p.totalBytes) * 100 : p ? 5 : 0;
-                              return (
-                                <li
-                                  key={downloadId}
-                                  className="glass-panel"
-                                  style={{
-                                    padding: "0.55rem 0.65rem",
-                                    display: "flex",
-                                    flexWrap: "wrap",
-                                    gap: "0.5rem",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                  }}
-                                >
-                                  <div style={{ minWidth: 0 }}>
-                                    <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
-                                    <div className="text-muted small">
-                                      {f.tierName} ·{" "}
-                                      {f.size_bytes != null && typeof f.size_bytes === "number" && f.size_bytes > 0
-                                        ? formatDownloadSizeGb(f.size_bytes)
-                                        : lx.sizeUnknown}
-                                    </div>
-                                    {busy && pct > 0 ? (
-                                      <div style={{ marginTop: "0.35rem", maxWidth: "18rem" }}>
-                                        <ThinBar percent={pct} />
-                                      </div>
-                                    ) : null}
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="glass-action-btn"
-                                    disabled={!!installingTier || busy || !primaryRootPath}
-                                    onClick={() => void installSingleFile(f)}
-                                  >
-                                    {busy ? "Downloading…" : lx.actionRequisitionFile}
-                                  </button>
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-                {orphanAcademyRows.length > 0 ? (
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
-                    <div className="text-muted small" style={{ fontWeight: 650, color: "var(--text)" }}>
-                      {lx.academyOtherDownloads}
-                    </div>
-                    <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.35rem" }}>
-                      {orphanAcademyRows.map((f) => {
-                        const downloadId = `single::${encodeURIComponent(f.url)}::${f.destination}`;
-                        const busy = singleBusyId === downloadId;
-                        return (
-                          <li
-                            key={downloadId}
-                            className="glass-panel"
-                            style={{
-                              padding: "0.55rem 0.65rem",
-                              display: "flex",
-                              flexWrap: "wrap",
-                              gap: "0.5rem",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                            }}
-                          >
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
-                              <div className="text-muted small">{f.tierName}</div>
-                            </div>
-                            <button
-                              type="button"
-                              className="glass-action-btn"
-                              disabled={!!installingTier || busy || !primaryRootPath}
-                              onClick={() => void installSingleFile(f)}
-                            >
-                              {busy ? "Downloading…" : lx.actionRequisitionFile}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.4rem" }}>
-                {academyDownloadRows.map((f) => {
-                  const downloadId = `single::${encodeURIComponent(f.url)}::${f.destination}`;
-                  const busy = singleBusyId === downloadId;
-                  return (
-                    <li
-                      key={downloadId}
-                      className="glass-panel"
-                      style={{
-                        padding: "0.55rem 0.65rem",
-                        display: "flex",
-                        flexWrap: "wrap",
-                        gap: "0.5rem",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                      }}
-                    >
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
-                        <div className="text-muted small">{f.tierName}</div>
-                      </div>
-                      <button
-                        type="button"
-                        className="glass-action-btn"
-                        disabled={!!installingTier || busy || !primaryRootPath}
-                        onClick={() => void installSingleFile(f)}
-                      >
-                        {busy ? "Downloading…" : lx.actionRequisitionFile}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        ) : null}
-
         <div className="glass-panel" style={{ padding: "0.9rem", display: "grid", gap: "0.5rem" }}>
           <div style={{ fontWeight: 750 }}>{lx.sectionAlacarte}</div>
           <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: "0.4rem" }}>
@@ -1087,18 +1224,6 @@ export function ArchivePackagesPanel() {
             })}
           </ul>
         </div>
-      </div>
-
-      {installErr ? (
-        <p className="error" role="alert" style={{ margin: 0 }}>
-          {installErr}
-        </p>
-      ) : null}
-      {installNote ? (
-        <p className="text-muted small" role="status" style={{ margin: 0 }}>
-          {installNote}
-        </p>
-      ) : null}
-    </div>
+    </ArchiveNetworkInstallerShell>
   );
 }
