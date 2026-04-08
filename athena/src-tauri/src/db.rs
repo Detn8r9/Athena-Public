@@ -144,6 +144,7 @@ pub struct PersonnelRow {
     pub rank_level: i32,
     pub pin_hash: String,
     pub display_name: Option<String>,
+    pub operational_status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -154,6 +155,7 @@ pub struct PersonnelPublic {
     pub rank_level: i32,
     pub created_at: i64,
     pub display_name: Option<String>,
+    pub operational_status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -455,6 +457,14 @@ impl Database {
             ",
         )
         .map_err(|e| e.to_string())?;
+        // Hardening: validate the database file on every start to catch corruption early.
+        // If this fails, callers should enter Maintenance Mode instead of continuing normally.
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check;", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        if integrity.trim().to_ascii_lowercase() != "ok" {
+            return Err(format!("SQLite integrity_check failed: {integrity}"));
+        }
         let db = Database {
             conn: Mutex::new(conn),
         };
@@ -1099,7 +1109,8 @@ END;
                 division TEXT NOT NULL,
                 rank_level INTEGER NOT NULL,
                 pin_hash TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                operational_status TEXT NOT NULL DEFAULT 'active'
             );
             CREATE INDEX IF NOT EXISTS idx_personnel_division ON personnel(division);
 
@@ -1167,6 +1178,13 @@ END;
         if !personnel_cols.iter().any(|c| c == "display_name") {
             conn.execute("ALTER TABLE personnel ADD COLUMN display_name TEXT", [])
                 .map_err(|e| e.to_string())?;
+        }
+        if !personnel_cols.iter().any(|c| c == "operational_status") {
+            conn.execute(
+                "ALTER TABLE personnel ADD COLUMN operational_status TEXT NOT NULL DEFAULT 'active'",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
         }
         let inv_cols: Vec<String> = {
             let mut stmt = conn
@@ -1259,7 +1277,7 @@ END;
         }
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, division, rank_level, pin_hash, display_name FROM personnel WHERE LOWER(name) = LOWER(?1) LIMIT 1",
+                "SELECT id, name, division, rank_level, pin_hash, display_name, operational_status FROM personnel WHERE LOWER(name) = LOWER(?1) LIMIT 1",
             )
             .map_err(|e| e.to_string())?;
         let mut rows = stmt
@@ -1271,6 +1289,7 @@ END;
                     rank_level: row.get(3)?,
                     pin_hash: row.get(4)?,
                     display_name: row.get(5)?,
+                    operational_status: row.get(6)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1284,7 +1303,7 @@ END;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, division, rank_level, created_at, display_name FROM personnel ORDER BY name COLLATE NOCASE",
+                "SELECT id, name, division, rank_level, created_at, display_name, operational_status FROM personnel ORDER BY name COLLATE NOCASE",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -1296,6 +1315,7 @@ END;
                     rank_level: row.get(3)?,
                     created_at: row.get(4)?,
                     display_name: row.get(5)?,
+                    operational_status: row.get(6)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1322,8 +1342,17 @@ END;
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
         conn.execute(
-            "INSERT INTO personnel (id, name, division, rank_level, pin_hash, created_at, display_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, name.trim(), division.trim(), rank_level as i64, pin_hash, now_ms, disp],
+            "INSERT INTO personnel (id, name, division, rank_level, pin_hash, created_at, display_name, operational_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                name.trim(),
+                division.trim(),
+                rank_level as i64,
+                pin_hash,
+                now_ms,
+                disp,
+                "active"
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -1398,11 +1427,227 @@ END;
         Ok(())
     }
 
+    pub fn personnel_list_ids_by_rank_level(&self, rank_level: i32) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM personnel WHERE rank_level = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![rank_level as i64], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn personnel_admin_update(
+        &self,
+        id: &str,
+        login_name: &str,
+        display_name: Option<&str>,
+        division: &str,
+        rank_level: i32,
+        operational_status: &str,
+    ) -> Result<(), String> {
+        let id_t = id.trim();
+        if id_t.is_empty() {
+            return Err("Personnel id cannot be empty.".to_string());
+        }
+        let login_name = login_name.trim();
+        if login_name.is_empty() {
+            return Err("Login name cannot be empty.".to_string());
+        }
+        let division = division.trim();
+        if division.is_empty() {
+            return Err("Division cannot be empty.".to_string());
+        }
+        if !(1..=5).contains(&rank_level) {
+            return Err("Rank level must be Level 1–5.".to_string());
+        }
+        let st = operational_status.trim().to_ascii_lowercase();
+        if st != "active" && st != "on_mission" && st != "mia" && st != "kia" {
+            return Err("operational_status must be active, on_mission, mia, or kia.".to_string());
+        }
+
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let clash: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM personnel WHERE LOWER(name) = LOWER(?1) AND id != ?2",
+                params![login_name, id_t],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if clash > 0 {
+            return Err("That login name is already in use.".to_string());
+        }
+
+        let disp: Option<String> = display_name
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let n = conn
+            .execute(
+                "UPDATE personnel SET name = ?1, display_name = ?2, division = ?3, rank_level = ?4, operational_status = ?5 WHERE id = ?6",
+                params![login_name, disp, division, rank_level as i64, st, id_t],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("Personnel record not found.".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn personnel_transfer_caesar(
+        &self,
+        actor_id: &str,
+        target_id: &str,
+        target_login_name: &str,
+        target_display_name: Option<&str>,
+        target_division: &str,
+        target_operational_status: &str,
+    ) -> Result<(), String> {
+        let actor_id = actor_id.trim();
+        let target_id = target_id.trim();
+        if actor_id.is_empty() || target_id.is_empty() {
+            return Err("personnel_id is required.".to_string());
+        }
+        if actor_id == target_id {
+            return Err("Cannot transfer Caesar to self.".to_string());
+        }
+
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
+        tx.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+
+        let caesars: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM personnel WHERE rank_level = 5",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if caesars != 1 {
+            return Err("Caesar transfer requires exactly one existing Caesar.".to_string());
+        }
+
+        let actor_rank: i64 = tx
+            .query_row(
+                "SELECT rank_level FROM personnel WHERE id = ?1 LIMIT 1",
+                params![actor_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if actor_rank != 5 {
+            return Err("Only Caesar may transfer Caesar rank.".to_string());
+        }
+
+        let target_exists: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM personnel WHERE id = ?1",
+                params![target_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if target_exists != 1 {
+            return Err("Personnel record not found.".to_string());
+        }
+
+        // Demote the actor to Level 4, keeping existing metadata.
+        let actor_row = tx
+            .query_row(
+                "SELECT name, display_name, division, operational_status FROM personnel WHERE id = ?1 LIMIT 1",
+                params![actor_id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .map_err(|e| e.to_string())?;
+
+        let (actor_name, actor_display, actor_division, actor_status) = actor_row;
+        let demote_n = tx
+            .execute(
+                "UPDATE personnel SET name = ?1, display_name = ?2, division = ?3, rank_level = 4, operational_status = ?4 WHERE id = ?5 AND rank_level = 5",
+                params![actor_name, actor_display, actor_division, actor_status, actor_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if demote_n != 1 {
+            return Err("Caesar transfer failed (actor demotion).".to_string());
+        }
+
+        // Promote the target to Level 5 using supplied values (these will be validated by the caller logic too).
+        let st = target_operational_status.trim().to_ascii_lowercase();
+        if st != "active" && st != "on_mission" && st != "mia" && st != "kia" {
+            return Err("operational_status must be active, on_mission, mia, or kia.".to_string());
+        }
+        let login_name = target_login_name.trim();
+        if login_name.is_empty() {
+            return Err("Login name cannot be empty.".to_string());
+        }
+        let division = target_division.trim();
+        if division.is_empty() {
+            return Err("Division cannot be empty.".to_string());
+        }
+        let clash: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM personnel WHERE LOWER(name) = LOWER(?1) AND id != ?2",
+                params![login_name, target_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if clash > 0 {
+            return Err("That login name is already in use.".to_string());
+        }
+        let disp: Option<String> = target_display_name
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let promote_n = tx
+            .execute(
+                "UPDATE personnel SET name = ?1, display_name = ?2, division = ?3, rank_level = 5, operational_status = ?4 WHERE id = ?5",
+                params![login_name, disp, division, st, target_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if promote_n != 1 {
+            return Err("Caesar transfer failed (target promotion).".to_string());
+        }
+
+        // Final invariant: exactly one Caesar, and it's the target.
+        let final_caesars: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT id FROM personnel WHERE rank_level = 5")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            let mut v = Vec::new();
+            for r in rows {
+                v.push(r.map_err(|e| e.to_string())?);
+            }
+            v
+        };
+        if final_caesars.len() != 1 || final_caesars[0] != target_id {
+            return Err("Caesar transfer invariant check failed.".to_string());
+        }
+
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn personnel_fetch_public_by_id(&self, id: &str) -> Result<Option<PersonnelPublic>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, division, rank_level, created_at, display_name FROM personnel WHERE id = ?1 LIMIT 1",
+                "SELECT id, name, division, rank_level, created_at, display_name, operational_status FROM personnel WHERE id = ?1 LIMIT 1",
             )
             .map_err(|e| e.to_string())?;
         let mut rows = stmt
@@ -1414,6 +1659,7 @@ END;
                     rank_level: row.get(3)?,
                     created_at: row.get(4)?,
                     display_name: row.get(5)?,
+                    operational_status: row.get(6)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1427,7 +1673,7 @@ END;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, division, rank_level, pin_hash, display_name FROM personnel WHERE id = ?1 LIMIT 1",
+                "SELECT id, name, division, rank_level, pin_hash, display_name, operational_status FROM personnel WHERE id = ?1 LIMIT 1",
             )
             .map_err(|e| e.to_string())?;
         let mut rows = stmt
@@ -1439,6 +1685,7 @@ END;
                     rank_level: row.get(3)?,
                     pin_hash: row.get(4)?,
                     display_name: row.get(5)?,
+                    operational_status: row.get(6)?,
                 })
             })
             .map_err(|e| e.to_string())?;

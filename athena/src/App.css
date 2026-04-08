@@ -1462,6 +1462,7 @@ body.theme-survival-manual .app[data-theme="custom"] {
   --glass-shadow-popover: 0 18px 48px color-mix(in srgb, var(--bg) 40%, rgba(0, 0, 0, 0.62));
   --glass-shadow-trigger: 0 4px 24px color-mix(in srgb, var(--bg) 48%, rgba(0, 0, 0, 0.52));
   --glass-edge: 0 0 0 1px color-mix(in srgb, var(--primary) 15%, transparent);
+  --danger: var(--tertiary);
 }
 
 /* Login view: vertical scroll so tall lock layout is not clipped by overflow:hidden */
@@ -1482,11 +1483,19 @@ body.theme-survival-manual .app[data-theme="custom"] {
   cursor: pointer;
   transition:
     background var(--transition-fast) var(--ease-out),
-    border-color var(--transition-fast) var(--ease-out);
+    border-color var(--transition-fast) var(--ease-out),
+    transform var(--transition-fast) var(--ease-out);
 }
 .app button.secondary:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--primary) 40%, transparent);
   background: color-mix(in srgb, var(--surface-solid) 82%, var(--primary) 12%);
+}
+.app button.secondary:active:not(:disabled) {
+  transform: scale(0.99);
+}
+.app button.secondary:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
 }
 .app button.secondary:disabled {
   opacity: 0.55;
@@ -1503,10 +1512,21 @@ body.theme-survival-manual .app[data-theme="custom"] {
   color: var(--text);
   cursor: pointer;
   font-weight: 600;
+  transition:
+    background var(--transition-fast) var(--ease-out),
+    border-color var(--transition-fast) var(--ease-out),
+    transform var(--transition-fast) var(--ease-out);
 }
 .app button.glass-action-btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--primary) 28%, transparent);
   border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+}
+.app button.glass-action-btn:active:not(:disabled) {
+  transform: scale(0.99);
+}
+.app button.glass-action-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
 }
 .app button.glass-action-btn:disabled {
   opacity: 0.55;
@@ -1709,6 +1729,11 @@ body.theme-survival-manual .app[data-theme="custom"] {
   background: var(--hover-overlay);
 }
 
+.universal-header-icon-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
+}
+
 .universal-header-icon-btn svg {
   flex-shrink: 0;
 }
@@ -1737,6 +1762,11 @@ body.theme-survival-manual .app[data-theme="custom"] {
 .universal-header-clock-btn:hover {
   border-color: var(--primary-muted);
   color: var(--primary);
+}
+
+.universal-header-clock-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .universal-header-calendar-merge {
@@ -4321,6 +4351,11 @@ body.theme-survival-manual .app[data-theme="custom"] {
 
 .send-btn:active:not(:disabled) {
   transform: scale(0.98);
+}
+
+.send-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .send-btn:disabled {
@@ -9632,12 +9667,12 @@ button.device-details-overlay-inner {
 }
 
 .map-settings-section-title-satellite {
-  color: #fca5a5;
+  color: color-mix(in srgb, var(--danger, #f87171) 88%, var(--text));
 }
 
 .map-settings-section-satellite {
   padding-top: 0.35rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
 }
 
 .map-settings-chip-row {
@@ -9648,9 +9683,9 @@ button.device-details-overlay-inner {
 
 .map-settings-layer-chip {
   margin: 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(30, 41, 59, 0.45);
-  color: #e2e8f0;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 72%, transparent);
+  color: var(--text);
   border-radius: 999px;
   font-size: 0.78rem;
   font-weight: 600;
@@ -9662,30 +9697,35 @@ button.device-details-overlay-inner {
 }
 
 .map-settings-layer-chip:hover {
-  border-color: rgba(56, 189, 248, 0.45);
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
 }
 
 .map-settings-layer-chip.is-active {
-  border-color: rgba(56, 189, 248, 0.85);
-  color: #7dd3fc;
-  background: rgba(56, 189, 248, 0.12);
+  border-color: color-mix(in srgb, var(--primary) 80%, transparent);
+  color: color-mix(in srgb, var(--primary) 86%, var(--text));
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.map-settings-layer-chip:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .map-settings-basemap-select {
   width: 100%;
   padding: 0.45rem 0.55rem;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(30, 41, 59, 0.55);
-  color: #e2e8f0;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 78%, transparent);
+  color: var(--text);
   font-size: 0.84rem;
   font-family: inherit;
 }
 
 .map-settings-basemap-select:focus {
   outline: none;
-  border-color: rgba(56, 189, 248, 0.5);
-  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent);
 }
 
 .map-settings-check {
@@ -9693,24 +9733,24 @@ button.device-details-overlay-inner {
   align-items: center;
   gap: 0.5rem;
   cursor: pointer;
-  color: #e2e8f0;
+  color: var(--text);
   font-size: 0.86rem;
 }
 
 .map-settings-check input {
-  accent-color: #38bdf8;
+  accent-color: var(--primary);
 }
 
 .map-settings-help {
   margin: 0;
   font-size: 0.76rem;
   line-height: 1.4;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .map-settings-help code {
   font-size: 0.72rem;
-  color: #cbd5e1;
+  color: color-mix(in srgb, var(--text) 88%, var(--text-muted));
 }
 
 .map-settings-satellite-actions {
@@ -9721,9 +9761,9 @@ button.device-details-overlay-inner {
 
 .map-settings-satellite-btn {
   margin: 0;
-  border: 1px solid rgba(248, 113, 113, 0.45);
-  background: rgba(30, 41, 59, 0.5);
-  color: #fecaca;
+  border: 1px solid color-mix(in srgb, var(--danger, #f87171) 45%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 76%, transparent);
+  color: color-mix(in srgb, var(--danger, #f87171) 86%, var(--text));
   border-radius: 999px;
   font-size: 0.76rem;
   font-weight: 600;
@@ -9735,14 +9775,18 @@ button.device-details-overlay-inner {
 }
 
 .map-settings-satellite-btn:hover:not(:disabled) {
-  border-color: rgba(248, 113, 113, 0.75);
-  background: rgba(127, 29, 29, 0.2);
+  border-color: color-mix(in srgb, var(--danger, #f87171) 70%, transparent);
+  background: color-mix(in srgb, var(--danger, #f87171) 10%, transparent);
 }
 
 .map-settings-satellite-btn.is-active {
-  border-color: #f87171;
-  color: #fecaca;
-  background: rgba(248, 113, 113, 0.15);
+  border-color: color-mix(in srgb, var(--danger, #f87171) 88%, transparent);
+  background: color-mix(in srgb, var(--danger, #f87171) 14%, transparent);
+}
+
+.map-settings-satellite-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--danger, #f87171) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .map-settings-satellite-btn:disabled {
@@ -9754,7 +9798,199 @@ button.device-details-overlay-inner {
   margin: 0;
   font-size: 0.78rem;
   line-height: 1.4;
-  color: #fca5a5;
+  color: color-mix(in srgb, var(--danger, #f87171) 86%, var(--text));
+}
+
+/* Tactical sidebar (map) — semantic, theme-driven (no hard-coded colors) */
+.tactical-sidebar {
+  position: absolute;
+  top: calc(4.5rem + env(safe-area-inset-top, 0px));
+  left: calc(1rem + env(safe-area-inset-left, 0px));
+  z-index: 1200;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.tactical-sidebar-rail {
+  width: 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.35rem;
+  border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--glass-bg-soft) 70%, transparent);
+}
+
+.tactical-sidebar-icon-btn {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 70%, transparent);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast) var(--ease-out),
+    border-color var(--transition-fast) var(--ease-out),
+    transform var(--transition-fast) var(--ease-out),
+    color var(--transition-fast) var(--ease-out);
+}
+
+.tactical-sidebar-icon-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 62%, var(--primary) 10%);
+}
+
+.tactical-sidebar-icon-btn:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.tactical-sidebar-icon-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.tactical-sidebar-icon-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tactical-sidebar-icon-btn.is-active {
+  border-color: color-mix(in srgb, var(--primary) 70%, transparent);
+  color: color-mix(in srgb, var(--primary) 88%, var(--text));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.tactical-sidebar-pane {
+  width: 0;
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  transition: width 220ms var(--ease-out);
+}
+
+.tactical-sidebar.is-expanded .tactical-sidebar-pane {
+  width: 250px;
+  padding: 0.6rem 0.65rem 0.65rem;
+}
+
+.tactical-sidebar-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.tactical-sidebar-subtitle {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.tactical-sidebar-family-row {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+
+.tactical-sidebar-pill-btn {
+  height: 32px;
+  padding: 0 0.65rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 70%, transparent);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast) var(--ease-out),
+    border-color var(--transition-fast) var(--ease-out),
+    transform var(--transition-fast) var(--ease-out);
+}
+
+.tactical-sidebar-pill-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 62%, var(--primary) 10%);
+}
+
+.tactical-sidebar-pill-btn:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.tactical-sidebar-pill-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.tactical-sidebar-pill-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tactical-sidebar-pill-btn.is-active {
+  border-color: color-mix(in srgb, var(--primary) 70%, transparent);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: color-mix(in srgb, var(--primary) 88%, var(--text));
+}
+
+.tactical-sidebar-pill-icon {
+  flex-shrink: 0;
+}
+
+.tactical-sidebar-section-label {
+  margin: 0.2rem 0 0.35rem;
+  font-size: 0.74rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.tactical-sidebar-section-label-spaced {
+  margin-top: 0.55rem;
+}
+
+.tactical-sidebar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.84rem;
+  color: var(--text);
+  margin-bottom: 0.35rem;
+  cursor: pointer;
+}
+
+.tactical-sidebar-row input {
+  accent-color: var(--primary);
+}
+
+.tactical-sidebar-actions {
+  display: flex;
+  gap: 0.45rem;
+  margin-top: 0.2rem;
+}
+
+.tactical-sidebar-status {
+  margin: 0.25rem 0 0;
+  font-size: 0.74rem;
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--text) 88%, var(--text-muted));
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .map-popup-remove {

@@ -88,6 +88,7 @@ export function UniversalHeader({
   const lx = useLexicon();
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
   const powerWrapRef = useRef<HTMLDivElement>(null);
+  const powerMenuId = "universal-header-power-menu";
 
   const pctRounded = batteryState?.percentage != null ? Math.round(batteryState.percentage) : 0;
   const mins = batteryState?.time_to_empty_minutes;
@@ -146,6 +147,7 @@ export function UniversalHeader({
               className={`universal-header-icon-btn${aiInferenceSleep ? " universal-header-ai-asleep" : ""}`}
               aria-expanded={powerMenuOpen}
               aria-haspopup="menu"
+              aria-controls={powerMenuOpen ? powerMenuId : undefined}
               title="Power and station options"
               aria-label="Power and station options"
               onClick={() => setPowerMenuOpen((o) => !o)}
@@ -153,7 +155,12 @@ export function UniversalHeader({
               <Power size={22} strokeWidth={2} aria-hidden />
             </button>
             {powerMenuOpen ? (
-              <div className="universal-header-power-menu glass-panel" role="menu" aria-label="Station power options">
+              <div
+                id={powerMenuId}
+                className="universal-header-power-menu glass-panel"
+                role="menu"
+                aria-label="Station power options"
+              >
                 <button
                   type="button"
                   role="menuitem"

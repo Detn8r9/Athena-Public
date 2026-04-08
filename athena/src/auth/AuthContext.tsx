@@ -7,6 +7,7 @@ export type AuthUser = {
   division: string;
   rank_level: number;
   display_name: string | null;
+  operational_status: "active" | "on_mission" | "mia" | "kia";
 };
 
 export type AuthContextValue = {

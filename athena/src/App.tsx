@@ -11,7 +11,7 @@ import { HelpModal } from "./HelpModal";
 import { MeshRadioModal, type MeshRadioMessage } from "./MeshRadioModal";
 import { MeshChatView } from "./MeshChatView";
 import { MeshNetworkHubView } from "./MeshNetworkHubView";
-import { UsbExportModal } from "./UsbExportModal";
+import { ExportModal, type ExportTier } from "./ExportModal";
 import { MapView, type MapBasemap, type TacticalMapMeshNodeLocation, type TacticalMapPointOfInterest } from "./features/map/MapView";
 import { defaultTacticalLayerVisibilityState, type TacticalLayerVisibilityState } from "./features/map/TacticalSidebar";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -34,7 +34,7 @@ import { CalendarView } from "./CalendarView";
 import { RankAvatar } from "./RankAvatar";
 import { RANK_DESCRIPTIONS, formatRomanRank } from "./romanRanks";
 import { AiModelManager } from "./AiModelManager";
-import { AcademyView } from "./AcademyView";
+import { AcademyModule } from "./AcademyModule";
 import { ArchiveHub, type ArchiveNetworkSubTabId, type ArchivePrimaryTabId } from "./features/library-installer/ArchiveHub";
 import { getLexicon, LexiconProvider, type LexiconThemeId } from "./shared/lexicon";
 import { CommunicationsHub } from "./CommunicationsHub";
@@ -888,7 +888,7 @@ function App() {
   const [usbExportStatus, setUsbExportStatus] = useState<string | null>(null);
   const [usbScorchedEarth, setUsbScorchedEarth] = useState(false);
   const [usbExportModalOpen, setUsbExportModalOpen] = useState(false);
-  const [usbExportModalKind, setUsbExportModalKind] = useState<"essentials" | "complete">("essentials");
+  const [usbExportModalKind, setUsbExportModalKind] = useState<ExportTier>("essentials");
   type SettingsPanel =
     | "menu"
     | "me"
@@ -942,11 +942,15 @@ function App() {
     setUsbExportStatus(
       usbScorchedEarth
         ? exportType === "essentials"
-          ? "Copying app and core models, then verifying…"
-          : "Copying app, models, database, and library, then verifying…"
+          ? "Copying app and proximity map, then verifying…"
+          : exportType === "recommended"
+            ? "Copying app, models, and priority payload, then verifying…"
+            : "Copying everything (absolute), then verifying…"
         : exportType === "essentials"
-          ? "Copying app and core models…"
-          : "Copying app, models, database, and library…",
+          ? "Copying app and proximity map…"
+          : exportType === "recommended"
+            ? "Copying app, models, and priority payload…"
+            : "Copying everything (absolute)…",
     );
     try {
       await invoke("export_athena_to_usb", {
@@ -5664,7 +5668,7 @@ ${tag}` : tag;
               </div>
             </div>
           ) : null}
-          {currentView === "academy" ? <AcademyView /> : null}
+          {currentView === "academy" ? <AcademyModule /> : null}
           {currentView === "archive" ? (
             <ArchiveHub
               primaryTab={archivePrimaryTab}
@@ -8345,11 +8349,22 @@ ${tag}` : tag;
                     className="secondary"
                     disabled={usbExportBusy}
                     onClick={() => {
-                      setUsbExportModalKind("complete");
+                      setUsbExportModalKind("recommended");
                       setUsbExportModalOpen(true);
                     }}
                   >
-                    Export full archive
+                    Export recommended
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={usbExportBusy}
+                    onClick={() => {
+                      setUsbExportModalKind("absolute");
+                      setUsbExportModalOpen(true);
+                    }}
+                  >
+                    Export absolute
                   </button>
                 </div>
                 {usbExportStatus && !usbExportModalOpen ? (
@@ -8600,17 +8615,21 @@ ${tag}` : tag;
         <MeshRadioModal open={meshOpen} onClose={() => setMeshOpen(false)} messages={meshMessages} />
       )}
 
-      <UsbExportModal
+      <ExportModal
         open={usbExportModalOpen}
         onClose={() => {
           if (!usbExportBusy) setUsbExportModalOpen(false);
         }}
-        exportType={usbExportModalKind}
+        tier={usbExportModalKind}
+        onTierChange={(t) => setUsbExportModalKind(t)}
         scorchedEarth={usbScorchedEarth}
         onScorchedEarthChange={setUsbScorchedEarth}
         busy={usbExportBusy}
         status={usbExportStatus}
-        onStartExport={(args) => void executeUsbExportFromModal(args)}
+        onStartExport={({ destinationPath, devicePath, formatFirst, exportType }) => {
+          setUsbExportModalKind(exportType);
+          void executeUsbExportFromModal({ destinationPath, devicePath, formatFirst });
+        }}
       />
 
       {libraryFilesModalOpen && (
@@ -8759,7 +8778,6 @@ ${tag}` : tag;
           </div>
         </div>
       )}
-
       </>
       )}
     </div>

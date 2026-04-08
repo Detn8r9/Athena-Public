@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -68,64 +68,6 @@ export interface TacticalSidebarProps {
 
 const COLLAPSE_AFTER_IDLE_MS = 5000;
 
-const panelStyle: CSSProperties = {
-  position: "absolute",
-  top: "calc(4.5rem + env(safe-area-inset-top, 0px))",
-  left: "calc(1rem + env(safe-area-inset-left, 0px))",
-  zIndex: 1200,
-  display: "flex",
-  alignItems: "stretch",
-  borderRadius: "16px",
-  border: "1px solid rgba(255, 255, 255, 0.1)",
-  background: "rgba(15, 23, 42, 0.75)",
-  backdropFilter: "blur(12px)",
-  WebkitBackdropFilter: "blur(12px)",
-  boxShadow: "0 16px 40px rgba(2, 6, 23, 0.4)",
-  overflow: "hidden",
-};
-
-const iconRailStyle: CSSProperties = {
-  width: "48px",
-  display: "flex",
-  flexDirection: "column",
-  gap: "0.25rem",
-  padding: "0.35rem",
-  borderRight: "1px solid rgba(255, 255, 255, 0.1)",
-  background: "rgba(15, 23, 42, 0.35)",
-};
-
-const iconButtonStyle: CSSProperties = {
-  width: "38px",
-  height: "38px",
-  borderRadius: "12px",
-  border: "1px solid rgba(255, 255, 255, 0.1)",
-  background: "rgba(30, 41, 59, 0.45)",
-  color: "#e2e8f0",
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  cursor: "pointer",
-  padding: 0,
-};
-
-const sectionLabelStyle: CSSProperties = {
-  margin: "0.2rem 0 0.35rem",
-  fontSize: "0.74rem",
-  letterSpacing: "0.06em",
-  textTransform: "uppercase",
-  fontWeight: 700,
-  color: "#94a3b8",
-};
-
-const rowLabelStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: "0.5rem",
-  fontSize: "0.84rem",
-  color: "#e2e8f0",
-  marginBottom: "0.35rem",
-};
-
 function normalizeInitialState(
   incoming?: TacticalLayerVisibilityState,
 ): TacticalLayerVisibilityState {
@@ -191,19 +133,6 @@ export function TacticalSidebar({
       clearCollapseTimer();
     };
   }, [expanded]);
-
-  const expandedPaneStyle = useMemo<CSSProperties>(
-    () => ({
-      width: expanded ? "250px" : "0",
-      overflow: "hidden",
-      transition: "width 220ms ease",
-      padding: expanded ? "0.6rem 0.65rem 0.65rem" : "0",
-      display: "flex",
-      flexDirection: "column",
-      gap: "0.4rem",
-    }),
-    [expanded],
-  );
 
   const toggleNetworkLayer = (
     key: keyof TacticalLayerVisibilityState["network"],
@@ -289,7 +218,7 @@ export function TacticalSidebar({
 
   return (
     <aside
-      style={panelStyle}
+      className={`tactical-sidebar glass-panel${expanded ? " is-expanded" : ""}`}
       onMouseEnter={clearCollapseTimer}
       onMouseLeave={() => {
         if (expanded) {
@@ -298,10 +227,10 @@ export function TacticalSidebar({
       }}
       aria-label="Tactical Layer Manager"
     >
-      <div style={iconRailStyle}>
+      <div className="tactical-sidebar-rail">
         <button
           type="button"
-          style={iconButtonStyle}
+          className="tactical-sidebar-icon-btn"
           onClick={() => {
             setExpanded((previous) => !previous);
             if (!expanded) {
@@ -315,13 +244,9 @@ export function TacticalSidebar({
         </button>
         <button
           type="button"
-          style={{
-            ...iconButtonStyle,
-            borderColor:
-              visibilityState.activeFamily === "network"
-                ? "rgba(56, 189, 248, 0.8)"
-                : iconButtonStyle.borderColor,
-          }}
+          className={`tactical-sidebar-icon-btn${
+            visibilityState.activeFamily === "network" ? " is-active" : ""
+          }`}
           onClick={() => {
             setExpanded(true);
             setActiveFamily("network");
@@ -334,13 +259,9 @@ export function TacticalSidebar({
         </button>
         <button
           type="button"
-          style={{
-            ...iconButtonStyle,
-            borderColor:
-              visibilityState.activeFamily === "resources"
-                ? "rgba(56, 189, 248, 0.8)"
-                : iconButtonStyle.borderColor,
-          }}
+          className={`tactical-sidebar-icon-btn${
+            visibilityState.activeFamily === "resources" ? " is-active" : ""
+          }`}
           onClick={() => {
             setExpanded(true);
             setActiveFamily("resources");
@@ -353,7 +274,7 @@ export function TacticalSidebar({
         </button>
         <button
           type="button"
-          style={iconButtonStyle}
+          className="tactical-sidebar-icon-btn"
           onClick={() => void handleExport()}
           disabled={exporting}
           aria-label="Export tactical data"
@@ -363,7 +284,7 @@ export function TacticalSidebar({
         </button>
         <button
           type="button"
-          style={iconButtonStyle}
+          className="tactical-sidebar-icon-btn"
           onClick={() => void handleImport()}
           disabled={importing}
           aria-label="Import tactical data"
@@ -373,69 +294,39 @@ export function TacticalSidebar({
         </button>
       </div>
 
-      <div style={expandedPaneStyle}>
-        <h3
-          style={{
-            margin: 0,
-            fontSize: "0.95rem",
-            fontWeight: 700,
-            color: "#f8fafc",
-          }}
-        >
-          Tactical Layer Manager
-        </h3>
-        <p
-          style={{
-            margin: 0,
-            fontSize: "0.76rem",
-            lineHeight: 1.45,
-            color: "#94a3b8",
-          }}
-        >
+      <div className="tactical-sidebar-pane">
+        <h3 className="tactical-sidebar-title">Tactical Layer Manager</h3>
+        <p className="tactical-sidebar-subtitle">
           Sidebar auto-collapses after inactivity to preserve map viewport space.
         </p>
 
-        <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.15rem" }}>
+        <div className="tactical-sidebar-family-row">
           <button
             type="button"
-            style={{
-              ...iconButtonStyle,
-              width: "auto",
-              height: "32px",
-              padding: "0 0.65rem",
-              borderColor:
-                visibilityState.activeFamily === "network"
-                  ? "rgba(56, 189, 248, 0.8)"
-                  : iconButtonStyle.borderColor,
-            }}
+            className={`tactical-sidebar-pill-btn${
+              visibilityState.activeFamily === "network" ? " is-active" : ""
+            }`}
             onClick={() => setActiveFamily("network")}
           >
-            <Network size={14} style={{ marginRight: "0.35rem" }} />
+            <Network size={14} className="tactical-sidebar-pill-icon" />
             Network
           </button>
           <button
             type="button"
-            style={{
-              ...iconButtonStyle,
-              width: "auto",
-              height: "32px",
-              padding: "0 0.65rem",
-              borderColor:
-                visibilityState.activeFamily === "resources"
-                  ? "rgba(56, 189, 248, 0.8)"
-                  : iconButtonStyle.borderColor,
-            }}
+            className={`tactical-sidebar-pill-btn${
+              visibilityState.activeFamily === "resources" ? " is-active" : ""
+            }`}
             onClick={() => setActiveFamily("resources")}
           >
-            <Package size={14} style={{ marginRight: "0.35rem" }} />
+            <Package size={14} className="tactical-sidebar-pill-icon" />
             Resources
           </button>
         </div>
 
         {visibilityState.activeFamily === "network" ? (
           <section>
-            <div style={sectionLabelStyle}>Network</div>
-            <label style={rowLabelStyle}>
+            <div className="tactical-sidebar-section-label">Network</div>
+            <label className="tactical-sidebar-row">
               <input
                 type="checkbox"
                 checked={visibilityState.network.nodes}
@@ -444,7 +335,7 @@ export function TacticalSidebar({
               <RadioTower size={15} />
               Nodes
             </label>
-            <label style={rowLabelStyle}>
+            <label className="tactical-sidebar-row">
               <input
                 type="checkbox"
                 checked={visibilityState.network.coverageCircles}
@@ -453,7 +344,7 @@ export function TacticalSidebar({
               <CircleDot size={15} />
               Coverage Circles
             </label>
-            <label style={rowLabelStyle}>
+            <label className="tactical-sidebar-row">
               <input
                 type="checkbox"
                 checked={visibilityState.network.links}
@@ -465,8 +356,8 @@ export function TacticalSidebar({
           </section>
         ) : (
           <section>
-            <div style={sectionLabelStyle}>Resources</div>
-            <label style={rowLabelStyle}>
+            <div className="tactical-sidebar-section-label">Resources</div>
+            <label className="tactical-sidebar-row">
               <input
                 type="checkbox"
                 checked={visibilityState.resources.power}
@@ -475,7 +366,7 @@ export function TacticalSidebar({
               <Power size={15} />
               Power
             </label>
-            <label style={rowLabelStyle}>
+            <label className="tactical-sidebar-row">
               <input
                 type="checkbox"
                 checked={visibilityState.resources.water}
@@ -484,7 +375,7 @@ export function TacticalSidebar({
               <Waves size={15} />
               Water
             </label>
-            <label style={rowLabelStyle}>
+            <label className="tactical-sidebar-row">
               <input
                 type="checkbox"
                 checked={visibilityState.resources.food}
@@ -493,7 +384,7 @@ export function TacticalSidebar({
               <Utensils size={15} />
               Food
             </label>
-            <label style={rowLabelStyle}>
+            <label className="tactical-sidebar-row">
               <input
                 type="checkbox"
                 checked={visibilityState.resources.equipment}
@@ -502,8 +393,10 @@ export function TacticalSidebar({
               <Package size={15} />
               Equipment
             </label>
-            <div style={{ ...sectionLabelStyle, marginTop: "0.55rem" }}>Custom pins</div>
-            <label style={rowLabelStyle}>
+            <div className="tactical-sidebar-section-label tactical-sidebar-section-label-spaced">
+              Custom pins
+            </div>
+            <label className="tactical-sidebar-row">
               <input
                 type="checkbox"
                 checked={visibilityState.customPins}
@@ -515,51 +408,29 @@ export function TacticalSidebar({
           </section>
         )}
 
-        <div style={{ display: "flex", gap: "0.45rem", marginTop: "0.2rem" }}>
+        <div className="tactical-sidebar-actions">
           <button
             type="button"
-            style={{
-              ...iconButtonStyle,
-              width: "auto",
-              height: "32px",
-              padding: "0 0.65rem",
-              opacity: exporting ? 0.7 : 1,
-            }}
+            className="tactical-sidebar-pill-btn"
             disabled={exporting}
             onClick={() => void handleExport()}
           >
-            <DatabaseBackup size={14} style={{ marginRight: "0.35rem" }} />
+            <DatabaseBackup size={14} className="tactical-sidebar-pill-icon" />
             {exporting ? "Exporting" : "Export"}
           </button>
           <button
             type="button"
-            style={{
-              ...iconButtonStyle,
-              width: "auto",
-              height: "32px",
-              padding: "0 0.65rem",
-              opacity: importing ? 0.7 : 1,
-            }}
+            className="tactical-sidebar-pill-btn"
             disabled={importing}
             onClick={() => void handleImport()}
           >
-            <Upload size={14} style={{ marginRight: "0.35rem" }} />
+            <Upload size={14} className="tactical-sidebar-pill-icon" />
             {importing ? "Importing" : "Import"}
           </button>
         </div>
 
         {statusMessage.length > 0 && (
-          <p
-            style={{
-              margin: "0.25rem 0 0",
-              fontSize: "0.74rem",
-              lineHeight: 1.35,
-              color: "#cbd5e1",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-            }}
-            role="status"
-          >
+          <p className="tactical-sidebar-status" role="status">
             {statusMessage}
           </p>
         )}

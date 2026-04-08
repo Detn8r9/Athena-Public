@@ -15,6 +15,18 @@ The runnable app lives in the `athena/` directory (Tauri 2, React, Rust).
 - Academy lessons, personnel roster / PIN login, Logistics Hub (inventory / supply) where enabled
 - Settings for themes, location context, backups, USB export, and diagnostics
 
+## Resilience Layer (offline readiness)
+
+On startup, ATHENA now performs a resilience check and will enter a non-destructive **Maintenance Mode** instead of crashing if required sidecars are missing or unhealthy. The backend also enables SQLite Write-Ahead Logging (WAL) and runs an `integrity_check` on each start to reduce the risk of silent corruption after power loss.
+
+## Omnibus USB Export (tiered)
+
+The Omnibus export supports three tiers:
+
+- Essentials: intended to be small and fast, includes launchers plus a proximity-pruned PMTiles map extract around Fairlee, VT.
+- Recommended: adds models and performs a priority-based payload fill until the destination drive would drop below a 500MB free-space reserve.
+- Absolute: attempts to copy every file in the bundled payload (maximal transfer).
+
 ## Requirements
 
 - [Rust](https://rustup.rs/) (stable)
@@ -39,14 +51,16 @@ npm run build
 
 ## Project layout
 
-| Path | Role |
-|------|------|
-| `athena/package.json` | Frontend scripts and dependencies |
-| `athena/src/` | React / TypeScript UI |
-| `athena/src-tauri/` | Rust backend, Tauri config, assets |
-| `athena/branding/` | Icon sources for `npm run icon` |
-| `docs/` | Additional documentation and notes |
+
+| Path                                 | Role                                                |
+| ------------------------------------ | --------------------------------------------------- |
+| `athena/package.json`                | Frontend scripts and dependencies                   |
+| `athena/src/`                        | React / TypeScript UI                               |
+| `athena/src-tauri/`                  | Rust backend, Tauri config, assets                  |
+| `athena/branding/`                   | Icon sources for `npm run icon`                     |
+| `docs/`                              | Additional documentation and notes                  |
 | `athena/ATHENA_PROJECT_REFERENCE.md` | In-app reference used by the `/athena` chat command |
+
 
 ## Security and privacy
 
@@ -61,3 +75,11 @@ Use focused commits and keep secrets out of the repository. Run `npm run build` 
 ## License
 
 Usage and redistribution terms are defined by the project owner; add a `LICENSE` file to the repository root when you publish one.
+
+## Credits & acknowledgements
+
+ATHENA is inspired by and built on top of work from the broader offline-first community. In particular:
+
+- Project N.O.M.A.D.: survival computer inspiration and field-ready UX principles
+- Protomaps: PMTiles format and mapping infrastructure
+- Kolibri: offline education framework patterns (curriculum-first, device-local learning)

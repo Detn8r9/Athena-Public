@@ -361,6 +361,7 @@ dependencies = [
  "geoconvert",
  "hnsw_rs",
  "image",
+ "libc",
  "libsqlite3-sys",
  "lopdf 0.32.0",
  "mdns-sd",

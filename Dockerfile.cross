@@ -7,13 +7,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PKG_CONFIG_ALLOW_CROSS=1
 ENV PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
 
-RUN dpkg --add-architecture amd64
-
-RUN sed -i '/^deb /s/^deb /deb [arch=arm64] /' /etc/apt/sources.list \
-    && echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse" >> /etc/apt/sources.list \
-    && echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list \
-    && echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse" >> /etc/apt/sources.list
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -23,17 +16,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
     lld \
     llvm \
-    libssl-dev:amd64 \
-    libsqlite3-dev:amd64 \
-    libwebkit2gtk-4.1-dev:amd64 \
-    libjavascriptcoregtk-4.1-dev:amd64 \
-    libsoup-3.0-dev:amd64 \
-    libgtk-3-dev:amd64 \
-    libudev-dev:amd64 \
-    libayatana-appindicator3-dev:amd64 \
-    librsvg2-dev:amd64 \
+    xdg-utils \
+    libfuse2 \
+    libssl-dev \
+    libsqlite3-dev \
+    libwebkit2gtk-4.1-dev \
+    libjavascriptcoregtk-4.1-dev \
+    libsoup-3.0-dev \
+    libgtk-3-dev \
+    libudev-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev \
     patchelf \
     gcc-x86-64-linux-gnu \
+    g++-x86-64-linux-gnu \
     file \
     && rm -rf /var/lib/apt/lists/*
 
@@ -58,5 +54,14 @@ RUN printf '%s\n' \
     >> /usr/local/cargo/config.toml
 
 RUN cargo install cargo-xwin
+
+# Pre-fetch MSVC/Windows SDK for cargo-xwin and add mixed-case symlinks. The SDK ships
+# lowercase `directml.lib` / `pathcch.lib` and all-caps `DIRECTML.lib` aliases; `lld-link`
+# expects `DirectML.lib` and `PathCch.lib`, which must exist on case-sensitive Linux FS.
+RUN export PATH=/usr/local/cargo/bin:$PATH \
+    && cargo xwin cache xwin \
+    && cd /root/.cache/cargo-xwin/xwin/sdk/lib/um/x86_64 \
+    && ln -sf directml.lib DirectML.lib \
+    && ln -sf pathcch.lib PathCch.lib
 
 WORKDIR /workspace

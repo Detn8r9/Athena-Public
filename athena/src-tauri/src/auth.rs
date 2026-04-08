@@ -12,6 +12,7 @@ pub struct AuthenticatedPersonnel {
     pub division: String,
     pub rank_level: i32,
     pub display_name: Option<String>,
+    pub operational_status: String,
 }
 
 /// Server-side session for Roman-tier RBAC (PIN verified against SQLite `personnel`).
@@ -24,12 +25,19 @@ impl Default for AuthSession {
 }
 
 pub fn authenticated_user(session: &AuthSession) -> Result<AuthenticatedPersonnel, String> {
-    session
-        .0
-        .lock()
-        .map_err(|e| e.to_string())?
+    let guard = session.0.lock().map_err(|e| e.to_string())?;
+    let u = guard
         .clone()
-        .ok_or_else(|| "Not authenticated.".to_string())
+        .ok_or_else(|| "Not authenticated.".to_string())?;
+    let st = u.operational_status.trim().to_ascii_lowercase();
+    if st == "mia" || st == "kia" {
+        drop(guard);
+        if let Ok(mut g) = session.0.lock() {
+            *g = None;
+        }
+        return Err("This account is locked (MIA/KIA). Contact Command.".to_string());
+    }
+    Ok(u)
 }
 
 fn require_personnel_admin(session: &AuthSession) -> Result<AuthenticatedPersonnel, String> {
@@ -40,6 +48,21 @@ fn require_personnel_admin(session: &AuthSession) -> Result<AuthenticatedPersonn
     Ok(u)
 }
 
+fn is_locked_status(st: &str) -> bool {
+    let t = st.trim().to_ascii_lowercase();
+    t == "mia" || t == "kia"
+}
+
+fn enforce_rank4_cannot_touch_caesar(
+    actor: &AuthenticatedPersonnel,
+    target_rank_level: i32,
+) -> Result<(), String> {
+    if actor.rank_level == 4 && target_rank_level >= 5 {
+        return Err("Rank 4 cannot modify a Caesar (Level 5).".to_string());
+    }
+    Ok(())
+}
+
 fn session_personnel_from_row(row: &crate::db::PersonnelRow) -> AuthenticatedPersonnel {
     AuthenticatedPersonnel {
         id: row.id.clone(),
@@ -47,6 +70,7 @@ fn session_personnel_from_row(row: &crate::db::PersonnelRow) -> AuthenticatedPer
         division: row.division.clone(),
         rank_level: row.rank_level,
         display_name: row.display_name.clone(),
+        operational_status: row.operational_status.clone(),
     }
 }
 
@@ -64,6 +88,9 @@ pub fn authenticate_pin(
     let digest = personnel_pin_hash(&pin);
     if digest != row.pin_hash {
         return Err("Invalid PIN.".to_string());
+    }
+    if is_locked_status(&row.operational_status) {
+        return Err("This account is locked (MIA/KIA). Contact Command.".to_string());
     }
     let out = session_personnel_from_row(&row);
     *session.0.lock().map_err(|e| e.to_string())? = Some(out.clone());
@@ -159,11 +186,19 @@ pub fn set_personnel_display_name(
         .map(|s| s.to_string());
     let as_ref = trimmed.as_deref();
     let db = app.db.lock().map_err(|e| e.to_string())?;
+    let target_row = db
+        .personnel_fetch_by_id(pid)?
+        .ok_or_else(|| "Personnel record not found.".to_string())?;
+    enforce_rank4_cannot_touch_caesar(&actor, target_row.rank_level)?;
     db.personnel_set_display_name(pid, as_ref)?;
     if actor.id == pid {
         let row = db
             .personnel_fetch_by_id(pid)?
             .ok_or_else(|| "Personnel record missing.".to_string())?;
+        if is_locked_status(&row.operational_status) {
+            *session.0.lock().map_err(|e| e.to_string())? = None;
+            return Err("This account is locked (MIA/KIA). Contact Command.".to_string());
+        }
         let out = session_personnel_from_row(&row);
         *session.0.lock().map_err(|e| e.to_string())? = Some(out);
     }
@@ -180,6 +215,10 @@ pub fn refresh_auth_session(
     let row = db
         .personnel_fetch_by_id(&u.id)?
         .ok_or_else(|| "Personnel record missing.".to_string())?;
+    if is_locked_status(&row.operational_status) {
+        *session.0.lock().map_err(|e| e.to_string())? = None;
+        return Err("This account is locked (MIA/KIA). Contact Command.".to_string());
+    }
     let out = session_personnel_from_row(&row);
     *session.0.lock().map_err(|e| e.to_string())? = Some(out.clone());
     Ok(out)
@@ -255,9 +294,64 @@ pub fn remove_personnel(
         return Err("You cannot remove your own personnel record while logged in.".to_string());
     }
     let db = app.db.lock().map_err(|e| e.to_string())?;
+    let target_row = db
+        .personnel_fetch_by_id(pid)?
+        .ok_or_else(|| "Personnel record not found.".to_string())?;
+    enforce_rank4_cannot_touch_caesar(&actor, target_row.rank_level)?;
+    if target_row.rank_level >= 5 {
+        return Err("Caesar (Level 5) cannot be removed from the registry.".to_string());
+    }
     let n = db.personnel_delete_by_id(pid)?;
     if n == 0 {
         return Err("Personnel record not found.".to_string());
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn admin_update_personnel(
+    personnel_id: String,
+    login_name: String,
+    display_name: Option<String>,
+    division: String,
+    rank_level: i32,
+    operational_status: String,
+    app: State<'_, AppState>,
+    session: State<'_, AuthSession>,
+) -> Result<PersonnelPublic, String> {
+    let actor = require_personnel_admin(&session)?;
+    let target_id = personnel_id.trim();
+    if target_id.is_empty() {
+        return Err("personnel_id is required.".to_string());
+    }
+
+    let db = app.db.lock().map_err(|e| e.to_string())?;
+    let target_row = db
+        .personnel_fetch_by_id(target_id)?
+        .ok_or_else(|| "Personnel record not found.".to_string())?;
+
+    if actor.rank_level == 4 {
+        if target_row.rank_level >= 5 {
+            return Err("Rank 4 cannot edit a Caesar (Level 5).".to_string());
+        }
+        if rank_level >= 5 {
+            return Err("Rank 4 cannot promote anyone to Caesar (Level 5).".to_string());
+        }
+    }
+
+    if actor.rank_level >= 5 && rank_level >= 5 && target_id != actor.id {
+        db.personnel_transfer_caesar(&actor.id, target_id, &login_name, display_name.as_deref(), &division, &operational_status)?;
+    } else {
+        db.personnel_admin_update(
+            target_id,
+            &login_name,
+            display_name.as_deref(),
+            &division,
+            rank_level,
+            &operational_status,
+        )?;
+    }
+
+    db.personnel_fetch_public_by_id(target_id)?
+        .ok_or_else(|| "Failed to load updated personnel record.".to_string())
 }

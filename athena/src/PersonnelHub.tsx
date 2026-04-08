@@ -10,7 +10,23 @@ type PersonnelPublic = {
   rank_level: number;
   created_at: number;
   display_name: string | null;
+  operational_status: "active" | "on_mission" | "mia" | "kia";
 };
+
+function normalizeOperationalStatus(v: string): PersonnelPublic["operational_status"] {
+  const t = v.trim().toLowerCase();
+  if (t === "on_mission") return "on_mission";
+  if (t === "mia") return "mia";
+  if (t === "kia") return "kia";
+  return "active";
+}
+
+function statusLabel(v: PersonnelPublic["operational_status"]): string {
+  if (v === "on_mission") return "On mission";
+  if (v === "mia") return "MIA";
+  if (v === "kia") return "KIA";
+  return "Active";
+}
 
 function rosterLabel(p: PersonnelPublic): string {
   const d = p.display_name?.trim();
@@ -36,6 +52,23 @@ export function PersonnelHub() {
   }
 
   const canDeleteFromRegistry = r >= 4;
+  const canEditTarget = useCallback(
+    (target: PersonnelPublic): boolean => {
+      if (r < 4) return false;
+      if (r === 4 && target.rank_level >= 5) return false;
+      return true;
+    },
+    [r],
+  );
+  const canDeleteTarget = useCallback(
+    (target: PersonnelPublic): boolean => {
+      if (!canDeleteFromRegistry) return false;
+      if (r === 4 && target.rank_level >= 5) return false;
+      if (target.rank_level >= 5) return r >= 5;
+      return true;
+    },
+    [canDeleteFromRegistry, r],
+  );
 
   const [rows, setRows] = useState<PersonnelPublic[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -49,7 +82,11 @@ export function PersonnelHub() {
   const [pin, setPin] = useState("");
 
   const [editPerson, setEditPerson] = useState<PersonnelPublic | null>(null);
+  const [editLoginDraft, setEditLoginDraft] = useState("");
+  const [editDivisionDraft, setEditDivisionDraft] = useState("");
   const [editDisplayDraft, setEditDisplayDraft] = useState("");
+  const [editRankDraft, setEditRankDraft] = useState("");
+  const [editStatusDraft, setEditStatusDraft] = useState<PersonnelPublic["operational_status"]>("active");
 
   const sortedRows = useMemo(() => [...rows].sort(comparePersonnelByRank), [rows]);
 
@@ -104,17 +141,36 @@ export function PersonnelHub() {
     }
   }
 
-  async function saveEditDisplay(e: React.FormEvent) {
+  async function saveEditPersonnel(e: React.FormEvent) {
     e.preventDefault();
     if (!editPerson) return;
     const targetId = editPerson.id;
     setBusy(true);
     setErr(null);
     try {
-      const v = editDisplayDraft.trim();
-      await invoke("set_personnel_display_name", {
+      const loginName = editLoginDraft.trim();
+      const div = editDivisionDraft.trim();
+      const rl = parseInt(editRankDraft, 10);
+      if (!loginName) {
+        setErr("Login name is required.");
+        return;
+      }
+      if (!div) {
+        setErr("Division is required.");
+        return;
+      }
+      if (!Number.isFinite(rl)) {
+        setErr("Rank level is required.");
+        return;
+      }
+      const disp = editDisplayDraft.trim();
+      await invoke("admin_update_personnel", {
         personnelId: targetId,
-        displayName: v.length > 0 ? v : null,
+        loginName,
+        displayName: disp.length > 0 ? disp : null,
+        division: div,
+        rankLevel: rl,
+        operationalStatus: editStatusDraft,
       });
       setEditPerson(null);
       await load();
@@ -184,6 +240,7 @@ export function PersonnelHub() {
                 <th>Roster display</th>
                 <th>Division</th>
                 <th>Rank</th>
+                <th>Status</th>
                 <th>Created</th>
                 <th>Actions</th>
               </tr>
@@ -191,49 +248,62 @@ export function PersonnelHub() {
             <tbody>
               {sortedRows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="text-muted">
+                  <td colSpan={7} className="text-muted">
                     No personnel rows.
                   </td>
                 </tr>
               ) : (
                 sortedRows.map((p) => {
                   const isSelf = user?.id === p.id;
+                  const st = normalizeOperationalStatus(p.operational_status);
+                  const canEdit = canEditTarget(p);
+                  const canDelete = canDeleteTarget(p);
                   return (
                     <tr key={p.id}>
                       <td>{p.name}</td>
                       <td>{rosterLabel(p)}</td>
                       <td>{p.division}</td>
                       <td>{formatRomanRank(p.rank_level)}</td>
+                      <td>
+                        <span className={`personnel-status-badge personnel-status-badge--${st}`}>
+                          {statusLabel(st)}
+                        </span>
+                      </td>
                       <td className="text-muted">{new Date(p.created_at).toLocaleString()}</td>
                       <td>
                         <div className="personnel-hub-actions">
                           <button
                             type="button"
                             className="secondary small-btn"
-                            disabled={busy}
+                            disabled={busy || !canEdit}
+                            title={
+                              canEdit
+                                ? "Edit this personnel record"
+                                : "You do not have permission to modify this personnel record."
+                            }
                             onClick={() => {
+                              if (!canEdit) return;
                               setEditPerson(p);
-                              const existing = p.display_name?.trim() ?? "";
-                              setEditDisplayDraft(
-                                existing.length > 0
-                                  ? existing
-                                  : p.rank_level === 5
-                                    ? `${p.name} — Caesar`
-                                    : "",
-                              );
+                              setEditLoginDraft(p.name ?? "");
+                              setEditDivisionDraft(p.division ?? "");
+                              setEditDisplayDraft(p.display_name ?? "");
+                              setEditRankDraft(String(p.rank_level ?? 1));
+                              setEditStatusDraft(normalizeOperationalStatus(p.operational_status ?? "active"));
                             }}
                           >
-                            Edit display
+                            Edit personnel
                           </button>
                           {canDeleteFromRegistry ? (
                             <button
                               type="button"
                               className="secondary small-btn personnel-hub-delete-btn"
-                              disabled={busy || isSelf}
+                              disabled={busy || isSelf || !canDelete}
                               title={
                                 isSelf
                                   ? "You cannot remove your own account while logged in."
-                                  : "Remove this account from the registry"
+                                  : canDelete
+                                    ? "Remove this account from the registry"
+                                    : "You do not have permission to remove this personnel record."
                               }
                               onClick={() => void onRemove(p)}
                             >
@@ -334,13 +404,34 @@ export function PersonnelHub() {
       {editPerson ? (
         <div className="modal-backdrop" onClick={() => !busy && setEditPerson(null)}>
           <div className="qm-modal glass-panel" onClick={(e) => e.stopPropagation()}>
-            <h3>Roster display</h3>
-            <p className="text-muted small">
-              Login: <strong>{editPerson.name}</strong>
+            <h3>Edit personnel</h3>
+            <p className="text-muted small" style={{ marginTop: 0 }}>
+              Update login name, division, rank, roster display, and operational status. Rank 5 is only assignable by
+              Caesar.
             </p>
-            <form onSubmit={saveEditDisplay}>
+            <form onSubmit={saveEditPersonnel}>
               <label className="lock-screen-label">
-                Roster display name
+                Login name
+                <input
+                  className="lock-screen-input"
+                  value={editLoginDraft}
+                  onChange={(e) => setEditLoginDraft(e.target.value)}
+                  disabled={busy}
+                  required
+                />
+              </label>
+              <label className="lock-screen-label">
+                Division
+                <input
+                  className="lock-screen-input"
+                  value={editDivisionDraft}
+                  onChange={(e) => setEditDivisionDraft(e.target.value)}
+                  disabled={busy}
+                  required
+                />
+              </label>
+              <label className="lock-screen-label">
+                Display name (optional)
                 <input
                   className="lock-screen-input"
                   value={editDisplayDraft}
@@ -349,12 +440,44 @@ export function PersonnelHub() {
                   placeholder="e.g. Corvus — Caesar, or leave blank for login only"
                 />
               </label>
+              <label className="lock-screen-label">
+                Rank level
+                <select
+                  className="lock-screen-input"
+                  value={editRankDraft}
+                  onChange={(e) => setEditRankDraft(e.target.value)}
+                  disabled={busy}
+                >
+                  {([1, 2, 3, 4] as const).map((n) => (
+                    <option key={n} value={String(n)}>
+                      {formatRomanRank(n)}
+                    </option>
+                  ))}
+                  {r >= 5 ? (
+                    <option value="5">{formatRomanRank(5)}</option>
+                  ) : null}
+                </select>
+              </label>
+              <label className="lock-screen-label">
+                Operational status
+                <select
+                  className="lock-screen-input"
+                  value={editStatusDraft}
+                  onChange={(e) => setEditStatusDraft(normalizeOperationalStatus(e.target.value))}
+                  disabled={busy}
+                >
+                  <option value="active">Active</option>
+                  <option value="on_mission">On mission</option>
+                  <option value="mia">MIA</option>
+                  <option value="kia">KIA</option>
+                </select>
+              </label>
               <div className="qm-modal-actions">
                 <button type="button" className="secondary" onClick={() => setEditPerson(null)} disabled={busy}>
                   Cancel
                 </button>
                 <button type="submit" className="secondary" disabled={busy}>
-                  Save
+                  {busy ? "Saving…" : "Save"}
                 </button>
               </div>
             </form>

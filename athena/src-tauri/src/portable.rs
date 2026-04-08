@@ -5,11 +5,247 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tauri::Manager;
+use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::ShellExt;
 use walkdir::WalkDir;
 
 use crate::config::{effective_embedding_folder, effective_reranker_folder, load_config, AppConfig};
 use crate::db::Database;
+use crate::map_manager_download;
 use crate::{compute_watcher_folders, kiwix_downloads_dir, AppState};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OmnibusTier {
+    Essentials,
+    Recommended,
+    Absolute,
+}
+
+fn parse_omnibus_tier(export_type: &str) -> Result<OmnibusTier, String> {
+    let t = export_type.trim().to_ascii_lowercase();
+    match t.as_str() {
+        "essentials" => Ok(OmnibusTier::Essentials),
+        "recommended" => Ok(OmnibusTier::Recommended),
+        "absolute" => Ok(OmnibusTier::Absolute),
+        // Back-compat with older UI naming.
+        "complete" => Ok(OmnibusTier::Absolute),
+        _ => Err("export_type must be \"essentials\", \"recommended\", or \"absolute\".".to_string()),
+    }
+}
+
+fn approx_bbox_for_radius_miles(
+    center_lon: f64,
+    center_lat: f64,
+    radius_miles: f64,
+) -> (f64, f64, f64, f64) {
+    // WGS84 mean Earth radius in statute miles.
+    let earth_radius_miles = 3958.7613_f64;
+    let dlat = (radius_miles / earth_radius_miles).to_degrees();
+    let cos_lat = center_lat.to_radians().cos().abs().max(1e-6);
+    let dlon = (radius_miles / earth_radius_miles).to_degrees() / cos_lat;
+    (
+        (center_lon - dlon).max(-180.0),
+        (center_lat - dlat).max(-90.0),
+        (center_lon + dlon).min(180.0),
+        (center_lat + dlat).min(90.0),
+    )
+}
+
+fn run_sidecar_blocking(
+    app: &tauri::AppHandle,
+    name: &str,
+    args: &[&str],
+    timeout_secs: u64,
+) -> Result<(), String> {
+    let cmd = app
+        .shell()
+        .sidecar(name)
+        .map_err(|e| format!("Failed to resolve sidecar `{name}`: {e}"))?;
+    let (mut rx, _child) = cmd
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn `{name}`: {e}"))?;
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > std::time::Duration::from_secs(timeout_secs) {
+            return Err(format!("Sidecar `{name}` timed out after {timeout_secs}s."));
+        }
+        match tauri::async_runtime::block_on(rx.recv()) {
+            Some(CommandEvent::Terminated(payload)) => {
+                if payload.code == Some(0) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "Sidecar `{name}` failed (code {:?}, signal {:?}).",
+                    payload.code, payload.signal
+                ));
+            }
+            Some(_) => continue,
+            None => return Err(format!("Sidecar `{name}` ended unexpectedly.")),
+        }
+    }
+}
+
+fn pick_best_local_pmtiles_source(app_data_dir: &Path) -> Option<PathBuf> {
+    let dir = map_manager_download::offline_maps_directory(app_data_dir);
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_file()
+                && p.extension()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("")
+                    .eq_ignore_ascii_case("pmtiles")
+            {
+                candidates.push(p);
+            }
+        }
+    }
+    candidates.sort();
+    candidates.pop()
+}
+
+fn ensure_fairlee_proximity_pmtiles(
+    app: &tauri::AppHandle,
+    dest_root: &Path,
+    app_data_dir: &Path,
+) -> Result<(), String> {
+    const PROTOMAPS_SOURCE_URL: &str =
+        "https://data.source.coop/protomaps/openstreetmap/tiles/v3.pmtiles";
+
+    let center_lat = 43.908_f64;
+    let center_lon = -72.143_f64;
+    let radius_miles = 25.0_f64;
+    let (min_lon, min_lat, max_lon, max_lat) =
+        approx_bbox_for_radius_miles(center_lon, center_lat, radius_miles);
+
+    let out_dir = dest_root.join("data").join("maps");
+    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let out = out_dir.join("fairlee_vt_25mi.pmtiles");
+
+    let source = pick_best_local_pmtiles_source(app_data_dir)
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| PROTOMAPS_SOURCE_URL.to_string());
+
+    let bbox = format!("--bbox={min_lon:.8},{min_lat:.8},{max_lon:.8},{max_lat:.8}");
+    let out_str = out
+        .to_str()
+        .ok_or_else(|| "PMTiles output path contains invalid characters.".to_string())?;
+
+    run_sidecar_blocking(
+        app,
+        "pmtiles",
+        &["extract", source.as_str(), out_str, bbox.as_str()],
+        600,
+    )?;
+    Ok(())
+}
+
+fn available_space_bytes_for_destination(dest_root: &Path) -> Option<u64> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let target = dest_root.canonicalize().unwrap_or_else(|_| dest_root.to_path_buf());
+    let mut best: Option<(usize, u64)> = None;
+    for d in disks.list() {
+        let mp = d.mount_point();
+        let mp = mp.canonicalize().unwrap_or_else(|_| mp.to_path_buf());
+        if target.starts_with(&mp) {
+            let len = mp.as_os_str().len();
+            let avail = d.available_space();
+            if best.map(|(l, _)| len > l).unwrap_or(true) {
+                best = Some((len, avail));
+            }
+        }
+    }
+    best.map(|(_, a)| a)
+}
+
+fn dir_size_bytes(p: &Path) -> u64 {
+    if p.is_file() {
+        return std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    }
+    let mut total = 0u64;
+    if let Ok(rd) = std::fs::read_dir(p) {
+        for e in rd.flatten() {
+            total = total.saturating_add(dir_size_bytes(&e.path()));
+        }
+    }
+    total
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PayloadMetadata {
+    #[serde(default)]
+    priority: Option<i64>,
+}
+
+fn payload_priority_for_dir(dir: &Path) -> Option<i64> {
+    let meta = dir.join("metadata.json");
+    let raw = std::fs::read_to_string(meta).ok()?;
+    let parsed: PayloadMetadata = serde_json::from_str(&raw).ok()?;
+    parsed.priority
+}
+
+fn tier2_copy_payload_priority_fill(app: &tauri::AppHandle, dest_root: &Path) -> Result<(), String> {
+    let payload_root = app
+        .path()
+        .resolve("payload", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| format!("Could not resolve bundled payload dir: {e}"))?;
+    if !payload_root.is_dir() {
+        return Ok(());
+    }
+
+    let mut entries: Vec<(i64, PathBuf, u64)> = Vec::new();
+    for entry in std::fs::read_dir(&payload_root).map_err(|e| e.to_string())? {
+        let e = entry.map_err(|e| e.to_string())?;
+        let src = e.path();
+        let name = src
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if name.eq_ignore_ascii_case("Windows") || name.eq_ignore_ascii_case("Linux") {
+            continue;
+        }
+        if !src.is_dir() {
+            continue;
+        }
+        let prio = payload_priority_for_dir(&src).unwrap_or(0);
+        let sz = dir_size_bytes(&src);
+        entries.push((prio, src, sz));
+    }
+
+    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+    let reserve_bytes = 500u64 * 1024u64 * 1024u64;
+    for (prio, src, sz) in entries {
+        let avail = available_space_bytes_for_destination(dest_root).unwrap_or(0);
+        if avail <= reserve_bytes {
+            break;
+        }
+        if avail.saturating_sub(sz) <= reserve_bytes {
+            continue;
+        }
+        let name = src
+            .file_name()
+            .ok_or_else(|| "payload entry missing filename".to_string())?;
+        let dst = dest_root.join(name);
+        eprintln!(
+            "[athena] usb export: tier2 copy payload pack prio={prio} size={} -> {}",
+            sz,
+            dst.display()
+        );
+        if dst.exists() {
+            let _ = std::fs::remove_dir_all(&dst);
+        }
+        copy_dir_recursive_strict(&src, &dst)?;
+    }
+
+    Ok(())
+}
 
 static PORTABLE_APP_DATA_OVERRIDE: OnceLock<Option<PathBuf>> = OnceLock::new();
 
@@ -179,35 +415,38 @@ fn verify_usb_export(
     let emb_dst = usb_data.join("models").join("embeddings").join(emb_name);
     let rr_dst = usb_data.join("models").join("rerankers").join(rr_name);
 
-    if !emb_dst.is_dir() {
-        return Err(format!(
-            "Verification failed: missing embedding tree on USB: {}",
-            emb_dst.display()
-        ));
-    }
-    if !rr_dst.is_dir() {
-        return Err(format!(
-            "Verification failed: missing reranker tree on USB: {}",
-            rr_dst.display()
-        ));
+    // Tier 1 essentials intentionally does not require models.
+    if export_type != "essentials" {
+        if !emb_dst.is_dir() {
+            return Err(format!(
+                "Verification failed: missing embedding tree on USB: {}",
+                emb_dst.display()
+            ));
+        }
+        if !rr_dst.is_dir() {
+            return Err(format!(
+                "Verification failed: missing reranker tree on USB: {}",
+                rr_dst.display()
+            ));
+        }
+
+        let s_emb = tree_file_bytes(&emb_src)?;
+        let d_emb = tree_file_bytes(&emb_dst)?;
+        if s_emb != d_emb {
+            return Err(format!(
+                "Verification failed: embedding byte count mismatch (local {s_emb}, USB {d_emb})."
+            ));
+        }
+        let s_rr = tree_file_bytes(&rr_src)?;
+        let d_rr = tree_file_bytes(&rr_dst)?;
+        if s_rr != d_rr {
+            return Err(format!(
+                "Verification failed: reranker byte count mismatch (local {s_rr}, USB {d_rr})."
+            ));
+        }
     }
 
-    let s_emb = tree_file_bytes(&emb_src)?;
-    let d_emb = tree_file_bytes(&emb_dst)?;
-    if s_emb != d_emb {
-        return Err(format!(
-            "Verification failed: embedding byte count mismatch (local {s_emb}, USB {d_emb})."
-        ));
-    }
-    let s_rr = tree_file_bytes(&rr_src)?;
-    let d_rr = tree_file_bytes(&rr_dst)?;
-    if s_rr != d_rr {
-        return Err(format!(
-            "Verification failed: reranker byte count mismatch (local {s_rr}, USB {d_rr})."
-        ));
-    }
-
-    if export_type == "complete" {
+    if export_type == "complete" || export_type == "absolute" {
         let db_src = app_data_dir.join("athena_index.db");
         let db_dst = usb_data.join("athena_index.db");
         if db_src.is_file() {
@@ -486,9 +725,9 @@ pub fn export_athena_to_usb(
     fs::create_dir_all(dest_root.join("models")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dest_root.join("documents")).map_err(|e| e.to_string())?;
 
-    let et = export_type.trim().to_ascii_lowercase();
-    if et != "essentials" && et != "complete" {
-        return Err("export_type must be \"essentials\" or \"complete\".".to_string());
+    let tier = parse_omnibus_tier(&export_type)?;
+    if wipe_after && tier != OmnibusTier::Absolute {
+        return Err("Scorched Earth wipe_after is only supported for export_type=\"absolute\".".to_string());
     }
 
     let app_data_dir = resolved_app_data_dir(&app)?;
@@ -504,26 +743,50 @@ pub fn export_athena_to_usb(
         .join("rerankers")
         .join(&rr_name);
 
-    if !emb_src.is_dir() {
-        return Err(format!(
-            "Embedding model folder not found: {}",
-            emb_src.display()
-        ));
-    }
-    if !rr_src.is_dir() {
-        return Err(format!(
-            "Reranker model folder not found: {}",
-            rr_src.display()
-        ));
-    }
-
     eprintln!(
-        "[athena] usb export ({et}): copying application to {}",
+        "[athena] usb export ({tier:?}): copying application to {}",
         dest_root.display()
     );
     copy_application_to_destination(&dest_root)?;
-    copy_bundled_payload_branch_to_usb(&app, &dest_root, "Windows");
-    copy_bundled_payload_branch_to_usb(&app, &dest_root, "Linux");
+
+    // Tier 1 baseline: copy the platform launchers (Windows/Linux).
+    // Tier 3 ("Absolute") copies all payload children under the destination root.
+    match tier {
+        OmnibusTier::Absolute => {
+            let payload_root = app
+                .path()
+                .resolve("payload", tauri::path::BaseDirectory::Resource)
+                .ok();
+            if let Some(payload_root) = payload_root {
+                if payload_root.is_dir() {
+                    for entry in std::fs::read_dir(&payload_root).map_err(|e| e.to_string())? {
+                        let e = entry.map_err(|e| e.to_string())?;
+                        let src = e.path();
+                        let dst = dest_root.join(e.file_name());
+                        if dst.exists() {
+                            let _ = if dst.is_dir() {
+                                std::fs::remove_dir_all(&dst)
+                            } else {
+                                std::fs::remove_file(&dst)
+                            };
+                        }
+                        if src.is_dir() {
+                            copy_dir_recursive_strict(&src, &dst)?;
+                        } else if src.is_file() {
+                            std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+            }
+        }
+        OmnibusTier::Essentials | OmnibusTier::Recommended => {
+            copy_bundled_payload_branch_to_usb(&app, &dest_root, "Windows");
+            copy_bundled_payload_branch_to_usb(&app, &dest_root, "Linux");
+        }
+    }
+
+    // Tier 1 map: proximity-pruned extract for Fairlee, VT (25mi).
+    ensure_fairlee_proximity_pmtiles(&app, &dest_root, &app_data_dir)?;
 
     let usb_data = dest_root.join("data");
     fs::create_dir_all(&usb_data).map_err(|e| e.to_string())?;
@@ -537,22 +800,42 @@ pub fn export_athena_to_usb(
         fs::create_dir_all(p).map_err(|e| e.to_string())?;
     }
 
-    eprintln!(
-        "[athena] usb export: copying embedding model to {}",
-        emb_dst.display()
-    );
-    copy_dir_recursive_strict(&emb_src, &emb_dst)?;
-    eprintln!(
-        "[athena] usb export: copying reranker model to {}",
-        rr_dst.display()
-    );
-    copy_dir_recursive_strict(&rr_src, &rr_dst)?;
+    if tier != OmnibusTier::Essentials {
+        if !emb_src.is_dir() {
+            return Err(format!(
+                "Embedding model folder not found: {}",
+                emb_src.display()
+            ));
+        }
+        if !rr_src.is_dir() {
+            return Err(format!(
+                "Reranker model folder not found: {}",
+                rr_src.display()
+            ));
+        }
+
+        eprintln!(
+            "[athena] usb export: copying embedding model to {}",
+            emb_dst.display()
+        );
+        copy_dir_recursive_strict(&emb_src, &emb_dst)?;
+        eprintln!(
+            "[athena] usb export: copying reranker model to {}",
+            rr_dst.display()
+        );
+        copy_dir_recursive_strict(&rr_src, &rr_dst)?;
+    }
 
     let kiwix_str = kiwix_downloads_dir(&app_data_dir)
         .to_string_lossy()
         .to_string();
 
-    if et == "complete" {
+    if tier == OmnibusTier::Recommended {
+        // Tier 2: priority-based fill of payload packs until 500MB remains free.
+        let _ = tier2_copy_payload_priority_fill(&app, &dest_root);
+    }
+
+    if tier == OmnibusTier::Absolute {
         let db_src = app_data_dir.join("athena_index.db");
         if wipe_after && !db_src.is_file() {
             return Err(
@@ -619,7 +902,13 @@ pub fn export_athena_to_usb(
     write_usb_readme(&dest_root)?;
 
     if wipe_after {
-        verify_usb_export(&dest_root, &et, &app_data_dir, &emb_name, &rr_name)?;
+        let et_label = match tier {
+            OmnibusTier::Essentials => "essentials",
+            OmnibusTier::Recommended => "recommended",
+            OmnibusTier::Absolute => "absolute",
+        }
+        .to_string();
+        verify_usb_export(&dest_root, &et_label, &app_data_dir, &emb_name, &rr_name)?;
         execute_scorched_wipe(&*state, &app_data_dir, &cfg, &kiwix_str)?;
     }
 

@@ -15,6 +15,8 @@ mod hardware_map;
 mod indexer;
 mod inference;
 mod inventory;
+#[cfg(target_os = "linux")]
+mod isoc23_shim;
 mod kiwix;
 mod kiwix_tools;
 mod lan_cluster;
@@ -45,6 +47,7 @@ mod ollama_setup;
 mod openai_chat;
 mod package_manager;
 mod portable;
+mod diagnostics;
 mod pmtiles_io;
 mod pmtiles_region_extract;
 mod quarantine;
@@ -2059,7 +2062,12 @@ fn tactical_export_default_path(app: &tauri::AppHandle) -> Result<std::path::Pat
 fn export_tactical_data(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
 ) -> Result<String, String> {
+    let u = auth::authenticated_user(&session)?;
+    if u.rank_level < 4 {
+        return Err("Insufficient rank for tactical export.".to_string());
+    }
     let export_path = tactical_export_default_path(&app)?;
     let (points, nodes) = {
         let g = state.db.lock().map_err(|e| e.to_string())?;
@@ -2082,8 +2090,13 @@ fn export_tactical_data(
 fn import_tactical_data(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
     source_path: Option<String>,
 ) -> Result<TacticalImportResult, String> {
+    let u = auth::authenticated_user(&session)?;
+    if u.rank_level < 4 {
+        return Err("Insufficient rank for tactical import.".to_string());
+    }
     let path = if let Some(raw) = source_path {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -2095,10 +2108,7 @@ fn import_tactical_data(
         tactical_export_default_path(&app)?
     };
     if !path.is_file() {
-        return Err(format!(
-            "Tactical data file not found: {}",
-            path.to_string_lossy()
-        ));
+        return Err("Tactical data file not found.".to_string());
     }
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let payload: TacticalDataFile = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
@@ -4669,6 +4679,44 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_macos_permissions::init());
     builder.setup(|app| {
+            // Resilience Layer: always initialize a shared status object so the UI can show
+            // maintenance/health even if the rest of setup fails.
+            app.manage(diagnostics::ResilienceState::default());
+            let initial = diagnostics::run_startup_diagnostics(&app.handle());
+            diagnostics::set_status(&app.handle(), initial);
+
+            // Heartbeat loop: verify critical components periodically and broadcast status.
+            // This intentionally does not crash the app; it only updates the resilience status.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                    let mut components = std::collections::BTreeMap::<String, String>::new();
+                    for name in ["pmtiles", "tesseract", "pdftoppm", "ollama"] {
+                        let args: &[&str] = match name {
+                            "pmtiles" => &["--version"],
+                            "tesseract" => &["--version"],
+                            "pdftoppm" => &["-h"],
+                            "ollama" => &["--version"],
+                            _ => &["--version"],
+                        };
+                        let status = match handle.shell().sidecar(name) {
+                            Ok(cmd) => match cmd.args(args).spawn() {
+                                Ok((_rx, child)) => {
+                                    let _ = child.kill();
+                                    "ok".to_string()
+                                }
+                                Err(e) => format!("spawn failed: {e}"),
+                            },
+                            Err(e) => format!("unavailable: {e}"),
+                        };
+                        components.insert(format!("sidecar:{name}"), status);
+                    }
+                    diagnostics::update_heartbeat(&handle, components);
+                });
+            }
+
+            let result: Result<(), String> = (|| {
             // Ensure the native window always has a non-empty title (avoids macOS fullscreen crash when title is null).
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_title("ATHENA");
@@ -4935,9 +4983,22 @@ pub fn run() {
                 maybe_ensure_default_ollama_model(&app_data_default_ollama);
             });
             Ok(())
+            })();
+
+            if let Err(e) = result {
+                let mut status = diagnostics::run_startup_diagnostics(&app.handle());
+                status.maintenance_mode = true;
+                status.failures.push(diagnostics::DiagnosticFailure {
+                    key: "startup_init_failed".to_string(),
+                    message: e,
+                });
+                diagnostics::set_status(&app.handle(), status);
+            }
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            diagnostics::get_resilience_status,
             auth::authenticate_pin,
             auth::logout,
             auth::set_my_personnel_display_name,
@@ -4945,6 +5006,7 @@ pub fn run() {
             auth::set_my_personnel_pin,
             auth::refresh_auth_session,
             auth::set_personnel_display_name,
+            auth::admin_update_personnel,
             auth::add_personnel,
             auth::remove_personnel,
             auth::list_personnel,

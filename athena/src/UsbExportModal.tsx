@@ -5,6 +5,7 @@ export type UsbDriveInfo = {
   name: string;
   mount_point: string;
   total_space: number;
+  available_space?: number;
   device_path: string;
 };
 
