@@ -17,15 +17,15 @@ The runnable app lives in the `athena/` directory (Tauri 2, React, Rust).
 
 ## Resilience Layer (offline readiness)
 
-On startup, ATHENA now performs a resilience check and will enter a non-destructive **Maintenance Mode** instead of crashing if required sidecars are missing or unhealthy. The backend also enables SQLite Write-Ahead Logging (WAL) and runs an `integrity_check` on each start to reduce the risk of silent corruption after power loss.
+On startup, ATHENA performs a resilience check and can enter a non-destructive **Maintenance Mode** instead of crashing when required sidecars are missing or unhealthy (see backend diagnostics). SQLite uses **Write-Ahead Logging (WAL)** and an `integrity_check` on each start to reduce the risk of silent corruption after power loss.
 
 ## Omnibus USB Export (tiered)
 
 The Omnibus export supports three tiers:
 
-- Essentials: intended to be small and fast, includes launchers plus a proximity-pruned PMTiles map extract around Fairlee, VT.
-- Recommended: adds models and performs a priority-based payload fill until the destination drive would drop below a 500MB free-space reserve.
-- Absolute: attempts to copy every file in the bundled payload (maximal transfer).
+- **Essentials**: small and fast — platform launchers from the bundled payload, a **25-mile PMTiles extract** centered on **Fairlee, VT** (43.908°N, 72.143°W), and a copy of the local **`athena_index.db`** when it exists (personnel / roster / library index). Does not copy embedding or reranker models or full document mirrors.
+- **Recommended**: copies embedding and reranker models, then **priority-based** payload packs until free space would drop below a **500MB** reserve.
+- **Absolute**: copies the full bundled payload tree and mirrors watched library folders plus the index database (see in-app export notes for wipe / “scorched earth” options).
 
 ## Requirements
 
@@ -80,6 +80,10 @@ Usage and redistribution terms are defined by the project owner; add a `LICENSE`
 
 ATHENA is inspired by and built on top of work from the broader offline-first community. In particular:
 
-- Project N.O.M.A.D.: survival computer inspiration and field-ready UX principles
-- Protomaps: PMTiles format and mapping infrastructure
-- Kolibri: offline education framework patterns (curriculum-first, device-local learning)
+- **Project N.O.M.A.D.**: survival computer inspiration and field-ready UX principles
+- **Protomaps**: PMTiles format and mapping infrastructure (see also [source.coop Protomaps OSM](https://data.source.coop/protomaps/openstreetmap/tiles/v3.pmtiles) for planet extracts)
+- **Kolibri** (Learning Equality): offline education *platform* patterns — curriculum-first, device-local learning (distinct from third-party curriculum PDFs)
+- **Core Knowledge**: educational sequencing and knowledge-building curriculum *framework* (operator-supplied materials must comply with Core Knowledge licensing)
+- **CK-12 Foundation**: open STEM curriculum resources where used — verify [CK-12 terms](https://www.ck12.org/) for any content you bundle or redistribute
+
+Bundled Academy PDFs under `athena/src-tauri/payload/Academy/` are **not** shipped by default; add `reader.pdf` / `lecture_guide.pdf` per unit only under licenses you are allowed to use.

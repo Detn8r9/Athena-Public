@@ -11,8 +11,7 @@ echo "[build_cross] ensuring sidecar binaries..."
 "$ROOT/ensure_sidecars.sh"
 
 echo "[build_cross] building x64 image from Dockerfile.cross..."
-# On Apple Silicon hosts, `docker build` defaults to linux/arm64.
-# We must build a linux/amd64 image here so linuxdeploy-x86_64.AppImage can run.
+# On Apple Silicon hosts, `docker build` defaults to linux/arm64; use linux/amd64 for x86_64 Linux builds.
 docker buildx build --platform linux/amd64 -f "$ROOT/Dockerfile.cross" -t "$IMAGE_X64:latest" --load "$ROOT"
 
 echo "[build_cross] building arm64 image from Dockerfile.cross.arm64..."
@@ -30,8 +29,6 @@ set -euo pipefail
 export PATH="/usr/local/cargo/bin:$PATH"
 export CI="true"
 export PKG_CONFIG_ALLOW_CROSS=1
- export APPIMAGE_EXTRACT_AND_RUN=1
-
 npm ci
 
 PAYLOAD="/workspace/athena/src-tauri/payload"
@@ -62,17 +59,25 @@ echo "[build_cross] note: Windows 32-bit GNU build removed (MSVC x64 only in thi
 # Windows ARM64: not produced in this image; leave payload/Windows/ARM or build separately.
 echo "[build_cross] note: Windows ARM binary not produced in this image; leave payload/Windows/ARM or build separately."
 
-# Linux x86_64 AppImage (bundling enabled for this target)
+# Linux x86_64: .deb + AppImage (NO_STRIP reduces linuxdeploy strip/subprocess issues in some containers)
 export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
 export APPIMAGE_EXTRACT_AND_RUN=1
-if npm run tauri build -- --target x86_64-unknown-linux-gnu --ci; then
+export NO_STRIP=1
+if npm run tauri build -- --target x86_64-unknown-linux-gnu --ci --bundles deb,appimage; then
   shopt -s nullglob
+  debs=(src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb)
+  if [[ ${#debs[@]} -gt 0 ]]; then
+    cp -f "${debs[0]}" "$PAYLOAD/Linux/64-bit/ATHENA_amd64.deb"
+    echo "[build_cross] copied Linux x86_64 .deb"
+  else
+    echo "[build_cross] warning: no .deb under bundle/deb; check tauri bundle targets"
+  fi
   imgs=(src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage)
   if [[ ${#imgs[@]} -gt 0 ]]; then
     cp -f "${imgs[0]}" "$PAYLOAD/Linux/64-bit/ATHENA.AppImage"
     echo "[build_cross] copied Linux x86_64 AppImage"
   else
-    echo "[build_cross] warning: no AppImage under bundle/appimage; check tauri bundle targets"
+    echo "[build_cross] warning: no AppImage under bundle/appimage"
   fi
 else
   echo "[build_cross] warning: x86_64-unknown-linux-gnu build failed"
@@ -93,14 +98,22 @@ export PATH="/usr/local/cargo/bin:$PATH"
 export CI="true"
 export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
 export APPIMAGE_EXTRACT_AND_RUN=1
+export NO_STRIP=1
 
 npm ci
 
 PAYLOAD="/workspace/athena/src-tauri/payload"
 mkdir -p "$PAYLOAD/Linux/ARM"
 
-if npm run tauri build -- --target aarch64-unknown-linux-gnu --ci; then
+if npm run tauri build -- --target aarch64-unknown-linux-gnu --ci --bundles deb,appimage; then
   shopt -s nullglob
+  adebs=(src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb)
+  if [[ ${#adebs[@]} -gt 0 ]]; then
+    cp -f "${adebs[0]}" "$PAYLOAD/Linux/ARM/ATHENA_arm64.deb"
+    echo "[build_cross] copied Linux aarch64 .deb"
+  else
+    echo "[build_cross] warning: no ARM .deb under bundle/deb"
+  fi
   aimgs=(src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage)
   if [[ ${#aimgs[@]} -gt 0 ]]; then
     cp -f "${aimgs[0]}" "$PAYLOAD/Linux/ARM/ATHENA.AppImage"

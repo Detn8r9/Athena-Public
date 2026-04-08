@@ -55,9 +55,10 @@ RUN printf '%s\n' \
 
 RUN cargo install cargo-xwin
 
-# Pre-fetch MSVC/Windows SDK for cargo-xwin and add mixed-case symlinks. The SDK ships
-# lowercase `directml.lib` / `pathcch.lib` and all-caps `DIRECTML.lib` aliases; `lld-link`
-# expects `DirectML.lib` and `PathCch.lib`, which must exist on case-sensitive Linux FS.
+# Pre-fetch MSVC/Windows SDK for cargo-xwin and add mixed-case symlinks.
+# DirectML and PathCch are user-mode (UM) libraries under sdk/lib/um/x86_64 — not kernel (KM).
+# The SDK ships lowercase `directml.lib` / `pathcch.lib`; `lld-link` often expects `DirectML.lib`
+# and `PathCch.lib` on case-sensitive Linux FS.
 RUN export PATH=/usr/local/cargo/bin:$PATH \
     && cargo xwin cache xwin \
     && cd /root/.cache/cargo-xwin/xwin/sdk/lib/um/x86_64 \

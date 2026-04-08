@@ -552,6 +552,13 @@ fn academy_get_curriculum() -> Result<academy::AcademyCurriculumRoot, String> {
 }
 
 #[tauri::command]
+fn academy_list_pdf_units(
+    app: tauri::AppHandle,
+) -> Result<Vec<academy::AcademyPdfUnit>, String> {
+    academy::list_pdf_units(&app)
+}
+
+#[tauri::command]
 fn academy_list_completed(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<AcademyProgressRow>, String> {
@@ -5195,6 +5202,7 @@ pub fn run() {
             academy_list_completed,
             academy_mark_lesson_complete,
             academy_get_lesson_html,
+            academy_list_pdf_units,
             calendar_list_events,
             calendar_upsert_event,
             calendar_delete_event,

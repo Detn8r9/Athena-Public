@@ -12,6 +12,7 @@ pub struct UsbDrive {
     pub name: String,
     pub mount_point: String,
     pub total_space: u64,
+    pub available_space: u64,
     pub device_path: String,
 }
 
@@ -44,6 +45,7 @@ pub fn get_available_usbs() -> Result<Vec<UsbDrive>, String> {
             name,
             mount_point: mount_str,
             total_space: disk.total_space(),
+            available_space: disk.available_space(),
             device_path,
         });
     }

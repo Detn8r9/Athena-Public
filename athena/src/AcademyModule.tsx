@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, Printer } from "lucide-react";
 
 interface AcademyLesson {
@@ -28,6 +28,16 @@ interface AcademyCurriculumRoot {
 interface AcademyLessonHtml {
   title: string;
   html: string;
+}
+
+interface AcademyPdfUnit {
+  id: string;
+  title: string;
+  grade: number;
+  subject: string;
+  tags: string[];
+  readerPath: string | null;
+  lecturePath: string | null;
 }
 
 type Nav =
@@ -89,6 +99,10 @@ export function AcademyModule() {
   const [studentHtml, setStudentHtml] = useState<string | null>(null);
   const [studentTitle, setStudentTitle] = useState<string>("");
   const [loadingUnit, setLoadingUnit] = useState(false);
+  const [source, setSource] = useState<"zim" | "pdf">("zim");
+  const [pdfUnits, setPdfUnits] = useState<AcademyPdfUnit[] | null>(null);
+  const [pdfNav, setPdfNav] = useState<AcademyPdfUnit | null>(null);
+  const [pdfErr, setPdfErr] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,6 +112,24 @@ export function AcademyModule() {
         if (!cancelled) setCurriculum(c);
       } catch (e) {
         if (!cancelled) setLoadErr(e != null ? String(e) : "Could not load curriculum.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await invoke<AcademyPdfUnit[]>("academy_list_pdf_units");
+        if (!cancelled) setPdfUnits(list);
+      } catch (e) {
+        if (!cancelled) {
+          setPdfErr(e != null ? String(e) : "Could not load PDF curriculum.");
+          setPdfUnits([]);
+        }
       }
     })();
     return () => {
@@ -209,7 +241,7 @@ export function AcademyModule() {
     win.print();
   }, [nav, studentHtml, teacherHtml, studentTitle]);
 
-  if (!curriculum) {
+  if (source === "zim" && !curriculum) {
     return (
       <div className="glass-panel app-view-placeholder" style={{ padding: "1rem" }}>
         <h2 className="app-view-placeholder-title">Academy</h2>
@@ -218,10 +250,110 @@ export function AcademyModule() {
     );
   }
 
+  if (source === "pdf") {
+    if (pdfUnits === null) {
+      return (
+        <div className="glass-panel app-view-placeholder" style={{ padding: "1rem" }}>
+          <h2 className="app-view-placeholder-title">Academy</h2>
+          <p className="text-muted">Loading PDF archive…</p>
+        </div>
+      );
+    }
+    if (pdfNav) {
+      const r = pdfNav.readerPath ? convertFileSrc(pdfNav.readerPath) : "";
+      const l = pdfNav.lecturePath ? convertFileSrc(pdfNav.lecturePath) : "";
+      return (
+        <div className="glass-panel app-view-placeholder" style={{ display: "grid", gap: "0.75rem", padding: "1rem" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <button type="button" className="secondary" onClick={() => setPdfNav(null)}>
+                <ArrowLeft size={16} strokeWidth={2} aria-hidden style={{ verticalAlign: "middle", marginRight: "0.35rem" }} />
+                Units
+              </button>
+              <span style={{ fontWeight: 700 }}>{pdfNav.title}</span>
+            </div>
+            <div style={{ display: "flex", gap: "0.35rem" }}>
+              <button type="button" className="secondary" onClick={() => { setSource("zim"); setPdfNav(null); }}>
+                ZIM lessons
+              </button>
+              <button type="button" className="glass-action-btn" onClick={() => setSource("pdf")}>
+                PDF archive
+              </button>
+            </div>
+          </div>
+          {pdfErr ? <p className="error">{pdfErr}</p> : null}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+            <div className="glass-panel" style={{ padding: 0, overflow: "hidden", minHeight: "55vh" }}>
+              <div style={{ padding: "0.5rem 0.75rem", fontWeight: 700, borderBottom: "1px solid var(--glass-border, rgba(255,255,255,0.12))" }}>Student Reader</div>
+              {r ? (
+                <iframe title="Student PDF" src={r} style={{ width: "100%", minHeight: "55vh", border: "none", display: "block", background: "#222" }} />
+              ) : (
+                <p className="text-muted" style={{ padding: "1rem" }}>Add <code>reader.pdf</code> to this unit folder.</p>
+              )}
+            </div>
+            <div className="glass-panel" style={{ padding: 0, overflow: "hidden", minHeight: "55vh" }}>
+              <div style={{ padding: "0.5rem 0.75rem", fontWeight: 700, borderBottom: "1px solid var(--glass-border, rgba(255,255,255,0.12))" }}>Teacher Lecture Guide</div>
+              {l ? (
+                <iframe title="Teacher PDF" src={l} style={{ width: "100%", minHeight: "55vh", border: "none", display: "block", background: "#222" }} />
+              ) : (
+                <p className="text-muted" style={{ padding: "1rem" }}>Add <code>lecture_guide.pdf</code> to this unit folder.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="glass-panel app-view-placeholder" style={{ display: "grid", gap: "0.75rem", padding: "1rem" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between" }}>
+          <h2 className="app-view-placeholder-title" style={{ margin: 0 }}>Academy</h2>
+          <div style={{ display: "flex", gap: "0.35rem" }}>
+            <button type="button" className="secondary" onClick={() => { setSource("zim"); setPdfNav(null); }}>
+              ZIM lessons
+            </button>
+            <button type="button" className="glass-action-btn" onClick={() => setSource("pdf")}>
+              PDF archive
+            </button>
+          </div>
+        </div>
+        {pdfErr ? <p className="error">{pdfErr}</p> : null}
+        <p className="text-muted" style={{ margin: 0 }}>
+          Bundled units under <code>payload/Academy</code>. Place <code>reader.pdf</code> and <code>lecture_guide.pdf</code> in each unit directory.
+        </p>
+        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.5rem" }}>
+          {pdfUnits.length === 0 ? (
+            <li className="text-muted">No units found. Add folders with metadata.json under payload/Academy.</li>
+          ) : (
+            pdfUnits.map((u) => (
+              <li key={u.id}>
+                <button type="button" className="glass-action-btn" style={{ width: "100%", justifyContent: "flex-start" }} onClick={() => setPdfNav(u)}>
+                  <span style={{ fontWeight: 600 }}>{u.title}</span>
+                  <span className="text-muted" style={{ marginLeft: "0.5rem" }}>
+                    {u.subject} · Grade {u.grade}
+                  </span>
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      </div>
+    );
+  }
+
   if (nav.level === "subjects") {
     return (
       <div className="glass-panel app-view-placeholder" style={{ display: "grid", gap: "0.75rem", padding: "1rem" }}>
-        <h2 className="app-view-placeholder-title">Academy</h2>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between" }}>
+          <h2 className="app-view-placeholder-title" style={{ margin: 0 }}>Academy</h2>
+          <div style={{ display: "flex", gap: "0.35rem" }}>
+            <button type="button" className="glass-action-btn" onClick={() => { setSource("zim"); setPdfNav(null); }}>
+              ZIM lessons
+            </button>
+            <button type="button" className="secondary" onClick={() => { setSource("pdf"); setNav({ level: "subjects" }); }}>
+              PDF archive
+            </button>
+          </div>
+        </div>
         <p className="text-muted" style={{ margin: 0 }}>
           Select a subject, then grade, then unit. Lessons are pulled from your offline ZIM library.
         </p>
@@ -247,12 +379,18 @@ export function AcademyModule() {
     const grades = gradesForSubject(nav.subjectId);
     return (
       <div className="glass-panel app-view-placeholder" style={{ display: "grid", gap: "0.75rem", padding: "1rem" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
-          <button type="button" className="secondary" onClick={() => setNav({ level: "subjects" })}>
-            <ArrowLeft size={16} strokeWidth={2} aria-hidden style={{ verticalAlign: "middle", marginRight: "0.35rem" }} />
-            Subjects
-          </button>
-          <span style={{ fontWeight: 700 }}>{nav.subjectLabel}</span>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+            <button type="button" className="secondary" onClick={() => setNav({ level: "subjects" })}>
+              <ArrowLeft size={16} strokeWidth={2} aria-hidden style={{ verticalAlign: "middle", marginRight: "0.35rem" }} />
+              Subjects
+            </button>
+            <span style={{ fontWeight: 700 }}>{nav.subjectLabel}</span>
+          </div>
+          <div style={{ display: "flex", gap: "0.35rem" }}>
+            <button type="button" className="glass-action-btn" onClick={() => { setSource("zim"); setPdfNav(null); }}>ZIM lessons</button>
+            <button type="button" className="secondary" onClick={() => { setSource("pdf"); setNav({ level: "subjects" }); }}>PDF archive</button>
+          </div>
         </div>
         <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.5rem" }}>
           {grades.map((g) => (
@@ -276,14 +414,20 @@ export function AcademyModule() {
     const units = unitsForSubjectGrade(nav.subjectId, nav.grade);
     return (
       <div className="glass-panel app-view-placeholder" style={{ display: "grid", gap: "0.75rem", padding: "1rem" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
-          <button type="button" className="secondary" onClick={() => setNav({ level: "grades", subjectId: nav.subjectId, subjectLabel: nav.subjectLabel })}>
-            <ArrowLeft size={16} strokeWidth={2} aria-hidden style={{ verticalAlign: "middle", marginRight: "0.35rem" }} />
-            Grades
-          </button>
-          <span style={{ fontWeight: 700 }}>
-            {nav.subjectLabel} · {nav.grade.label}
-          </span>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+            <button type="button" className="secondary" onClick={() => setNav({ level: "grades", subjectId: nav.subjectId, subjectLabel: nav.subjectLabel })}>
+              <ArrowLeft size={16} strokeWidth={2} aria-hidden style={{ verticalAlign: "middle", marginRight: "0.35rem" }} />
+              Grades
+            </button>
+            <span style={{ fontWeight: 700 }}>
+              {nav.subjectLabel} · {nav.grade.label}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: "0.35rem" }}>
+            <button type="button" className="glass-action-btn" onClick={() => { setSource("zim"); setPdfNav(null); }}>ZIM lessons</button>
+            <button type="button" className="secondary" onClick={() => { setSource("pdf"); setNav({ level: "subjects" }); }}>PDF archive</button>
+          </div>
         </div>
         <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.5rem" }}>
           {units.map((u) => (
@@ -328,10 +472,16 @@ export function AcademyModule() {
           </button>
           <span style={{ fontWeight: 700 }}>{studentTitle}</span>
         </div>
-        <button type="button" className="secondary" onClick={() => printPacket()} disabled={loadingUnit}>
-          <Printer size={16} strokeWidth={2} aria-hidden style={{ verticalAlign: "middle", marginRight: "0.35rem" }} />
-          Print packet
-        </button>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "0.35rem" }}>
+            <button type="button" className="glass-action-btn" onClick={() => { setSource("zim"); setPdfNav(null); }}>ZIM lessons</button>
+            <button type="button" className="secondary" onClick={() => { setSource("pdf"); setNav({ level: "subjects" }); }}>PDF archive</button>
+          </div>
+          <button type="button" className="secondary" onClick={() => printPacket()} disabled={loadingUnit}>
+            <Printer size={16} strokeWidth={2} aria-hidden style={{ verticalAlign: "middle", marginRight: "0.35rem" }} />
+            Print packet
+          </button>
+        </div>
       </div>
 
       {loadErr ? (

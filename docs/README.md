@@ -7,6 +7,11 @@ All paths below are relative to the **repository root** (parent of `athena/`).
 | Document | Contents |
 |----------|----------|
 | [`product/PLATFORM_COMPATIBILITY.md`](product/PLATFORM_COMPATIBILITY.md) | OS-specific behavior (device metrics, fullscreen, etc.) |
+| [`plans/omnibus-usb-export-plan.md`](plans/omnibus-usb-export-plan.md) | Omnibus export notes (portable/offline packaging) |
+
+## Resilience & offline readiness
+
+ATHENA includes a resilience layer that verifies required sidecars at launch, runs WAL + `PRAGMA integrity_check` against the station database, and exposes a Maintenance Mode screen that lists the exact failures to correct.
 
 ## Archived reference (not part of the build)
 
