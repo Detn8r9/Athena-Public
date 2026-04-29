@@ -29,6 +29,12 @@ npm run tauri build  # Release bundle
 npm run icon         # Regenerate squircle + platform icons from branding/athena-icon-square.png
 ```
 
+## Offline directions & Valhalla (optional)
+
+- **Geocoder**: Map → archives → **Routing (Valhalla)**: register a region, pick a Geofabrik (or other) `.osm.pbf`, and **Build / rebuild geocode index**. Place search in **Directions** then uses SQLite FTS5 (no network).
+- **Road / path routes**: Build Valhalla tiles for the same area and set **tiles path** on the region. **Start (Docker)** runs the sidecar in `docker/valhalla/docker-compose.valhalla.yml` (image `ghcr.io/gis-ops/docker-valhalla/valhalla`, port `8002`). **macOS** requires **Docker Desktop**; without Valhalla, the app still draws a **straight-line** fallback and shows distance.
+- PBFs are large (hundreds of MB) and **Valhalla tiles** can be multiple GB; plan disk space before building.
+
 ## IDE
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)

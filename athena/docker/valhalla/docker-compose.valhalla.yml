@@ -1,0 +1,24 @@
+# Valhalla HTTP sidecar (optional).
+# Preferred: mount a whole `custom_files` dir so the container can either:
+# - serve prebuilt tiles from `custom_files/valhalla_tiles`, OR
+# - build tiles from an `.osm.pbf` placed in `custom_files/` (image behavior).
+# See: https://github.com/valhalla/valhalla
+#
+# Run from this directory:
+#   VALHALLA_CUSTOM_FILES=/path/to/custom_files VALHALLA_PORT=8002 docker compose -f docker-compose.valhalla.yml up -d
+#
+# `custom_files` should contain:
+# - `valhalla_tiles/` (output tiles dir, may start empty)
+# - one `.osm.pbf` (to build tiles, optional if tiles already exist)
+#
+# The exact image and command may need adjustment for your OS; this is a reasonable default.
+services:
+  valhalla:
+    image: ghcr.io/gis-ops/docker-valhalla/valhalla:latest
+    ports:
+      - "${VALHALLA_PORT:-8002}:8002"
+    volumes:
+      - "${VALHALLA_CUSTOM_FILES}:/custom_files"
+    environment:
+      - use_tiles_only=1
+    restart: unless-stopped

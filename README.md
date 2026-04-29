@@ -13,15 +13,15 @@ The runnable app lives in the `athena/` directory (Tauri 2, React, Rust).
 - Serial “Comms” workspace for radio terminals and logging
 - Calendar (ICS import/export, templates, optional mesh-related flows)
 - Academy lessons, personnel roster / PIN login, Logistics Hub (inventory / supply) where enabled
-- Settings for themes, location context, backups, USB export, and diagnostics
+- Settings for themes, location context, backups, **Aegis Protocol** (tiered USB export), and diagnostics
 
 ## Resilience Layer (offline readiness)
 
 On startup, ATHENA performs a resilience check and can enter a non-destructive **Maintenance Mode** instead of crashing when required sidecars are missing or unhealthy (see backend diagnostics). SQLite uses **Write-Ahead Logging (WAL)** and an `integrity_check` on each start to reduce the risk of silent corruption after power loss.
 
-## Omnibus USB Export (tiered)
+## Aegis Protocol (tiered USB export)
 
-The Omnibus export supports three tiers:
+Aegis Protocol supports three tiers:
 
 - **Essentials**: small and fast — platform launchers from the bundled payload, a **25-mile PMTiles extract** centered on **Fairlee, VT** (43.908°N, 72.143°W), and a copy of the local **`athena_index.db`** when it exists (personnel / roster / library index). Does not copy embedding or reranker models or full document mirrors.
 - **Recommended**: copies embedding and reranker models, then **priority-based** payload packs until free space would drop below a **500MB** reserve.

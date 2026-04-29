@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { StationAiOperatorConsole } from "./StationAiOperatorConsole";
 import { Antenna, Cpu, Mic, RefreshCw, Waves } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { RequireClearance } from "./components/RequireClearance";
 
 export type HardwareStatus = {
   voiceDistance: boolean;
@@ -50,6 +52,9 @@ export function CommunicationsHub({ onOpenMesh, onOpenVoiceComms, meshEmergencyS
   const [status, setStatus] = useState<HardwareStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [distress, setDistress] = useState<Array<{ id: string; from: number; text: string; at: number }>>([]);
+  const [distressDraft, setDistressDraft] = useState("");
+  const [distressSending, setDistressSending] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -67,6 +72,53 @@ export function CommunicationsHub({ onOpenMesh, onOpenVoiceComms, meshEmergencyS
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    let un: UnlistenFn | undefined;
+    void listen<{ sender_id: number; text: string; channel?: number }>("athena:mesh-text", (ev) => {
+      const p = ev.payload;
+      if (!p || typeof p.sender_id !== "number" || typeof p.text !== "string") return;
+      const ch = typeof p.channel === "number" ? p.channel : 0;
+      if (ch !== 0) return;
+      const t = p.text.trim();
+      if (!t) return;
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setDistress((prev) => [...prev, { id, from: p.sender_id, text: t, at: Date.now() }].slice(-60));
+    }).then((fn) => {
+      un = fn;
+    });
+    return () => {
+      void un?.();
+    };
+  }, []);
+
+  const distressSummary = useMemo(() => {
+    if (distress.length === 0) return null;
+    const last = distress[distress.length - 1]!;
+    return `Distress (ch 0): last from node ${last.from} · ${last.text.length > 80 ? `${last.text.slice(0, 77)}…` : last.text}`;
+  }, [distress]);
+
+  const sendDistressReply = useCallback(async () => {
+    const text = distressDraft.trim();
+    if (!text || distressSending) return;
+    setDistressSending(true);
+    setDistressDraft("");
+    try {
+      await invoke("send_mesh_message", {
+        text,
+        channel: 0,
+        destinationNodeId: null,
+        wantAck: false,
+      });
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setDistress((prev) => [...prev, { id, from: 0, text: `REPLY: ${text}`, at: Date.now() }].slice(-60));
+    } catch (e) {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setDistress((prev) => [...prev, { id, from: 0, text: `Send failed: ${String(e)}`, at: Date.now() }].slice(-60));
+    } finally {
+      setDistressSending(false);
+    }
+  }, [distressDraft, distressSending]);
 
   const s = status;
 
@@ -101,6 +153,46 @@ export function CommunicationsHub({ onOpenMesh, onOpenVoiceComms, meshEmergencyS
             {meshEmergencyStrip}
           </p>
         ) : null}
+        {distressSummary ? (
+          <p className="communications-hub-mesh-emergency" role="alert" aria-live="polite">
+            {distressSummary}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="glass-panel" style={{ padding: "0.9rem 1rem", borderRadius: 14, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+          <h3 style={{ margin: 0 }}>Distress Monitor · Channel 0 (Open)</h3>
+          <span className="text-muted small">Pinned feed (always visible)</span>
+        </div>
+        <p className="text-muted small" style={{ marginTop: 6 }}>
+          This feed listens on Channel 0 for open distress calls. Replies from here are forced onto Channel 0 so Level 0 guests receive them.
+        </p>
+        <div style={{ display: "grid", gap: 8, maxHeight: 180, overflow: "auto", paddingRight: 4 }}>
+          {distress.length === 0 ? (
+            <div className="text-muted small">No Channel 0 distress traffic yet.</div>
+          ) : (
+            distress.map((m) => (
+              <div key={m.id} className="profile-activity-line">
+                <div className="text-muted small">
+                  {new Date(m.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })} · {m.from === 0 ? "This station" : `node ${m.from}`}
+                </div>
+                <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+              </div>
+            ))
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          <input
+            value={distressDraft}
+            onChange={(e) => setDistressDraft(e.target.value)}
+            placeholder="Reply on Channel 0 (open distress)…"
+            className="comms-hub-distress-input"
+          />
+          <button type="button" className="secondary" disabled={distressSending || !distressDraft.trim()} onClick={() => void sendDistressReply()}>
+            {distressSending ? "Sending…" : "Send"}
+          </button>
+        </div>
       </div>
 
       <div className="communications-hub-grid">
@@ -132,7 +224,13 @@ export function CommunicationsHub({ onOpenMesh, onOpenVoiceComms, meshEmergencyS
           connected={s?.broadcastRx === true}
           icon={<Waves size={22} strokeWidth={2} />}
           actions={
-            <span className="text-muted communications-hub-soon">Listen controls will appear here when hardware is ready.</span>
+            <RequireClearance required_level={2}>
+              {s?.broadcastRx ? (
+                <span className="text-muted">Receiver online. Tuner / preset controls are expected to ship with the SDR module release.</span>
+              ) : (
+                <span className="text-muted">No SDR or listen bridge detected. Connect supported hardware in Settings, then check status above.</span>
+              )}
+            </RequireClearance>
           }
         />
         <CapabilityCard

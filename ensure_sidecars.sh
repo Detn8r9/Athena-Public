@@ -9,7 +9,7 @@ TAURI_CONF="$TAURI_DIR/tauri.conf.json"
 
 mkdir -p "$BIN_DIR"
 
-echo "Starting Omnibus Protocol Sidecar Verification..."
+echo "Starting Aegis Protocol Sidecar Verification..."
 
 if [ ! -f "$TAURI_CONF" ]; then
   echo "[ERROR] Missing tauri config: $TAURI_CONF"
@@ -157,6 +157,33 @@ ensure_pdftoppm() {
   fi
 }
 
+ensure_kiwix_serve() {
+  # Tauri externalBin requires a kiwix-serve per target triple; fetch script is idempotent.
+  if [ ! -f "$TAURI_DIR/scripts/fetch_kiwix_serve.sh" ]; then
+    echo "[ERROR] Missing $TAURI_DIR/scripts/fetch_kiwix_serve.sh"
+    exit 1
+  fi
+  bash "$TAURI_DIR/scripts/fetch_kiwix_serve.sh"
+  cd "$BIN_DIR" || exit 1
+  local missing=0
+  for f in \
+    "kiwix-serve-aarch64-apple-darwin" \
+    "kiwix-serve-x86_64-unknown-linux-gnu" \
+    "kiwix-serve-aarch64-unknown-linux-gnu" \
+    "kiwix-serve-x86_64-pc-windows-msvc.exe"
+  do
+    if [ ! -f "$f" ]; then
+      echo "[ERROR] Missing $f after fetch_kiwix_serve.sh"
+      missing=1
+    else
+      echo "[OK] $f"
+    fi
+  done
+  if [ "$missing" -ne 0 ]; then
+    exit 1
+  fi
+}
+
 ensure_ollama() {
   local ver="v0.20.3"
   if [ ! -f "$TAURI_DIR/ollama-x86_64-pc-windows-msvc.exe" ]; then
@@ -181,6 +208,10 @@ fi
 
 if need_bin "bin/pdftoppm"; then
   ensure_pdftoppm
+fi
+
+if need_bin "bin/kiwix-serve"; then
+  ensure_kiwix_serve
 fi
 
 if need_bin "ollama"; then

@@ -12,10 +12,15 @@ import { MeshRadioModal, type MeshRadioMessage } from "./MeshRadioModal";
 import { MeshChatView } from "./MeshChatView";
 import { MeshNetworkHubView } from "./MeshNetworkHubView";
 import { ExportModal, type ExportTier } from "./ExportModal";
+import type { AegisExportProgress, AegisIoHistories } from "./AegisExportIoPanel";
 import { MapView, type MapBasemap, type TacticalMapMeshNodeLocation, type TacticalMapPointOfInterest } from "./features/map/MapView";
-import { defaultTacticalLayerVisibilityState, type TacticalLayerVisibilityState } from "./features/map/TacticalSidebar";
+import {
+  defaultTacticalLayerVisibilityState,
+  mergeTacticalLayerVisibility,
+  type TacticalLayerVisibilityState,
+} from "./features/map/TacticalSidebar";
+import { GuestDashboard } from "./components/GuestDashboard";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { OfflineMapManagerDashboard } from "./features/map/OfflineMapManagerDashboard";
 import { registerPmtilesMaplibreProtocolOnce } from "./maplibrePmtilesProtocolRegistration";
 import { evaluateMainChatWatchdog } from "./streamWatchdog";
 import { appendMeshMessageCapped } from "./meshMessageLog";
@@ -28,6 +33,8 @@ import { useAuth } from "./auth/AuthContext";
 import { LockScreen } from "./LockScreen";
 import { LogisticsLogbookHub } from "./LogisticsLogbookHub";
 import { PersonnelHub } from "./PersonnelHub";
+import { OrgChart } from "./components/OrgChart";
+import { PersonnelProfileModal } from "./components/PersonnelProfileModal";
 import { DashboardView, type DashboardDestination } from "./DashboardView";
 import { usePageVisible } from "./usePageVisible";
 import { CalendarView } from "./CalendarView";
@@ -89,23 +96,7 @@ function readTacticalMapLayerVisibilityFromStorage(): TacticalLayerVisibilitySta
       return defaultTacticalLayerVisibilityState;
     }
     const parsed = JSON.parse(raw) as Partial<TacticalLayerVisibilityState>;
-    return {
-      activeFamily: parsed.activeFamily ?? defaultTacticalLayerVisibilityState.activeFamily,
-      network: {
-        nodes: parsed.network?.nodes ?? defaultTacticalLayerVisibilityState.network.nodes,
-        coverageCircles:
-          parsed.network?.coverageCircles ?? defaultTacticalLayerVisibilityState.network.coverageCircles,
-        links: parsed.network?.links ?? defaultTacticalLayerVisibilityState.network.links,
-      },
-      resources: {
-        power: parsed.resources?.power ?? defaultTacticalLayerVisibilityState.resources.power,
-        water: parsed.resources?.water ?? defaultTacticalLayerVisibilityState.resources.water,
-        food: parsed.resources?.food ?? defaultTacticalLayerVisibilityState.resources.food,
-        equipment:
-          parsed.resources?.equipment ?? defaultTacticalLayerVisibilityState.resources.equipment,
-      },
-      customPins: parsed.customPins ?? defaultTacticalLayerVisibilityState.customPins,
-    };
+    return mergeTacticalLayerVisibility(parsed);
   } catch {
     return defaultTacticalLayerVisibilityState;
   }
@@ -779,11 +770,11 @@ function App() {
   const [streamStallMessage, setStreamStallMessage] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [offlineMapManagerOpen, setOfflineMapManagerOpen] = useState(false);
   const [archivePrimaryTab, setArchivePrimaryTab] = useState<ArchivePrimaryTabId>("local");
   const [archiveNetworkSubTab, setArchiveNetworkSubTab] = useState<ArchiveNetworkSubTabId>("packages");
   const [meshOpen, setMeshOpen] = useState(false);
   const [meshMessages, setMeshMessages] = useState<MeshRadioMessage[]>([]);
+  const [profilePersonnelId, setProfilePersonnelId] = useState<string | null>(null);
   const [kiwixSearchOpen, setKiwixSearchOpen] = useState(false);
   const [chatsOpen, setChatsOpen] = useState(true);
   const [watchFolder, setWatchFolder] = useState<string | null>(null);
@@ -888,7 +879,9 @@ function App() {
   const [usbExportStatus, setUsbExportStatus] = useState<string | null>(null);
   const [usbScorchedEarth, setUsbScorchedEarth] = useState(false);
   const [usbExportModalOpen, setUsbExportModalOpen] = useState(false);
-  const [usbExportModalKind, setUsbExportModalKind] = useState<ExportTier>("essentials");
+  const [usbExportModalKind, setUsbExportModalKind] = useState<ExportTier>("outpost");
+  const [usbExportProgress] = useState<AegisExportProgress | null>(null);
+  const [usbExportIoHistories] = useState<AegisIoHistories>({ read: [], write: [] });
   type SettingsPanel =
     | "menu"
     | "me"
@@ -941,16 +934,20 @@ function App() {
     setUsbExportBusy(true);
     setUsbExportStatus(
       usbScorchedEarth
-        ? exportType === "essentials"
-          ? "Copying app and proximity map, then verifying…"
-          : exportType === "recommended"
-            ? "Copying app, models, and priority payload, then verifying…"
-            : "Copying everything (absolute), then verifying…"
-        : exportType === "essentials"
-          ? "Copying app and proximity map…"
-          : exportType === "recommended"
-            ? "Copying app, models, and priority payload…"
-            : "Copying everything (absolute)…",
+        ? exportType === "outpost"
+          ? "Copying Outpost tier, then verifying…"
+          : exportType === "bastion"
+            ? "Copying Bastion tier, then verifying…"
+            : exportType === "citadel"
+              ? "Copying Citadel tier, then verifying…"
+              : "Copying Expedition tier, then verifying…"
+        : exportType === "outpost"
+          ? "Copying Outpost tier…"
+          : exportType === "bastion"
+            ? "Copying Bastion tier…"
+            : exportType === "citadel"
+              ? "Copying Citadel tier…"
+              : "Copying Expedition tier…",
     );
     try {
       await invoke("export_athena_to_usb", {
@@ -3274,18 +3271,22 @@ function App() {
   }, [settingsOpen, settingsPanel]);
 
   useEffect(() => {
-    const unlisten = listen<{ sender_id: number; text: string }>("athena:mesh-text", (event) => {
-      const p = event.payload;
-      if (p && typeof p.sender_id === "number" && typeof p.text === "string") {
-        if (p.text.trimStart().startsWith("ATHLB1:")) {
-          return;
+    const unlisten = listen<{ sender_id: number; text: string; channel?: number }>(
+      "athena:mesh-text",
+      (event) => {
+        const p = event.payload;
+        if (p && typeof p.sender_id === "number" && typeof p.text === "string") {
+          if (p.text.trimStart().startsWith("ATHLB1:")) return;
+          const ch = typeof p.channel === "number" ? p.channel : 0;
+          // Main ops view is channel 1; channel 0 is handled by the dedicated distress UI.
+          if (ch !== 1) return;
+          const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          setMeshMessages((prev) =>
+            appendMeshMessageCapped(prev, { id, senderId: p.sender_id, text: p.text, at: Date.now(), channel: ch }),
+          );
         }
-        const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        setMeshMessages((prev) =>
-          appendMeshMessageCapped(prev, { id, senderId: p.sender_id, text: p.text, at: Date.now() }),
-        );
-      }
-    });
+      },
+    );
     return () => {
       unlisten.then((fn) => fn());
     };
@@ -3305,7 +3306,7 @@ function App() {
           const line = `${tag} Node ${p.node_id}: ${preview}`;
           const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
           setMeshMessages((prev) =>
-            appendMeshMessageCapped(prev, { id, senderId: p.node_id, text: line, at: Date.now() }),
+            appendMeshMessageCapped(prev, { id, senderId: p.node_id, text: line, at: Date.now(), channel: 1 }),
           );
           if (typeof Notification !== "undefined" && Notification.permission === "granted") {
             try {
@@ -4695,6 +4696,8 @@ ${tag}` : tag;
     >
       {!user ? (
         <LockScreen />
+      ) : ((user.clearance_level ?? user.rank_level ?? 0) <= 0) ? (
+        <GuestDashboard />
       ) : (
       <>
       <div className="app-shell">
@@ -4715,6 +4718,7 @@ ${tag}` : tag;
           headerDownloadBar={headerDownloadBar}
           ingestionState={ingestionState}
           authRank={user.rank_level}
+          authClearance={user.clearance_level ?? user.rank_level ?? 0}
           onLogout={logout}
           aiInferenceSleep={aiInferenceSleep}
           onToggleAiInferenceSleep={toggleAiInferenceSleep}
@@ -5634,13 +5638,14 @@ ${tag}` : tag;
                 onSatelliteRegionDownloaded={handleMapSatelliteDownloaded}
                 mapCenter={mapViewCenter}
                 mapZoom={mapViewZoom}
-                onOpenOfflineMapManager={() => setOfflineMapManagerOpen(true)}
                 tacticalPointsOfInterest={tacticalMapPoints}
                 tacticalMeshNodeLocations={tacticalMapNodes}
                 onReloadTacticalMapLayers={reloadTacticalMapLayers}
                 onAddTacticalPoiPin={handleAddTacticalPoiPin}
                 tacticalLayerVisibility={tacticalMapLayerVisibility}
                 onTacticalLayerVisibilityChange={setTacticalMapLayerVisibility}
+                enabledMainMapRasterArchiveFileNames={enabledArchiveRasterFileNames}
+                onMainMapArchiveRasterLayersChange={handleMainMapArchiveRasterLayersChange}
               />
             </ErrorBoundary>
           ) : null}
@@ -5688,7 +5693,10 @@ ${tag}` : tag;
                 formatBytes,
                 formatLibraryFileSizeBytes,
                 onDownloadMap: handleDownloadMap,
-                onOpenMapFileManager: () => setOfflineMapManagerOpen(true),
+                onOpenMapFileManager: () => {
+                  // Map archives now live under Map → Layers (gear).
+                  setCurrentView("map");
+                },
                 onOpenOfflineMapSettings: () => {
                   setSettingsOpen(true);
                   goToSettingsSubpanel("maps");
@@ -5759,9 +5767,26 @@ ${tag}` : tag;
               }}
             />
           ) : null}
-          {currentView === "personnel" ? <PersonnelHub /> : null}
+          {currentView === "personnel" ? (
+            <PersonnelHub
+              onOpenOrgChart={() => setCurrentView("org_chart")}
+              onOpenProfile={(id) => setProfilePersonnelId(id)}
+            />
+          ) : null}
+          {currentView === "org_chart" ? (
+            <OrgChart
+              onBack={() => setCurrentView("personnel")}
+              onOpenProfile={(id) => setProfilePersonnelId(id)}
+            />
+          ) : null}
         </div>
       </div>
+      <PersonnelProfileModal
+        open={profilePersonnelId != null}
+        personnelId={profilePersonnelId}
+        onClose={() => setProfilePersonnelId(null)}
+        onOpenPersonnel={(id) => setProfilePersonnelId(id)}
+      />
       {birthdayModalVisible && (
         <div
           className="birthday-modal-backdrop"
@@ -6046,7 +6071,7 @@ ${tag}` : tag;
                                 : settingsPanel === "troubleshooting"
                                   ? lx.settingsPanelTroubleshooting
                                   : settingsPanel === "usbExport"
-                                    ? lx.settingsPanelUsbExport
+                                    ? lx.settingsNavUsbExport
                                     : lx.settingsPanelDeveloper}
               </h2>
               <button
@@ -6118,7 +6143,7 @@ ${tag}` : tag;
                   </button>
                 </div>
                 <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">{lx.settingsNavGroupMapsRadio}</span>
+                  <span className="settings-nav-group-label">{lx.settingsNavGroupRadioVoice}</span>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("location")}>
                     <span className="settings-nav-label">{lx.settingsNavLocation}</span>
                     <span className="text-muted">{lx.settingsNavLocationDesc}</span>
@@ -8338,7 +8363,7 @@ ${tag}` : tag;
                     className="secondary"
                     disabled={usbExportBusy}
                     onClick={() => {
-                      setUsbExportModalKind("essentials");
+                      setUsbExportModalKind("outpost");
                       setUsbExportModalOpen(true);
                     }}
                   >
@@ -8349,7 +8374,7 @@ ${tag}` : tag;
                     className="secondary"
                     disabled={usbExportBusy}
                     onClick={() => {
-                      setUsbExportModalKind("recommended");
+                      setUsbExportModalKind("bastion");
                       setUsbExportModalOpen(true);
                     }}
                   >
@@ -8360,7 +8385,7 @@ ${tag}` : tag;
                     className="secondary"
                     disabled={usbExportBusy}
                     onClick={() => {
-                      setUsbExportModalKind("absolute");
+                      setUsbExportModalKind("citadel");
                       setUsbExportModalOpen(true);
                     }}
                   >
@@ -8601,16 +8626,6 @@ ${tag}` : tag;
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
 
-      <OfflineMapManagerDashboard
-        open={offlineMapManagerOpen}
-        onClose={() => setOfflineMapManagerOpen(false)}
-        savedUserLocationAddress={userLocationAddress}
-        tileGeocodeOverride={tileGeocodeQuery}
-        tileRadiusMiles={tileRadiusMiles}
-        enabledMainMapRasterArchiveFileNames={enabledArchiveRasterFileNames}
-        onMainMapArchiveRasterLayersChange={handleMainMapArchiveRasterLayersChange}
-      />
-
       {meshOpen && (
         <MeshRadioModal open={meshOpen} onClose={() => setMeshOpen(false)} messages={meshMessages} />
       )}
@@ -8625,6 +8640,8 @@ ${tag}` : tag;
         scorchedEarth={usbScorchedEarth}
         onScorchedEarthChange={setUsbScorchedEarth}
         busy={usbExportBusy}
+        exportProgress={usbExportProgress}
+        exportIoHistories={usbExportIoHistories}
         status={usbExportStatus}
         onStartExport={({ destinationPath, devicePath, formatFirst, exportType }) => {
           setUsbExportModalKind(exportType);

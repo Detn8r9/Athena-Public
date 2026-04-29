@@ -19,6 +19,7 @@ import {
   Users,
 } from "lucide-react";
 import { CommsHubIcon } from "./shared/CommsHubIcon";
+import { NotificationsCenter } from "./components/NotificationsCenter";
 
 export type UniversalHeaderBatteryState = {
   percentage: number | null;
@@ -58,6 +59,7 @@ export interface UniversalHeaderProps {
   headerDownloadBar: HeaderDownloadBarState | null;
   ingestionState: UniversalHeaderIngestionState | null;
   authRank: number;
+  authClearance: number;
   onLogout: () => void | Promise<void>;
   /** When true, local chat / Help AI are paused; mesh /ai queue may still run but auto-reply is off in minimal mode. */
   aiInferenceSleep: boolean;
@@ -81,6 +83,7 @@ export function UniversalHeader({
   headerDownloadBar,
   ingestionState,
   authRank,
+  authClearance,
   onLogout,
   aiInferenceSleep,
   onToggleAiInferenceSleep,
@@ -210,6 +213,7 @@ export function UniversalHeader({
           ) : null}
         </div>
         <div className="universal-header-right">
+          {authClearance >= 4 ? <NotificationsCenter /> : null}
           <button
             type="button"
             className={viewButtonClass(currentView === "chat")}
@@ -288,15 +292,17 @@ export function UniversalHeader({
             <CalendarDays size={18} strokeWidth={2} aria-hidden className="universal-header-calendar-merge-icon" />
             <span className="universal-header-calendar-merge-text">{calendarDateTimeLabel}</span>
           </button>
-          <button
-            type="button"
-            className="universal-header-icon-btn"
-            onClick={onOpenSettings}
-            title={lx.navSettings}
-            aria-label={lx.navSettings}
-          >
-            <Settings size={22} strokeWidth={2} aria-hidden />
-          </button>
+          {authClearance >= 1 ? (
+            <button
+              type="button"
+              className="universal-header-icon-btn"
+              onClick={onOpenSettings}
+              title={lx.navSettings}
+              aria-label={lx.navSettings}
+            >
+              <Settings size={22} strokeWidth={2} aria-hidden />
+            </button>
+          ) : null}
           <button
             type="button"
             className="universal-header-icon-btn"

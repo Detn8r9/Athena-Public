@@ -8,6 +8,27 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("react-dom") || id.includes("/react/") || id.includes("\\react\\")) {
+            return "vendor-react";
+          }
+          if (id.includes("maplibre") || id.includes("pmtiles")) {
+            return "vendor-map";
+          }
+          if (id.includes("pdf-lib")) {
+            return "vendor-pdf";
+          }
+          if (id.includes("lucide-react")) {
+            return "vendor-icons";
+          }
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     globals: false,

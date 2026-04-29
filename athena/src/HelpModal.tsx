@@ -65,7 +65,7 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
         id: "home",
         label: lx.helpTopicHomeLabel,
         blurb: lx.helpTopicHomeBlurb,
-        keywords: ["dashboard", "launcher", "system"],
+        keywords: ["dashboard", "launcher", "system", "academy", "knowledge catalog", "pdf"],
       },
       {
         id: "calendar",
@@ -77,7 +77,7 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
         id: "tactical_map",
         label: lx.helpTopicTacticalMapLabel,
         blurb: lx.helpTopicTacticalMapBlurb,
-        keywords: ["map", "pin", "tactical", "poi", "mesh", "leaflet"],
+        keywords: ["map", "pin", "tactical", "poi", "mesh", "maplibre"],
       },
       {
         id: "maps_offline",
@@ -131,7 +131,22 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
         id: "settings",
         label: lx.helpTopicSettingsLabel,
         blurb: lx.helpTopicSettingsBlurb,
-        keywords: ["preferences", "theme", "watch folder", "location", "api key", "usb", "export", "backup"],
+        keywords: [
+          "preferences",
+          "theme",
+          "theme studio",
+          "watch folder",
+          "location",
+          "api key",
+          "aegis",
+          "usb",
+          "export",
+          "backup",
+          "scorched earth",
+          "format drive",
+          "quiet hours",
+          "date time",
+        ],
       },
       {
         id: "personnel_hub",
@@ -344,7 +359,7 @@ function PersonnelHubPanel() {
           <strong>Logistics Hub</strong> — Inventory and supply workflows for tracked items and logs; open it from the header or dashboard when your rank allows.
         </li>
         <li>
-          Changes apply to this installation&apos;s database; back up before bulk edits (see Settings → backup / USB export).
+          Changes apply to this installation&apos;s database; back up before bulk edits (see Settings → USB export / Aegis Protocol).
         </li>
       </ul>
     </>
@@ -366,8 +381,9 @@ function OverviewPanel() {
       <h4>Portable install (USB)</h4>
       <p>
         If you place a folder named <code>data</code> next to the ATHENA app (for example on a USB stick), the app can run in{" "}
-        <strong>portable mode</strong> and keep settings and indexes on that drive. Use <strong>Settings → Backup &amp; help → USB export</strong>{" "}
-        to copy the app and a full <code>data</code> tree to a flash drive; optional whole-disk formatting is available on macOS when you pick a drive in the export dialog.
+        <strong>portable mode</strong> and keep settings and indexes on that drive. Use{" "}
+        <strong>Settings → Backup &amp; diagnostics → USB export</strong> to open <strong>Aegis Protocol</strong>: choose an export tier and
+        destination drive; optional whole-disk formatting is available on macOS from that dialog.
       </p>
       <h4>Login</h4>
       <p>
@@ -389,9 +405,11 @@ function OverviewPanel() {
         </li>
         <li>
           <strong>The Archive</strong> (Home → The Archive): downloads bundled <em>tiers</em> (e.g. Wikipedia Simple English
-          plus US state <strong>Protomaps</strong> extracts) into that same watch folder. The first time you open it, set a{" "}
-          <strong>US download-area pin</strong> (default suggestion New York City, or geocode your town). That pin picks your home state
-          map and can add neighboring states when you are near a border—separate from the chat <strong>Location</strong> field in Settings.
+          plus US state <strong>Protomaps</strong> extracts) into that same watch folder. Filter <strong>Local Archive</strong> and the
+          download network by Packages, Documents, Maps, and <strong>Academy</strong> (curriculum ZIMs and related payloads land under{" "}
+          <code>library/academy/</code> when you install them). The first time you open it, set a <strong>US download-area pin</strong>{" "}
+          (default suggestion New York City, or geocode your town). That pin picks your home state map and can add neighboring states when
+          you are near a border—separate from the chat <strong>Location</strong> field in Settings.
         </li>
       </ul>
       <h4>How answers are built</h4>
@@ -556,8 +574,9 @@ function HeaderPanel() {
           <strong>Meshtastic</strong> topic in this help for detail.
         </li>
         <li>
-          <strong>Settings</strong> — Organized into profile, AI, maps and devices, look &amp; feel (window, themes), and backup &amp; help
-          (error log, USB export). <strong>General → About ATHENA</strong> spells out the acronym.
+          <strong>Settings</strong> — Grouped menu: account &amp; calendar, AI, location &amp; maps, radio &amp; voice, look &amp; feel
+          (window, themes, Theme studio), and backup &amp; diagnostics (error log, USB / <strong>Aegis Protocol</strong>).{" "}
+          <strong>General → About ATHENA</strong> spells out the acronym.
         </li>
         <li>
           <strong>Help</strong> — This guide.
@@ -591,7 +610,8 @@ function LibraryPanel() {
       <p>
         <strong>Download more data</strong> (in the Files section) opens the <strong>Offline ZIM (Kiwix)</strong> dialog: link to
         the Kiwix Library site, then place <code>.zim</code> files inside your library folder and use{" "}
-        <strong>Scan for Local Files</strong> to discover them.
+        <strong>Scan for Local Files</strong> to discover them. Academy and curriculum ZIMs installed via <strong>The Archive</strong>{" "}
+        often land under <code>library/academy/</code>; they are indexed like other library files.
       </p>
       <h4>Indexing</h4>
       <p>
@@ -649,10 +669,10 @@ function SettingsPanel() {
     <>
       <h3 className="help-detail-title">Settings</h3>
       <p>
-        Open <strong>Settings</strong> from the gear icon. The menu is grouped so you can scan top to bottom: <strong>Profile &amp; Calendar</strong>{" "}
-        (who you are and dates), <strong>AI &amp; Knowledge</strong> (models and keys), <strong>Maps, Radio &amp; Devices</strong> (where you are,
-        offline maps, mesh, voice), <strong>Look &amp; feel</strong> (fullscreen, themes), and <strong>Backup &amp; help</strong> (troubleshooting
-        and copying ATHENA to a USB drive).
+        Open <strong>Settings</strong> from the gear icon. The main menu is grouped with dividers: <strong>General &amp; calendar</strong>{" "}
+        (identity and schedule), <strong>AI &amp; Knowledge</strong>, <strong>Location &amp; maps</strong>, <strong>Radio &amp; voice</strong>,{" "}
+        <strong>Look &amp; feel</strong>, and <strong>Backup &amp; diagnostics</strong>. The top <strong>Me</strong> card jumps straight to your
+        operator profile (login name, PIN, display name, rank).
       </p>
       <h4>About ATHENA</h4>
       <p className="text-muted">
@@ -667,8 +687,15 @@ function SettingsPanel() {
           <strong>About ATHENA</strong> — Official acronym expansion and what each letter emphasizes in this app.
         </li>
         <li>
-          <strong>Me / roster</strong> — When personnel login is enabled, you can adjust how your name appears to the roster and change
-          your PIN from the signed-in profile area; administrators manage other accounts from the Personnel hub.
+          <strong>Default startup page</strong> — Which screen (Chat, Home, etc.) opens when you launch the app after login.
+        </li>
+        <li>
+          <strong>System maintenance</strong> — Backup or restore the local index database; export serial <strong>Comms</strong> logs as CSV
+          via the system file dialog.
+        </li>
+        <li>
+          <strong>Me</strong> (nav card) — Lock screen <strong>login name</strong>, <strong>PIN</strong>, roster display name, and rank
+          summary; save changes from this pane.
         </li>
         <li>
           <strong>User profile</strong> — Optional display name (used in AI context) and birthdate (stored only on this device). At age
@@ -680,6 +707,18 @@ function SettingsPanel() {
         </li>
         <li>
           <strong>Device stats overlay</strong> — Optional small CPU/RAM/network readout in the corner.
+        </li>
+      </ul>
+
+      <h4>Calendar &amp; Date &amp; Time</h4>
+      <ul>
+        <li>
+          <strong>Calendar</strong> — Holiday region, reminders, event templates, and <strong>ICS</strong> import/export. Mesh-related
+          calendar options appear when your build exposes them.
+        </li>
+        <li>
+          <strong>Date &amp; Time</strong> — 12- or 24-hour clock display and <strong>quiet hours</strong> so reminder notifications
+          respect local sleep windows.
         </li>
       </ul>
 
@@ -697,7 +736,18 @@ function SettingsPanel() {
           past messages to include; <strong>maximum</strong> context scales with this device&apos;s RAM. Hardware estimate when available.
         </li>
         <li>
+          <strong>Personality &amp; style</strong> — Assistant tone presets tied to themes when available.
+        </li>
+        <li>
           <strong>Library citations</strong> — Toggle &quot;From your library&quot; under assistant messages.
+        </li>
+      </ul>
+
+      <h4>API keys</h4>
+      <ul>
+        <li>
+          <strong>API keys</strong> — Separate panel for provider keys (e.g. geocoding or map tile APIs when your build uses them). Values
+          stay on this device; only features you trigger send requests.
         </li>
       </ul>
 
@@ -709,18 +759,21 @@ function SettingsPanel() {
           <strong>The Archive</strong> regional-maps pin.
         </li>
         <li>
-          <strong>Offline maps</strong> — Tactical basemap packs, Kiwix regional map ZIMs, imports. Does not replace Archive tier
-          downloads; use <strong>Home → The Archive</strong> for Satchel / Vault / Alexandria packages.
+          <strong>Offline maps</strong> — Tactical basemap packs, Kiwix regional map ZIMs, imports, and the <strong>offline map manager</strong>{" "}
+          when present. Does not replace Archive tier downloads; use <strong>Home → The Archive</strong> for bundled packages and US state{" "}
+          Protomaps. Turn on <strong>Maps</strong> under Location to show the tactical map icon in the header.
         </li>
       </ul>
 
-      <h4>Mesh &amp; voice</h4>
+      <h4>Radio &amp; voice</h4>
       <ul>
         <li>
-          <strong>Meshtastic auto-reply</strong> — AI replies over USB mesh when Ollama is running.
+          <strong>Mesh</strong> — Meshtastic USB detection, channel/signup phrase, and <strong>auto-reply to mesh</strong> (Ollama-powered
+          replies as DMs). The header mesh panel and <strong>Mesh network</strong> inbox use these settings.
         </li>
         <li>
-          <strong>Text-to-speech</strong> — Read replies aloud; voice presets when available.
+          <strong>Voice</strong> — Text-to-speech: read replies aloud and voice presets when your build exposes them. (Microphone /
+          conversation features, when enabled, live under <strong>Tools</strong> in chat—see the Chat topic.)
         </li>
       </ul>
 
@@ -730,17 +783,33 @@ function SettingsPanel() {
           <strong>Window &amp; Display</strong> — Fullscreen, night vision, and related display options.
         </li>
         <li>
-          <strong>Themes &amp; Colors</strong> — Presets, <strong>personality</strong>, custom themes, and color tuning.
+          <strong>Themes &amp; Colors</strong> — Presets, <strong>personality</strong>, palette controls, and <strong>custom themes</strong>.
+        </li>
+        <li>
+          <strong>Theme studio</strong> — Create or edit named themes (colors, scanlines, vignette, grain, corner style). New themes appear
+          under Themes &amp; Colors after you save.
         </li>
       </ul>
 
-      <h4>Backup &amp; help</h4>
+      <h4>Backup &amp; diagnostics</h4>
       <ul>
         <li>
-          <strong>Troubleshooting</strong> — Error log you can copy when reporting a problem; shortcuts to Library and Help.
+          <strong>Troubleshooting</strong> — Error log you can copy when reporting a problem; shortcuts to Library and Help; optional
+          diagnostics exports when your build includes them.
         </li>
         <li>
-          <strong>USB export</strong> — Opens a dialog that lists removable drives detected on this computer. Choose essentials (app + core models) or a full archive (includes database and library copies when available). You can optionally <strong>format</strong> the entire drive first on macOS (erases everything on that disk). <strong>Scorched Earth</strong> in the same dialog wipes local data only after a successful export—read the confirmation text carefully.
+          <strong>USB export</strong> — Opens <strong>Aegis Protocol</strong> immediately (no extra menu). Choose a{" "}
+          <strong>tier</strong> — <em>Essentials</em> (compact portable pack and proximity map extract), <em>Recommended</em> (adds models and
+          priority payload fill to a free-space target), or <em>Absolute</em> (attempts full payload and library mirrors)—then pick a
+          detected removable drive. The dialog warns if <strong>free space</strong> is below the minimum for the selected tier.
+        </li>
+        <li>
+          <strong>Format drive</strong> (macOS only) — Optional whole-disk erase as ExFAT labeled ATHENA before copy; requires a resolvable
+          raw device path for the volume.
+        </li>
+        <li>
+          <strong>Scorched Earth</strong> — Shown in <strong>red</strong> in the dialog. When enabled, local intelligence and documents can
+          be wiped <em>after</em> a successful export; confirmations are explicit and irreversible.
         </li>
       </ul>
 
@@ -792,7 +861,13 @@ function HomePanel() {
       </p>
       <ul>
         <li>
-          <strong>Academy</strong> (when shown on your dashboard) opens guided lessons inside the app—work through them at your own pace alongside Chat and the Archive.
+          <strong>Academy</strong> (when shown on your dashboard) opens guided lessons inside the app—structured modules, optional PDF-style
+          units when your build includes them, and links into The Archive for curriculum ZIMs and payloads under{" "}
+          <code>library/academy/</code>.
+        </li>
+        <li>
+          <strong>Knowledge catalog</strong> — Browse bundled reference and installable packages from the dashboard when available; it
+          complements Chat and The Archive rather than replacing your Library watch folder.
         </li>
         <li>
           <strong>Calendar</strong> opens the schedule workspace (events, ICS, reminders)—see the Calendar topic in Help.
@@ -838,10 +913,10 @@ function TacticalMapPanel() {
           <strong>Custom</strong> — Full Lucide library plus search—pick any icon when the presets don&apos;t fit.
         </li>
       </ul>
-      <h4>Sidebar &amp; layers</h4>
+      <h4>Overlays &amp; layers</h4>
       <p>
-        Use the tactical sidebar to toggle visibility, focus layers, and manage POIs. Mesh overlays (when connected) show node
-        positions on the map where supported by your build.
+        Use <strong>Overlays</strong> on the map left rail to toggle tactical mesh, resource pins, hazard markers, drawings, and
+        route blockages. Mesh overlays (when connected) show node positions on the map where supported by your build.
       </p>
     </>
   );
