@@ -1,0 +1,47 @@
+[
+  {
+    "id": "osm-north-america",
+    "name": "North America Vector Map",
+    "description": "Complete OpenStreetMap routing and building data for the continent.",
+    "url": "https://download.geofabrik.de/north-america-latest.osm.pbf",
+    "fileName": "maps/vector/north-america-latest.osm.pbf",
+    "sizeBytes": 13500000000,
+    "defaultTiers": ["small", "medium", "large", "xl"]
+  },
+  {
+    "id": "kiwix-wikipedia-en",
+    "name": "Wikipedia (English - No Images)",
+    "description": "The complete English text of Wikipedia for historical preservation.",
+    "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_nopic.zim",
+    "fileName": "library/encyclopedia/wikipedia_en_all_nopic.zim",
+    "sizeBytes": 55000000000,
+    "defaultTiers": ["medium", "large", "xl"]
+  },
+  {
+    "id": "project-gutenberg",
+    "name": "Project Gutenberg Library",
+    "description": "Over 60,000 public domain literature and reference books.",
+    "url": "https://download.kiwix.org/zim/gutenberg/gutenberg_en_all.zim",
+    "fileName": "library/literature/gutenberg_en_all.zim",
+    "sizeBytes": 70000000000,
+    "defaultTiers": ["large", "xl"]
+  },
+  {
+    "id": "arxiv-physics-math",
+    "name": "ArXiv Physics & Math Archive",
+    "description": "Millions of high-level theoretical physics and mathematics papers.",
+    "url": "https://archive.org/download/arxiv-bulk/arxiv_physics_math_bulk.zip",
+    "fileName": "library/science/arxiv_physics_math_bulk.zip",
+    "sizeBytes": 450000000000,
+    "defaultTiers": ["large", "xl"]
+  },
+  {
+    "id": "satellite-imagery-na",
+    "name": "High-Res Continental Satellite Imagery",
+    "description": "Offline MBTiles for North America down to zoom level 15.",
+    "url": "magnet:?xt=urn:btih:placeholder_for_mbtiles",
+    "fileName": "maps/satellite/na_satellite_z15.mbtiles",
+    "sizeBytes": 1500000000000,
+    "defaultTiers": ["xl"]
+  }
+]

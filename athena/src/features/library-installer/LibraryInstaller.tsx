@@ -130,6 +130,11 @@ function fileNameFromUrl(url: string): string {
   }
 }
 
+function manifestFileOnDisk(f: { url: string }, localBasenames: Set<string>): boolean {
+  const base = fileNameFromUrl(f.url).toLowerCase();
+  return localBasenames.has(base);
+}
+
 function ThinBar({ percent }: { percent: number }) {
   const clamped = clampPct(percent);
   return (
@@ -143,6 +148,25 @@ function ThinBar({ percent }: { percent: number }) {
         }}
       />
     </div>
+  );
+}
+
+function FileInstallStatusPill({ onDisk, lx }: { onDisk: boolean; lx: ReturnType<typeof useLexicon> }) {
+  return (
+    <span
+      style={{
+        fontSize: "0.72rem",
+        fontWeight: 650,
+        padding: "0.12rem 0.45rem",
+        borderRadius: "999px",
+        border: "1px solid color-mix(in srgb, var(--border) 55%, transparent)",
+        background: onDisk ? "color-mix(in srgb, var(--accent, #4f8cff) 14%, transparent)" : "transparent",
+        color: onDisk ? "var(--text)" : "var(--text-muted)",
+        flexShrink: 0,
+      }}
+    >
+      {onDisk ? lx.zimOnDeviceBadge : lx.zimNotDownloadedBadge}
+    </span>
   );
 }
 
@@ -480,6 +504,7 @@ function useLibraryNetworkInstaller() {
   const [installNote, setInstallNote] = useState<string | null>(null);
   const [singleBusyId, setSingleBusyId] = useState<string | null>(null);
   const [academyCurriculum, setAcademyCurriculum] = useState<AcademyCurriculumRoot | null>(null);
+  const [localLibraryFiles, setLocalLibraryFiles] = useState<LocalLibraryFile[]>([]);
 
   const completionRef = useRef<Map<string, { ok: true } | { ok: false; message?: string } | { cancelled: true }>>(new Map());
 
@@ -496,9 +521,10 @@ function useLibraryNetworkInstaller() {
 
   const refreshLocal = useCallback(async () => {
     try {
-      await invoke<LocalLibraryFile[]>("list_library_contents");
+      const list = await invoke<LocalLibraryFile[]>("list_library_contents");
+      setLocalLibraryFiles(Array.isArray(list) ? list : []);
     } catch {
-      /* listing is for cache refresh; Local panel owns UI */
+      setLocalLibraryFiles([]);
     }
   }, []);
 
@@ -520,13 +546,26 @@ function useLibraryNetworkInstaller() {
   useEffect(() => {
     void refreshInstallerData();
     void refreshRoots();
-  }, [refreshInstallerData, refreshRoots]);
+    void refreshLocal();
+  }, [refreshInstallerData, refreshRoots, refreshLocal]);
 
   useEffect(() => {
     void invoke<AcademyCurriculumRoot>("academy_get_curriculum")
       .then((c) => setAcademyCurriculum(c))
       .catch(() => setAcademyCurriculum(null));
   }, []);
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    void listen("athena:archive-fs-changed", () => {
+      void refreshLocal();
+    }).then((fn) => {
+      un = fn;
+    });
+    return () => {
+      if (un) un();
+    };
+  }, [refreshLocal]);
 
   useEffect(() => {
     let a: (() => void) | null = null;
@@ -609,6 +648,14 @@ function useLibraryNetworkInstaller() {
       return true;
     });
   }, [academyDownloadRows, academyCurriculum]);
+
+  const localFileBasenames = useMemo(() => {
+    const s = new Set<string>();
+    for (const f of localLibraryFiles) {
+      s.add(f.name.trim().toLowerCase());
+    }
+    return s;
+  }, [localLibraryFiles]);
 
   async function waitForDownloadResult(
     downloadId: string,
@@ -761,6 +808,7 @@ function useLibraryNetworkInstaller() {
     alacarteFiles,
     academyDownloadRows,
     orphanAcademyRows,
+    localFileBasenames,
     installTier,
     installSingleFile,
     saveLocationFromGeocode,
@@ -926,6 +974,7 @@ function AcademyNetworkDownloadsContent({
   progressById,
   primaryRootPath,
   installSingleFile,
+  localFileBasenames,
 }: {
   lx: ReturnType<typeof useLexicon>;
   academyCurriculum: AcademyCurriculumRoot | null;
@@ -936,6 +985,7 @@ function AcademyNetworkDownloadsContent({
   progressById: Record<string, DownloadProgressPayload>;
   primaryRootPath: string;
   installSingleFile: (entry: LibraryManifestRow) => void | Promise<void>;
+  localFileBasenames: Set<string>;
 }) {
   if (academyDownloadRows.length === 0) {
     return (
@@ -949,6 +999,11 @@ function AcademyNetworkDownloadsContent({
 
   return (
     <div style={{ display: "grid", gap: "0.75rem" }}>
+      <div className="glass-panel" style={{ padding: "0.65rem 0.75rem", borderLeft: "3px solid color-mix(in srgb, var(--primary) 65%, transparent)" }}>
+        <p className="text-muted small" style={{ margin: 0, lineHeight: 1.5 }}>
+          {lx.academyArchiveTwoLocationsNote}
+        </p>
+      </div>
       {academyCurriculum ? (
         <>
           {academyCurriculum.ageGroups.map((age) => (
@@ -971,6 +1026,7 @@ function AcademyNetworkDownloadsContent({
                         const busy = singleBusyId === downloadId;
                         const p = progressById[downloadId] ?? null;
                         const pct = p && p.totalBytes && p.totalBytes > 0 ? (p.downloadedBytes / p.totalBytes) * 100 : p ? 5 : 0;
+                        const onDisk = manifestFileOnDisk(f, localFileBasenames);
                         return (
                           <li
                             key={downloadId}
@@ -985,7 +1041,10 @@ function AcademyNetworkDownloadsContent({
                             }}
                           >
                             <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", alignItems: "center" }}>
+                                <span style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</span>
+                                <FileInstallStatusPill onDisk={onDisk} lx={lx} />
+                              </div>
                               <div className="text-muted small">
                                 {f.tierName} ·{" "}
                                 {f.size_bytes != null && typeof f.size_bytes === "number" && f.size_bytes > 0
@@ -1024,6 +1083,7 @@ function AcademyNetworkDownloadsContent({
                 {orphanAcademyRows.map((f) => {
                   const downloadId = `single::${encodeURIComponent(f.url)}::${f.destination}`;
                   const busy = singleBusyId === downloadId;
+                  const onDisk = manifestFileOnDisk(f, localFileBasenames);
                   return (
                     <li
                       key={downloadId}
@@ -1038,7 +1098,10 @@ function AcademyNetworkDownloadsContent({
                       }}
                     >
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", alignItems: "center" }}>
+                          <span style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</span>
+                          <FileInstallStatusPill onDisk={onDisk} lx={lx} />
+                        </div>
                         <div className="text-muted small">{f.tierName}</div>
                       </div>
                       <button
@@ -1061,6 +1124,7 @@ function AcademyNetworkDownloadsContent({
           {academyDownloadRows.map((f) => {
             const downloadId = `single::${encodeURIComponent(f.url)}::${f.destination}`;
             const busy = singleBusyId === downloadId;
+            const onDisk = manifestFileOnDisk(f, localFileBasenames);
             return (
               <li
                 key={downloadId}
@@ -1075,7 +1139,10 @@ function AcademyNetworkDownloadsContent({
                 }}
               >
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", alignItems: "center" }}>
+                    <span style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</span>
+                    <FileInstallStatusPill onDisk={onDisk} lx={lx} />
+                  </div>
                   <div className="text-muted small">{f.tierName}</div>
                 </div>
                 <button
@@ -1097,7 +1164,18 @@ function AcademyNetworkDownloadsContent({
 
 export function ArchiveAcademyDownloadsPanel() {
   const v = useLibraryNetworkInstaller();
-  const { lx, academyCurriculum, academyDownloadRows, orphanAcademyRows, installingTier, singleBusyId, progressById, primaryRootPath, installSingleFile } = v;
+  const {
+    lx,
+    academyCurriculum,
+    academyDownloadRows,
+    orphanAcademyRows,
+    installingTier,
+    singleBusyId,
+    progressById,
+    primaryRootPath,
+    installSingleFile,
+    localFileBasenames,
+  } = v;
 
   return (
     <ArchiveNetworkInstallerShell mode="academy" v={v}>
@@ -1111,6 +1189,7 @@ export function ArchiveAcademyDownloadsPanel() {
         progressById={progressById}
         primaryRootPath={primaryRootPath}
         installSingleFile={installSingleFile}
+        localFileBasenames={localFileBasenames}
       />
     </ArchiveNetworkInstallerShell>
   );
@@ -1118,7 +1197,19 @@ export function ArchiveAcademyDownloadsPanel() {
 
 export function ArchivePackagesPanel() {
   const v = useLibraryNetworkInstaller();
-  const { lx, primaryRootPath, installingTier, activeDownloadId, progressById, singleBusyId, tiers, alacarteFiles, installTier, installSingleFile } = v;
+  const {
+    lx,
+    primaryRootPath,
+    installingTier,
+    activeDownloadId,
+    progressById,
+    singleBusyId,
+    tiers,
+    alacarteFiles,
+    localFileBasenames,
+    installTier,
+    installSingleFile,
+  } = v;
 
   return (
     <ArchiveNetworkInstallerShell mode="packages" v={v}>
@@ -1150,13 +1241,22 @@ export function ArchivePackagesPanel() {
                 <div className="text-muted" style={{ margin: 0 }}>
                   {t.description}
                 </div>
-                <ul className="text-muted small" style={{ margin: "0.15rem 0 0", paddingLeft: "1.1rem", display: "grid", gap: "0.25rem", textAlign: "left" }}>
-                  {t.files.map((f) => (
-                    <li key={`${t.name}-${f.name}-${f.url}`} style={{ wordBreak: "break-word" }}>
-                      <span style={{ color: "var(--text)" }}>{f.name}</span> ·{" "}
-                      {f.size_bytes != null && f.size_bytes > 0 ? <span>{formatDownloadSizeGb(f.size_bytes)}</span> : <span>{lx.sizeUnknown}</span>}
-                    </li>
-                  ))}
+                <ul className="text-muted small" style={{ margin: "0.15rem 0 0", paddingLeft: "1.1rem", display: "grid", gap: "0.35rem", textAlign: "left" }}>
+                  {t.files.map((f) => {
+                    const onDisk = manifestFileOnDisk(f, localFileBasenames);
+                    return (
+                      <li key={`${t.name}-${f.name}-${f.url}`} style={{ wordBreak: "break-word", listStyle: "disc" }}>
+                        <span style={{ display: "inline-flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "center", verticalAlign: "middle" }}>
+                          <span style={{ color: "var(--text)" }}>{f.name}</span>
+                          <FileInstallStatusPill onDisk={onDisk} lx={lx} />
+                          <span>·</span>
+                          <span>
+                            {f.size_bytes != null && f.size_bytes > 0 ? formatDownloadSizeGb(f.size_bytes) : lx.sizeUnknown}
+                          </span>
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
                 {isActive ? (
                   <div style={{ display: "grid", gap: "0.35rem" }}>
@@ -1201,6 +1301,7 @@ export function ArchivePackagesPanel() {
             {alacarteFiles.map((f) => {
               const downloadId = `single::${encodeURIComponent(f.url)}::${f.destination}`;
               const busy = singleBusyId === downloadId;
+              const onDisk = manifestFileOnDisk(f, localFileBasenames);
               return (
                 <li
                   key={downloadId}
@@ -1208,7 +1309,10 @@ export function ArchivePackagesPanel() {
                   style={{ padding: "0.55rem 0.65rem", display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between" }}
                 >
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", alignItems: "center" }}>
+                      <span style={{ fontWeight: 650, wordBreak: "break-word" }}>{f.name}</span>
+                      <FileInstallStatusPill onDisk={onDisk} lx={lx} />
+                    </div>
                     <div className="text-muted small">
                       {f.category} · {f.tierName}
                     </div>

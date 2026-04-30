@@ -83,7 +83,7 @@ export function ArchiveMapsTab({
       <section className="library-section library-section-map-archives">
         <h3>Map files (PMTiles / MBTiles)</h3>
         <p className="text-muted small library-section-lead">
-          <strong>Download or import</strong> map tile archives for the viewer. Same tool as <strong>Map archives…</strong> on the map.
+          <strong>Download or import</strong> map tile archives for the viewer. Same tool as <strong>Layers → gear</strong> on the map.
         </p>
         <div className="library-maps-action-row">
           <button type="button" onClick={onOpenMapFileManager}>

@@ -1,7 +1,8 @@
 import { KnowledgeCatalogView } from "../../KnowledgeCatalogView";
 import { useLexicon } from "../../shared/lexicon";
-import { ArchiveAcademyDownloadsPanel, ArchiveLocalPanel, ArchivePackagesPanel } from "./LibraryInstaller";
+import { ArchiveAcademyDownloadsPanel, ArchiveLocalPanel } from "./LibraryInstaller";
 import { ArchiveMapsTab, type ArchiveMapsTabProps } from "./ArchiveMapsTab";
+import { DynamicLibraryInstaller } from "./DynamicLibraryInstaller";
 
 export type ArchivePrimaryTabId = "local" | "network";
 
@@ -89,6 +90,7 @@ export function ArchiveHub({
         ) : null}
         {primaryTab === "network" ? (
           <div className="library-tab-panel" id="archive-panel-network" role="tabpanel" aria-labelledby="archive-tab-network">
+            {introBlock}
             <div className="library-tablist archive-hub-network-subtabs" role="tablist" aria-label={lx.archiveNetworkTablistAria} style={{ flexShrink: 0 }}>
               <button
                 type="button"
@@ -135,10 +137,9 @@ export function ArchiveHub({
                 {lx.tabArchiveMaps}
               </button>
             </div>
-            {introBlock}
             {networkSubTab === "packages" ? (
               <div id="archive-subpanel-packages" role="tabpanel" aria-labelledby="archive-sub-packages">
-                <ArchivePackagesPanel />
+                <DynamicLibraryInstaller />
               </div>
             ) : null}
             {networkSubTab === "academy" ? (

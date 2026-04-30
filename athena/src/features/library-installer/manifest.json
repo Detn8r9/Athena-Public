@@ -1,0 +1,29 @@
+[
+  {
+    "id": "kiwix-wikimed",
+    "name": "WikiMed Archive",
+    "description": "The largest comprehensive offline medical encyclopedia.",
+    "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_medicine_max.zim",
+    "fileName": "library/medical/wikipedia_en_medicine_max.zim",
+    "sizeBytes": 2200000000,
+    "defaultTiers": ["small", "medium", "large", "xl"]
+  },
+  {
+    "id": "ose-blueprints",
+    "name": "Global Village Construction Set",
+    "description": "Open Source Ecology blueprints for the 50 machines that build a civilization.",
+    "url": "https://download.kiwix.org/zim/other/opensourceecology_en_all_max.zim",
+    "fileName": "library/engineering/opensourceecology_en_all_max.zim",
+    "sizeBytes": 1800000000,
+    "defaultTiers": ["small", "medium", "large", "xl"]
+  },
+  {
+    "id": "survivor-library",
+    "name": "The Survivor Library",
+    "description": "Complete repository of 19th-century industrial and agricultural technology.",
+    "url": "https://archive.org/download/SurvivorLibrary/SurvivorLibrary.zip",
+    "fileName": "library/survival/SurvivorLibrary.zip",
+    "sizeBytes": 85000000000,
+    "defaultTiers": ["medium", "large", "xl"]
+  }
+]
