@@ -6,10 +6,11 @@ export interface MeshRadioMessage {
   senderId: number;
   text: string;
   at: number;
+  channel: number;
 }
 
-/** Primary Meshtastic channel (broadcast visible to all nodes on the network). */
-const PRIMARY_CHANNEL = 0;
+/** Default channel for authenticated ops chatter. */
+const OPS_CHANNEL = 1;
 
 interface MeshRadioModalProps {
   open: boolean;
@@ -44,7 +45,7 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
       await invoke("send_mesh_message", {
         text,
         wantAck,
-        channel: PRIMARY_CHANNEL,
+        channel: OPS_CHANNEL,
       });
     } catch (e) {
       setError(e != null ? String(e) : "Send failed");
@@ -97,14 +98,14 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
         {helpOpen && (
           <div id="mesh-radio-help-panel" className="mesh-radio-help-panel" role="region" aria-label="Meshtastic help">
             <p className="library-desc mesh-radio-desc">
-              USB LoRa radio: send and receive <strong>Primary channel</strong> broadcast text (visible to all nodes on
-              that channel). Plug in your device; Athena listens in the background. Encrypted packets are ignored.
+              USB LoRa radio: send and receive <strong>General Operations</strong> broadcast text on <strong>channel 1</strong>.
+              Plug in your device; Athena listens in the background. Encrypted packets are ignored.
             </p>
             <p className="library-desc mesh-radio-desc">
               With <strong>Settings → Features → Auto-reply to mesh messages</strong> on, other nodes&apos; broadcast
               messages become AI prompts; Athena replies by <strong>direct message</strong> to each sender and saves a{" "}
               <strong>private chat</strong> per node (<code>Athena (private) · …</code> in the sidebar)—separate from
-              this public mesh log.
+              this operations broadcast log.
             </p>
             <section className="library-section mesh-radio-test-tips" aria-label="Testing with your phone">
               <h3>Testing with the phone app</h3>
@@ -123,8 +124,8 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
                   Athena and confirm the phone can connect—then you know the limit is USB vs BLE sharing.
                 </li>
                 <li>
-                  Use <strong>Send test ping</strong> (or type your own text) on the <strong>same Primary channel</strong> as
-                  in the phone app (channel 0). Your message is broadcast from this node over LoRa.
+                  Use <strong>Send test ping</strong> (or type your own text) on the <strong>same channel</strong> as the
+                  operations channel configured in the phone app (channel 1). Your message is broadcast from this node over LoRa.
                 </li>
                 <li>
                   On the phone, open the <strong>same channel / Messages</strong> view. You should see this node&apos;s
@@ -148,14 +149,14 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
                 <input type="checkbox" checked={wantAck} onChange={(e) => setWantAck(e.target.checked)} />
                 Request ACK
               </label>
-              <span className="mesh-radio-primary-badge" title="Broadcasts use the Primary channel (channel 0)">
-                Primary channel
+              <span className="mesh-radio-primary-badge" title="Broadcasts use channel 1 (General Operations)">
+                General Ops (ch 1)
               </span>
             </div>
             <textarea
               className="mesh-radio-compose"
               rows={2}
-              placeholder="Broadcast on Primary channel…"
+              placeholder="Broadcast on General Ops (ch 1)…"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -178,11 +179,11 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
           </section>
 
           <section className="library-section mesh-radio-log-section" aria-label="Received mesh messages">
-            <h3>Received · Primary broadcast</h3>
+            <h3>Received · General Ops broadcast (ch 1)</h3>
             <div className="mesh-radio-log" role="log" aria-live="polite">
               {messages.length === 0 ? (
                 <p className="text-muted mesh-radio-log-empty">
-                  No Primary-channel broadcasts yet. Other nodes&apos; public messages on channel 0 appear here.
+                  No General Ops broadcasts yet. Other nodes&apos; public messages on channel 1 appear here.
                 </p>
               ) : (
                 <ul className="mesh-radio-message-list">
@@ -194,7 +195,7 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
                           minute: "2-digit",
                           second: "2-digit",
                         })}{" "}
-                        · node {m.senderId}
+                        · node {m.senderId} · ch {m.channel}
                       </span>
                       <div className="mesh-radio-message-text">{m.text}</div>
                     </li>

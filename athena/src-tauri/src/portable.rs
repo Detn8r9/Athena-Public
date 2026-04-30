@@ -790,6 +790,20 @@ pub fn export_athena_to_usb(
 
     let usb_data = dest_root.join("data");
     fs::create_dir_all(&usb_data).map_err(|e| e.to_string())?;
+
+    // Essentials: copy local SQLite index (personnel, roster, library metadata) when present.
+    if tier == OmnibusTier::Essentials {
+        let db_src = app_data_dir.join("athena_index.db");
+        if db_src.is_file() {
+            let db_dst = usb_data.join("athena_index.db");
+            eprintln!(
+                "[athena] usb export: copying index database to {}",
+                db_dst.display()
+            );
+            fs::copy(&db_src, &db_dst).map_err(|e| e.to_string())?;
+        }
+    }
+
     let models_root = usb_data.join("models");
     let emb_dst = models_root.join("embeddings").join(&emb_name);
     let rr_dst = models_root.join("rerankers").join(&rr_name);
@@ -915,3 +929,18 @@ pub fn export_athena_to_usb(
     eprintln!("[athena] usb export: finished");
     Ok(())
 }
+
+#[cfg(test)]
+mod fairlee_tests {
+    use super::approx_bbox_for_radius_miles;
+
+    #[test]
+    fn fairlee_vt_25mi_bbox_contains_center() {
+        let (min_lon, min_lat, max_lon, max_lat) =
+            approx_bbox_for_radius_miles(-72.143_f64, 43.908_f64, 25.0_f64);
+        assert!((-72.143_f64) >= min_lon && (-72.143_f64) <= max_lon, "lon range");
+        assert!(43.908_f64 >= min_lat && 43.908_f64 <= max_lat, "lat range");
+        assert!(max_lon > min_lon && max_lat > min_lat);
+    }
+}
+

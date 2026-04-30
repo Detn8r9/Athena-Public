@@ -100,7 +100,7 @@ function CpuSparkline({ samples }: { samples: number[] }) {
 }
 
 export function LockScreen() {
-  const { login } = useAuth();
+  const { login, loginGuest } = useAuth();
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
@@ -229,6 +229,21 @@ export function LockScreen() {
       setPin("");
     } catch (err) {
       setError(err != null ? String(err) : "Authentication failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onGuest() {
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await loginGuest();
+      setPin("");
+      setName("");
+    } catch (err) {
+      setError(err != null ? String(err) : "Guest login failed.");
     } finally {
       setBusy(false);
     }
@@ -426,9 +441,14 @@ export function LockScreen() {
                   {error}
                 </p>
               ) : null}
-              <button type="submit" className="lock-screen-submit" disabled={busy}>
-                {busy ? "Verifying…" : "Log in"}
-              </button>
+              <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                <button type="submit" className="lock-screen-submit" disabled={busy}>
+                  {busy ? "Verifying…" : "Log in"}
+                </button>
+                <button type="button" className="secondary" disabled={busy} onClick={() => void onGuest()}>
+                  Access as Guest (Emergency/Refugee)
+                </button>
+              </div>
             </form>
           </div>
         </div>

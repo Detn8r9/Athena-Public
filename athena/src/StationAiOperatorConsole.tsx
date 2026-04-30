@@ -2,6 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 
+const STATION_AI_HISTORY_KEY = "athena-station-ai-transcript-history";
+const HISTORY_MAX = 50;
+
 const REMOTE_AI_QUEUE_UPDATED = "athena:remote-ai-queue-updated";
 
 export type RemoteQueueWaitingEntry = {
@@ -33,33 +36,66 @@ export function StationAiOperatorConsole() {
   const [waiting, setWaiting] = useState<RemoteQueueWaitingEntry[]>([]);
   const [current, setCurrent] = useState<RemoteQueueCurrentEntry | null>(null);
   const [activeTranscript, setActiveTranscript] = useState("");
+  const [historyLines, setHistoryLines] = useState<string[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(STATION_AI_HISTORY_KEY);
+      const p = raw ? (JSON.parse(raw) as unknown) : [];
+      return Array.isArray(p) ? p.filter((x) => typeof x === "string").slice(-HISTORY_MAX) : [];
+    } catch {
+      return [];
+    }
+  });
   const [error, setError] = useState<string | null>(null);
+
+  const applyDto = useCallback((dto: RemoteQueueStatusDto) => {
+    setPendingCount(dto.pendingCount);
+    setWaiting(dto.waiting);
+    setCurrent(dto.current);
+    const t = (dto as { activeTranscript?: string }).activeTranscript ?? (dto as { active_transcript?: string }).active_transcript ?? "";
+    setActiveTranscript(t);
+    if (t.trim()) {
+      setHistoryLines((prev) => {
+        const last = prev[prev.length - 1];
+        if (last === t) return prev;
+        const next = [...prev, t].slice(-HISTORY_MAX);
+        try {
+          window.localStorage.setItem(STATION_AI_HISTORY_KEY, JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+        return next;
+      });
+    }
+  }, []);
 
   const syncStatus = useCallback(async () => {
     try {
       const dto = await invoke<RemoteQueueStatusDto>("get_queue_status");
-      setPendingCount(dto.pendingCount);
-      setWaiting(dto.waiting);
-      setCurrent(dto.current);
-      setActiveTranscript(dto.activeTranscript);
+      applyDto(dto);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [applyDto]);
 
   useEffect(() => {
     void syncStatus();
   }, [syncStatus]);
 
   useEffect(() => {
-    const u = listen(REMOTE_AI_QUEUE_UPDATED, () => {
-      void syncStatus();
+    const u = listen<RemoteQueueStatusDto | Record<string, unknown>>(REMOTE_AI_QUEUE_UPDATED, (e) => {
+      const p = e.payload;
+      if (p && typeof p === "object" && "pendingCount" in p && (p as RemoteQueueStatusDto).pendingCount != null) {
+        applyDto(p as RemoteQueueStatusDto);
+        setError(null);
+      } else {
+        void syncStatus();
+      }
     });
     return () => {
       void u.then((fn) => fn());
     };
-  }, [syncStatus]);
+  }, [applyDto, syncStatus]);
 
   const totalDepth = pendingCount + (current ? 1 : 0);
 
@@ -136,10 +172,16 @@ export function StationAiOperatorConsole() {
           className="station-ai-operator-transcript"
           readOnly
           value={activeTranscript}
-          placeholder="Transcript appears here when the model finishes the current job; streaming updates can be added in a later backend pass."
+          placeholder="Remote job reply text appears here when the active mesh/LAN request completes. Queue updates are pushed live from the command station."
           rows={6}
           aria-label="Read-only live AI transcript for the active remote job"
         />
+        {historyLines.length > 1 ? (
+          <p className="text-muted small" style={{ marginTop: 6 }}>
+            Last {Math.min(HISTORY_MAX, historyLines.length)} job outputs are retained locally (scroll area above is the
+            current job only).
+          </p>
+        ) : null}
       </section>
     </div>
   );

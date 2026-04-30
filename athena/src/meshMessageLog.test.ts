@@ -11,6 +11,7 @@ describe("mesh log (Phase 4)", () => {
         senderId: 1,
         text: `line-${i}`,
         at: i,
+        channel: 1,
       };
       state = appendMeshMessageCapped(state, msg);
       expect(state.length).toBeLessThanOrEqual(MESH_LOG_MAX_LINES);

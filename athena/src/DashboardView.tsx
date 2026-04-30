@@ -182,13 +182,9 @@ function filterLauncherByRank(
   items: Array<{ key: DashboardDestination; label: string; icon: ReactNode }>,
   rank: number,
 ): Array<{ key: DashboardDestination; label: string; icon: ReactNode }> {
-  return items.filter((item) => {
-    const k = item.key;
-    if (k === "map") return rank >= 4;
-    if (k === "comms_hub") return rank >= 2;
-    if (k === "personnel") return rank >= 4;
-    return true;
-  });
+  void rank;
+  // Show all launcher tiles; individual screens enforce RBAC as needed.
+  return items;
 }
 
 

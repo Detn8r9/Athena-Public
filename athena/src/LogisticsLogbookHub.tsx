@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { BookOpen, ClipboardList, Package, Shield } from "lucide-react";
+import { Bell, BookOpen, ClipboardList, Package, Shield } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
 import { LogbookView } from "./LogbookView";
+import { LogisticsLibraryView } from "./LogisticsLibraryView";
 import { QuartermasterHub, type QuartermasterTabId } from "./QuartermasterHub";
+import { ApprovalInbox } from "./features/map/ApprovalInbox";
+import { InvQueueButton } from "./features/logistics/InvQueueButton";
 import { useLexicon } from "./shared/lexicon";
 import { canAccessTacticalLogbook } from "./shared/tacticalLogbookAccess";
 
@@ -16,6 +19,8 @@ export function LogisticsLogbookHub({ meshConnected }: { meshConnected: boolean 
   const r = rankLevel ?? 0;
   const [occupation, setOccupation] = useState("");
   const [hubTab, setHubTab] = useState<HubTab>("notes");
+  const [approvalInboxOpen, setApprovalInboxOpen] = useState(false);
+  const [aiPendingCount, setAiPendingCount] = useState(0);
 
   const refreshOcc = useCallback(async () => {
     try {
@@ -40,8 +45,24 @@ export function LogisticsLogbookHub({ meshConnected }: { meshConnected: boolean 
   }, [refreshOcc]);
 
   const canTactical = useMemo(() => canAccessTacticalLogbook(r, occupation), [r, occupation]);
-  const canInventory = r >= 3;
+  // Backend permits inventory list at rank 2+; edits remain rank-gated inside Quartermaster.
+  const canInventory = r >= 2;
   const canAudit = r >= 4;
+
+  useEffect(() => {
+    if (!canAudit) {
+      setAiPendingCount(0);
+      return;
+    }
+    const loadN = () => {
+      void invoke<number>("ai_count_pending")
+        .then((n) => setAiPendingCount(typeof n === "number" ? n : 0))
+        .catch(() => setAiPendingCount(0));
+    };
+    loadN();
+    const id = window.setInterval(loadN, 45_000);
+    return () => window.clearInterval(id);
+  }, [canAudit]);
 
   useEffect(() => {
     if (hubTab === "tactical" && !canTactical) setHubTab("notes");
@@ -106,27 +127,52 @@ export function LogisticsLogbookHub({ meshConnected }: { meshConnected: boolean 
             {lx.logisticsHubTabInventory}
           </button>
         ) : null}
+        {canInventory ? <InvQueueButton /> : null}
         {canAudit ? (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={hubTab === "audit"}
-            className={tabClass(hubTab === "audit")}
-            onClick={() => setHubTab("audit")}
-          >
-            <ClipboardList size={18} aria-hidden />
-            {lx.logisticsHubTabAudit}
-          </button>
+          <>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={hubTab === "audit"}
+              className={tabClass(hubTab === "audit")}
+              onClick={() => setHubTab("audit")}
+            >
+              <ClipboardList size={18} aria-hidden />
+              {lx.logisticsHubTabAudit}
+            </button>
+            <button
+              type="button"
+              className="llh-tab"
+              onClick={() => setApprovalInboxOpen(true)}
+              title="AI approval inbox"
+              aria-label="Open AI approval inbox"
+            >
+              <Bell size={18} aria-hidden />
+              Inbox
+              {aiPendingCount > 0 ? (
+                <span
+                  aria-label={`${aiPendingCount} pending`}
+                  style={{
+                    marginLeft: 6,
+                    padding: "0.1rem 0.45rem",
+                    borderRadius: 999,
+                    fontSize: "0.75rem",
+                    color: "var(--text)",
+                    background: "color-mix(in srgb, var(--primary) 20%, transparent)",
+                    border: "1px solid color-mix(in srgb, var(--primary) 35%, var(--border))",
+                  }}
+                >
+                  {aiPendingCount}
+                </span>
+              ) : null}
+            </button>
+          </>
         ) : null}
       </div>
 
       <div className="logistics-logbook-hub-body">
         {hubTab === "notes" ? (
-          <LogbookView
-            meshConnected={meshConnected}
-            notebookScope="general"
-            onProfileSaved={() => void refreshOcc()}
-          />
+          <LogisticsLibraryView meshConnected={meshConnected} onProfileSaved={() => void refreshOcc()} />
         ) : null}
         {hubTab === "tactical" && canTactical ? (
           <LogbookView
@@ -143,6 +189,15 @@ export function LogisticsLogbookHub({ meshConnected }: { meshConnected: boolean 
           />
         ) : null}
       </div>
+      <ApprovalInbox
+        open={approvalInboxOpen}
+        onClose={() => setApprovalInboxOpen(false)}
+        onChanged={() => {
+          void invoke<number>("ai_count_pending")
+            .then((n) => setAiPendingCount(typeof n === "number" ? n : 0))
+            .catch(() => {});
+        }}
+      />
     </div>
   );
 }

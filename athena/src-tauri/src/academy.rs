@@ -1,8 +1,11 @@
 //! Offline Academy: bundled curriculum JSON and ZIM article extraction for lessons.
+//! Optional PDF units live under `payload/Academy/` (see `metadata.json` per unit).
 
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
+use walkdir::WalkDir;
 
 use crate::compute_watcher_folders;
 use crate::config::load_config;
@@ -55,8 +58,81 @@ pub struct AcademyLessonHtml {
     pub html: String,
 }
 
+/// One unit folder under `payload/Academy/.../UnitName/` with `metadata.json` and optional PDFs.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcademyPdfUnit {
+    pub id: String,
+    pub title: String,
+    pub grade: u8,
+    pub subject: String,
+    pub tags: Vec<String>,
+    pub reader_path: Option<String>,
+    pub lecture_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcademyPdfMetadata {
+    title: String,
+    grade: u8,
+    subject: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
 pub fn get_curriculum() -> Result<AcademyCurriculumRoot, String> {
     serde_json::from_str(CURRICULUM_JSON).map_err(|e| format!("academy curriculum JSON: {e}"))
+}
+
+/// Discover bundled PDF curriculum units (`reader.pdf` / `lecture_guide.pdf`) from `payload/Academy`.
+pub fn list_pdf_units(app: &AppHandle) -> Result<Vec<AcademyPdfUnit>, String> {
+    let base = app
+        .path()
+        .resolve("payload/Academy", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| format!("Could not resolve payload/Academy: {e}"))?;
+    if !base.is_dir() {
+        return Ok(vec![]);
+    }
+
+    let mut out: Vec<AcademyPdfUnit> = Vec::new();
+    for entry in WalkDir::new(&base).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.file_name() != Some(OsStr::new("metadata.json")) {
+            continue;
+        }
+        let Some(unit_dir) = path.parent() else {
+            continue;
+        };
+        let raw =
+            std::fs::read_to_string(path).map_err(|e| format!("Read {}: {e}", path.display()))?;
+        let meta: AcademyPdfMetadata =
+            serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+
+        let rel = unit_dir
+            .strip_prefix(&base)
+            .map_err(|e| format!("Path strip: {e}"))?;
+        let id = rel.to_string_lossy().replace('\\', "/");
+
+        let reader = unit_dir.join("reader.pdf");
+        let lecture = unit_dir.join("lecture_guide.pdf");
+        out.push(AcademyPdfUnit {
+            id,
+            title: meta.title,
+            grade: meta.grade,
+            subject: meta.subject,
+            tags: meta.tags,
+            reader_path: reader.is_file().then(|| reader.to_string_lossy().into_owned()),
+            lecture_path: lecture.is_file().then(|| lecture.to_string_lossy().into_owned()),
+        });
+    }
+
+    out.sort_by(|a, b| {
+        a.subject
+            .cmp(&b.subject)
+            .then_with(|| a.grade.cmp(&b.grade))
+            .then_with(|| a.title.cmp(&b.title))
+    });
+    Ok(out)
 }
 
 fn find_lesson<'a>(root: &'a AcademyCurriculumRoot, lesson_id: &str) -> Option<&'a AcademyLesson> {
