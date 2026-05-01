@@ -1729,6 +1729,12 @@ body.theme-survival-manual .app[data-theme="custom"] {
   color: var(--text);
 }
 
+.universal-header-ingestion-detail {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
 .universal-header-left,
 .universal-header-right {
   display: flex;

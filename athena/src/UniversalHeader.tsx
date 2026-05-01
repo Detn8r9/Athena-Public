@@ -46,6 +46,16 @@ export type UniversalHeaderIngestionState = {
   currentFile: string | null;
 };
 
+/** Live zip/tar unpack progress (Chunk 3 library pipeline). */
+export type UniversalHeaderArchiveExtractionState = {
+  archiveLabel: string;
+  phase: string;
+  entriesProcessed: number;
+  entriesTotal: number | null;
+  bytesWritten: number;
+  message?: string | null;
+};
+
 export interface UniversalHeaderProps {
   currentView: AppView;
   setCurrentView: (view: AppView) => void;
@@ -58,6 +68,7 @@ export interface UniversalHeaderProps {
   batteryState: UniversalHeaderBatteryState | null;
   headerDownloadBar: HeaderDownloadBarState | null;
   ingestionState: UniversalHeaderIngestionState | null;
+  archiveExtraction: UniversalHeaderArchiveExtractionState | null;
   authRank: number;
   authClearance: number;
   onLogout: () => void | Promise<void>;
@@ -82,6 +93,7 @@ export function UniversalHeader({
   batteryState,
   headerDownloadBar,
   ingestionState,
+  archiveExtraction,
   authRank,
   authClearance,
   onLogout,
@@ -203,7 +215,34 @@ export function UniversalHeader({
           </button>
         </div>
         <div className="universal-header-ingestion-slot">
-          {ingestionState?.isIngesting ? (
+          {archiveExtraction ? (
+            <div className="universal-header-ingestion" role="status" aria-live="polite">
+              <span className="universal-header-ingestion-dot" aria-hidden />
+              <span className="universal-header-ingestion-label">
+                {archiveExtraction.phase === "error"
+                  ? `Unpack failed: ${archiveExtraction.archiveLabel}`
+                  : `Unpacking: ${archiveExtraction.archiveLabel}`}
+                {archiveExtraction.phase !== "error" ? (
+                  <>
+                    {" "}
+                    <span className="universal-header-ingestion-detail">
+                      {archiveExtraction.entriesTotal != null
+                        ? `${archiveExtraction.entriesProcessed.toLocaleString()}/${archiveExtraction.entriesTotal.toLocaleString()} entries`
+                        : `${archiveExtraction.entriesProcessed.toLocaleString()} entries`}
+                      {archiveExtraction.bytesWritten > 0
+                        ? ` · ${(archiveExtraction.bytesWritten / (1024 * 1024)).toFixed(1)} MiB`
+                        : null}
+                    </span>
+                  </>
+                ) : archiveExtraction.message ? (
+                  <>
+                    {" "}
+                    <span className="universal-header-ingestion-detail">{archiveExtraction.message}</span>
+                  </>
+                ) : null}
+              </span>
+            </div>
+          ) : ingestionState?.isIngesting ? (
             <div className="universal-header-ingestion" role="status" aria-live="polite">
               <span className="universal-header-ingestion-dot" aria-hidden />
               <span className="universal-header-ingestion-label">

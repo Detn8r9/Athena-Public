@@ -29,6 +29,7 @@
       "bin/pmtiles",
       "bin/tesseract",
       "bin/pdftoppm",
+      "bin/kiwix-serve",
       "ollama"
     ],
     "macOS": {

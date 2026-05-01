@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Layers } from "lucide-react";
 import type { MapBasemap } from "./mapViewTypes";
 
@@ -14,8 +14,10 @@ export type MapSettingsPopoverProps = {
   canOfflineTopo: boolean;
   canOfflineImported: boolean;
   canOfflineArchiveRaster: boolean;
+  /** When false, hide satellite basemap chip, select option, and satellite download tools (e.g. no satellite MBTiles downloaded). */
+  showSatelliteUi?: boolean;
   layerFilters: LayerFilters;
-  setLayerFilters: (updater: (prev: LayerFilters) => LayerFilters) => void;
+  setLayerFilters: Dispatch<SetStateAction<LayerFilters>>;
   satelliteCoverageOnMap: boolean;
   onSatelliteCoverageOnMapChange: (value: boolean) => void;
   satelliteDrawModeEnabled: boolean;
@@ -47,6 +49,7 @@ export function MapSettingsPopover({
   satelliteDownloadJobId,
   onStartSatelliteDownloadFromSelection,
   onCancelSatelliteBoxSelection,
+  showSatelliteUi = true,
 }: MapSettingsPopoverProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -103,7 +106,7 @@ export function MapSettingsPopover({
                 >
                   Default
                 </button>
-                {canOfflineArchiveRaster && (
+                {canOfflineArchiveRaster && showSatelliteUi && (
                   <button
                     type="button"
                     className={`map-settings-layer-chip${basemap === "offline_archive_raster" ? " is-active" : ""}`}
@@ -142,9 +145,11 @@ export function MapSettingsPopover({
                 <option value="offline_imported" disabled={!canOfflineImported}>
                   Imported raster (MBTiles / PMTiles){!canOfflineImported ? " — import in Settings" : ""}
                 </option>
-                <option value="offline_archive_raster" disabled={!canOfflineArchiveRaster}>
-                  Satellite from archive manager{!canOfflineArchiveRaster ? " — enable in Map archives" : ""}
-                </option>
+                {showSatelliteUi ? (
+                  <option value="offline_archive_raster" disabled={!canOfflineArchiveRaster}>
+                    Satellite from archives{!canOfflineArchiveRaster ? " — enable in Layers (gear)" : ""}
+                  </option>
+                ) : null}
               </select>
             </div>
 
@@ -176,6 +181,7 @@ export function MapSettingsPopover({
               </label>
             </div>
 
+            {showSatelliteUi ? (
             <div className="map-settings-section map-settings-section-satellite">
               <div className="map-settings-section-title map-settings-section-title-satellite">Satellite tools</div>
               <label className="map-settings-check">
@@ -226,6 +232,7 @@ export function MapSettingsPopover({
               )}
               <p className="map-settings-help">Tip: click once for one corner, click again for the opposite corner.</p>
             </div>
+            ) : null}
           </div>
         </div>
       )}

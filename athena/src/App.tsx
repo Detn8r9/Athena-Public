@@ -28,7 +28,7 @@ import { PhotoshopColorPicker } from "./PhotoshopColorPicker";
 import { hexToRgbCsv } from "./colorUtils";
 import type { AppView } from "./appView";
 import { APP_VIEW_LABELS, APP_VIEWS, readStartupView, saveStartupView } from "./appView";
-import { UniversalHeader } from "./UniversalHeader";
+import { UniversalHeader, type UniversalHeaderArchiveExtractionState } from "./UniversalHeader";
 import { useAuth } from "./auth/AuthContext";
 import { LockScreen } from "./LockScreen";
 import { LogisticsLogbookHub } from "./LogisticsLogbookHub";
@@ -782,6 +782,7 @@ function App() {
     isIngesting: boolean;
     currentFile: string | null;
   }>({ isIngesting: false, currentFile: null });
+  const [archiveExtraction, setArchiveExtraction] = useState<UniversalHeaderArchiveExtractionState | null>(null);
   const [libraryFiles, setLibraryFiles] = useState<LibraryFile[]>([]);
   const [libraryFilesModalOpen, setLibraryFilesModalOpen] = useState(false);
   const [stats, setStats] = useState<IndexStats | null>(null);
@@ -3215,6 +3216,55 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let errorClear: ReturnType<typeof setTimeout> | undefined;
+    const unlisten = listen<Record<string, unknown>>("athena:library-archive-extraction-progress", (event) => {
+      const p = event.payload;
+      if (!p || typeof p !== "object") return;
+      const phase = typeof p.phase === "string" ? p.phase : "";
+      if (phase === "done") {
+        if (errorClear) clearTimeout(errorClear);
+        setArchiveExtraction(null);
+        return;
+      }
+      const archiveLabel =
+        typeof p.archiveLabel === "string" && p.archiveLabel.length > 0 ? p.archiveLabel : "archive";
+      const entriesProcessed = typeof p.entriesProcessed === "number" ? p.entriesProcessed : 0;
+      const entriesTotal = typeof p.entriesTotal === "number" ? p.entriesTotal : null;
+      const bytesWritten = typeof p.bytesWritten === "number" ? p.bytesWritten : 0;
+      const message = typeof p.message === "string" ? p.message : null;
+      if (phase === "error") {
+        if (errorClear) clearTimeout(errorClear);
+        setArchiveExtraction({
+          archiveLabel,
+          phase: "error",
+          entriesProcessed,
+          entriesTotal,
+          bytesWritten,
+          message,
+        });
+        errorClear = setTimeout(() => setArchiveExtraction(null), 10_000);
+        return;
+      }
+      if (errorClear) {
+        clearTimeout(errorClear);
+        errorClear = undefined;
+      }
+      setArchiveExtraction({
+        archiveLabel,
+        phase,
+        entriesProcessed,
+        entriesTotal,
+        bytesWritten,
+        message: null,
+      });
+    });
+    return () => {
+      if (errorClear) clearTimeout(errorClear);
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
     const unlisten = listen<{ processed: number; total: number; failed: number }>(
       "athena:rebuild-progress",
       (event) => {
@@ -4717,6 +4767,7 @@ ${tag}` : tag;
           batteryState={batteryState}
           headerDownloadBar={headerDownloadBar}
           ingestionState={ingestionState}
+          archiveExtraction={archiveExtraction}
           authRank={user.rank_level}
           authClearance={user.clearance_level ?? user.rank_level ?? 0}
           onLogout={logout}

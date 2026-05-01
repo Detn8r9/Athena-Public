@@ -55,7 +55,7 @@ const OFFLINE_PREVIEW_GRID_GEOJSON: GeoJSON.FeatureCollection = {
   })(),
 };
 
-function buildOfflineBlankStyle(): maplibregl.StyleSpecification {
+export function buildOfflineBlankStyle(): maplibregl.StyleSpecification {
   return {
     version: 8,
     name: "offline-map-manager-blank",

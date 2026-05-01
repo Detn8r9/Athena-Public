@@ -17,10 +17,11 @@ import {
   Waves,
 } from "lucide-react";
 
+export type MapOverlayCategory = "all" | "tactical" | "resources" | "obstructions";
+
 export type TacticalLayerVisibilityState = {
   /**
-   * Network vs Resources are mutually exclusive on the map: switching families hides the other
-   * family’s overlays so the view stays readable.
+   * Legacy field kept for persisted configs; map rendering now uses `overlayCategory` + per-layer toggles.
    */
   activeFamily: "network" | "resources";
   network: {
@@ -36,6 +37,24 @@ export type TacticalLayerVisibilityState = {
   };
   /** Right-click / custom `@icon:` pins that are not the core preset icons (Home, Zap, Droplets, Apple). */
   customPins: boolean;
+
+  /** High-level map overlay filter (solo-category view). */
+  overlayCategory: MapOverlayCategory;
+  meshNodes: boolean;
+  peerPositions: boolean;
+  /** User map markers (`get_map_markers`) by normalized category. */
+  mapMarkers: {
+    hazard: boolean;
+    water: boolean;
+    cache: boolean;
+    med: boolean;
+  };
+  /** User drawings overlay. */
+  drawings: boolean;
+  /** Route blockages drawn on the map. */
+  routeBlockages: boolean;
+  /** Tactical points whose notes look like hazards / obstructions. */
+  dangerPins: boolean;
 };
 
 export const defaultTacticalLayerVisibilityState: TacticalLayerVisibilityState = {
@@ -52,6 +71,18 @@ export const defaultTacticalLayerVisibilityState: TacticalLayerVisibilityState =
     equipment: true,
   },
   customPins: true,
+  overlayCategory: "all",
+  meshNodes: true,
+  peerPositions: true,
+  mapMarkers: {
+    hazard: true,
+    water: true,
+    cache: true,
+    med: true,
+  },
+  drawings: true,
+  routeBlockages: true,
+  dangerPins: true,
 };
 
 type TacticalImportResult = {
@@ -68,27 +99,41 @@ export interface TacticalSidebarProps {
 
 const COLLAPSE_AFTER_IDLE_MS = 5000;
 
-function normalizeInitialState(
-  incoming?: TacticalLayerVisibilityState,
+export function mergeTacticalLayerVisibility(
+  incoming?: Partial<TacticalLayerVisibilityState>,
 ): TacticalLayerVisibilityState {
+  const d = defaultTacticalLayerVisibilityState;
   return {
-    activeFamily: incoming?.activeFamily ?? defaultTacticalLayerVisibilityState.activeFamily,
+    activeFamily: incoming?.activeFamily ?? d.activeFamily,
     network: {
-      nodes: incoming?.network.nodes ?? defaultTacticalLayerVisibilityState.network.nodes,
-      coverageCircles:
-        incoming?.network.coverageCircles ??
-        defaultTacticalLayerVisibilityState.network.coverageCircles,
-      links: incoming?.network.links ?? defaultTacticalLayerVisibilityState.network.links,
+      nodes: incoming?.network?.nodes ?? d.network.nodes,
+      coverageCircles: incoming?.network?.coverageCircles ?? d.network.coverageCircles,
+      links: incoming?.network?.links ?? d.network.links,
     },
     resources: {
-      power: incoming?.resources.power ?? defaultTacticalLayerVisibilityState.resources.power,
-      water: incoming?.resources.water ?? defaultTacticalLayerVisibilityState.resources.water,
-      food: incoming?.resources.food ?? defaultTacticalLayerVisibilityState.resources.food,
-      equipment:
-        incoming?.resources.equipment ?? defaultTacticalLayerVisibilityState.resources.equipment,
+      power: incoming?.resources?.power ?? d.resources.power,
+      water: incoming?.resources?.water ?? d.resources.water,
+      food: incoming?.resources?.food ?? d.resources.food,
+      equipment: incoming?.resources?.equipment ?? d.resources.equipment,
     },
-    customPins: incoming?.customPins ?? defaultTacticalLayerVisibilityState.customPins,
+    customPins: incoming?.customPins ?? d.customPins,
+    overlayCategory: incoming?.overlayCategory ?? d.overlayCategory,
+    meshNodes: incoming?.meshNodes ?? d.meshNodes,
+    peerPositions: incoming?.peerPositions ?? d.peerPositions,
+    mapMarkers: {
+      hazard: incoming?.mapMarkers?.hazard ?? d.mapMarkers.hazard,
+      water: incoming?.mapMarkers?.water ?? d.mapMarkers.water,
+      cache: incoming?.mapMarkers?.cache ?? d.mapMarkers.cache,
+      med: incoming?.mapMarkers?.med ?? d.mapMarkers.med,
+    },
+    drawings: incoming?.drawings ?? d.drawings,
+    routeBlockages: incoming?.routeBlockages ?? d.routeBlockages,
+    dangerPins: incoming?.dangerPins ?? d.dangerPins,
   };
+}
+
+function normalizeInitialState(incoming?: TacticalLayerVisibilityState): TacticalLayerVisibilityState {
+  return mergeTacticalLayerVisibility(incoming);
 }
 
 export function TacticalSidebar({
