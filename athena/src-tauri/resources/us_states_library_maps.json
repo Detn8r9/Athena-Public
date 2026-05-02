@@ -44,7 +44,7 @@
     "TN": {"slug": "tennessee", "display": "Tennessee", "lat": 35.7478, "lon": -86.6923},
     "TX": {"slug": "texas", "display": "Texas", "lat": 31.9686, "lon": -99.9018},
     "UT": {"slug": "utah", "display": "Utah", "lat": 40.1135, "lon": -111.8535},
-    "VT": {"slug": "vermont", "display": "Vermont", "lat": 44.0459, "lon": -72.7107},
+    "VT": {"slug": "vermont", "display": "VT", "lat": 44.0459, "lon": -72.7107},
     "VA": {"slug": "virginia", "display": "Virginia", "lat": 37.7693, "lon": -78.1699},
     "WA": {"slug": "washington", "display": "Washington", "lat": 47.4009, "lon": -121.4905},
     "WV": {"slug": "west_virginia", "display": "West Virginia", "lat": 38.4912, "lon": -80.9545},

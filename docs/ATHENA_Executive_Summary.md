@@ -1,74 +1,63 @@
 # ATHENA — Executive Summary
 
-**Autonomous Tactical Heuristic Emergency Network Archive**
+**Autonomous Tactical Heuristic Emergency Network Archive**  
+*A desktop “station” for knowledge, maps, learning, and field workflows—built to run when the network does not.*
 
 ---
 
-## Project Vision
+## Project vision
 
-ATHENA is designed as a **localized, offline-first tactical command station**—a single workstation that keeps critical information, communication, and decision support available when networks are unreliable or absent.
+ATHENA is meant to work as a **local, offline-first workstation**: one place where maps, documents, lessons, chat-style assistance, and communications tools stay available **on the device**, without needing constant internet access. The aim is continuity—people can keep operating when power is unstable, links are poor, or cloud services are unavailable.
 
-The goal is not to replace cloud systems in peacetime offices. It is to give operators a **self-contained environment** they can trust in the field, in emergencies, or in any setting where connectivity, power, or infrastructure may fail without warning. Data stays on the device. Maps, documents, training materials, and tools remain usable **without depending on the internet** to function.
-
-This vision reflects **end-to-end systems thinking**: from how information is stored and protected, to how it is packaged for movement between machines, to how a stressed user interacts with complex capabilities through one coherent experience.
+The product is framed as **end-to-end systems work**: how information is stored, how much of it can be **moved** to another drive or machine, how maps stay **relevant to the situation**, and how the interface stays understandable **under pressure**.
 
 ---
 
-## Core Capabilities
+## Core capabilities (what it delivers)
 
-### Tiered Omnibus Export — Flexible Distribution
+**Aegis Protocol (tiered USB export) — flexible “what to carry”**  
+Exports are offered in **layers**, not one fixed bundle. A **minimal** path favors speed and small size—core application pieces plus a **focused map** for the area that matters. Broader paths add **heavier resources** (such as AI-related packs and curated archives) when space allows. The idea is **distribution that matches the mission**: not everyone needs the full library on every thumb drive.
 
-Not every mission or device needs the same software footprint. ATHENA’s **tiered export** treats the application like a **flexible distribution system**:
+**Academy Hub — learning without the live classroom**  
+The same application can host **structured lessons and readings** prepared ahead of time, so training and family-style learning can continue **without streaming or logins**. Content is treated as **operator-provided** where licensing applies; the value is **organization and offline access**, not dependence on a distant website.
 
-- **Smaller packages** prioritize speed and portability—essential programs and a focused geographic dataset when storage or time is limited.
-- **Larger packages** add richer resources—models, libraries, and archives—when capacity allows.
-
-Stakeholders can think of it as **choosing how much of the “station” to copy** onto removable media or another machine, rather than a single rigid installer. That supports training, deployment, and recovery scenarios where requirements differ by role and by day.
-
-### Academy Hub — Localized Education Platform
-
-The **Academy Hub** turns the same workstation into a **localized education platform**. Curricula and lessons can be organized for offline use—aligned with structured learning approaches—so instruction does not stop when the network does.
-
-For operations that must develop people in place (continuity teams, field schools, or family learning), this means **education is bundled with the tool**, not fetched from a distant server on demand.
-
-### Proximity Mapping — Dynamic Localization
-
-**Proximity mapping** focuses map data on the **area that matters now**—for example, a defined radius around a place of interest—rather than loading an entire world dataset everywhere.
-
-For decision-makers, the value is **dynamic localization**: relevant terrain and context without wasting storage or attention on regions that are irrelevant to the current mission. It supports situational awareness that is **tailored, portable, and offline**.
+**Proximity mapping — maps sized to the moment**  
+Instead of pretending every device should hold the entire world at full detail, the design favors **extracting or emphasizing a region** around a place that matters for the task. That keeps storage and attention on **what is nearby and actionable**, which supports clearer decisions when time is short.
 
 ---
 
-## Resilience Architecture
+## Resilience architecture (plain English)
 
-### Self-Healing Diagnostics
+**Startup checks and a calm path when something is missing**  
+On launch, the system looks for the **helper programs and files** it depends on. If something important is absent or unhealthy, the experience can shift into a **careful, non-destructive mode**—explaining the gap rather than failing in a confusing way. The goal is **recoverable operation**, not silent breakage.
 
-Before and during operation, ATHENA checks that the **supporting programs and data** it relies on are present and healthy. If something is wrong, the system can **enter a controlled maintenance state** instead of failing silently or crashing.
-
-In plain terms: the application **surfaces problems clearly** and avoids taking destructive action when prerequisites are missing. That reduces “mystery failures” in the field and supports faster recovery.
-
-### Database Integrity
-
-Local databases use modern safeguards—including **write-ahead logging**—so that if power drops mid-operation, the system is **less likely to corrupt stored information**. On startup, **integrity checks** help confirm that stored data is still trustworthy.
-
-Together, these measures address a practical reality: **hardware and power are not perfect**. The architecture is built so that brief failures do not automatically destroy the operator’s work or leave the application in an unusable state.
+**Protecting local records when power blinks**  
+Local data storage uses practices that reduce the chance of **half-written files** when electricity drops mid-task. On startup, **light verification** helps catch problems early. Nothing is perfect, but the design assumes **real hardware and real outages**—not ideal lab conditions.
 
 ---
 
-## User Experience
+## User experience
 
-ATHENA packages **advanced capabilities**—local language models, document search, maps, communications workflows, and structured learning—behind a **single, intuitive interface**. The design assumption is that users may be **under stress**, **time-limited**, or **non-specialist** in information technology.
-
-Complex tools are **organized into clear workflows** rather than exposed as raw technical utilities. The aim is to reduce cognitive load: the operator thinks about the mission, not about configuring servers or debugging dependencies.
-
-This user-centered packaging is itself a form of **systems engineering**—bridging deep technical stacks and real-world operators who need reliability and clarity more than feature lists.
+The project wraps **powerful ideas**—local assistance, search across your own documents, maps, mesh-style messaging where enabled—into **one application shell** with familiar patterns (lists, panes, settings) rather than a pile of separate tools. The priority is **clarity under stress**: fewer steps to the thing you need, less jargon on screen, and workflows that read as **tasks** (“export,” “lesson,” “map”) instead of as engineering chores.
 
 ---
 
-## Closing Note
+## In one sentence
 
-ATHENA represents **integrated problem solving** across storage, distribution, mapping, learning, and resilience—oriented toward environments where **offline operation and operational continuity** are not optional requirements, but core success criteria.
+ATHENA is a **single, offline-capable workstation** that bundles knowledge, mapping, learning, and resilience-minded behavior so people can **keep working when the network cannot be relied on**.
 
 ---
 
-*Document version: suitable for export to PDF. Project details may evolve with the codebase; verify technical claims against the latest product documentation before external distribution.*
+*This summary is intentionally high level. For technical accuracy, refer to in-repository documentation and the current application behavior.*
+
+---
+
+## Exporting this document to PDF
+
+Pandoc is not required. Typical options:
+
+- **macOS**: Open this file in **Preview** (File → Export as PDF), or paste into **Pages** / **Word** and export as PDF.
+- **VS Code / Cursor**: Install a “Markdown PDF” extension and use **Export PDF** on this file.
+- **Browser**: Drag the file into a browser, print, and choose **Save as PDF**.
+- **Pandoc** (if you install it later):  
+  `pandoc docs/ATHENA_Executive_Summary.md -o docs/ATHENA_Executive_Summary.pdf`

@@ -5,7 +5,7 @@ Use this after implementing **Essentials** behavior in `export_athena_to_usb` (`
 ## Expected layout (destination root, e.g. `export_test/`)
 
 - **`ATHENA/`** — install folder copied from beside the running executable (non-macOS) or platform-specific layout.
-- **`data/maps/fairlee_vt_25mi.pmtiles`** — proximity extract from the `pmtiles` sidecar (`extract` with bbox around Fairlee, VT: **43.908°N, 72.143°W**, **25 mi** radius).
+- **`data/maps/example_region_25mi.pmtiles`** — proximity extract from the `pmtiles` sidecar (`extract` with bbox around a **generic US interior reference point** (**39.828°N, 98.580°W**), **25 mi** radius).
 - **`data/athena_index.db`** — present **when** the local app data directory contains `athena_index.db` at export time (personnel / roster / library index).
 
 ## Should *not* appear on Essentials
@@ -21,4 +21,8 @@ Extraction needs a **source** `.pmtiles` (local offline map or remote URL as con
 
 ## Automated check (Rust)
 
-Add a unit test on `approx_bbox_for_radius_miles(-72.143, 43.908, 25.0)` to lock the Fairlee bbox math (see `portable.rs`).
+`portable.rs` includes a unit test on `approx_bbox_for_radius_miles` for the configured center and 25 mi radius.
+
+## Academy Hub (manual)
+
+After a dev build (`npm run tauri dev` in `athena/`), open **Academy**, switch to **PDF archive**, confirm units appear from `payload/Academy/**/metadata.json`, open a unit, and confirm student/teacher panes (add `reader.pdf` / `lecture_guide.pdf` to test PDF rendering).

@@ -86,6 +86,7 @@ fn chat_stream_errors_when_body_stalls_after_first_chunk() {
         &mut |s| aggregated.push_str(s),
         || {},
         None,
+        None,
     );
 
     assert!(
