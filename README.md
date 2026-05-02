@@ -23,7 +23,7 @@ On startup, ATHENA performs a resilience check and can enter a non-destructive *
 
 Aegis Protocol supports three tiers:
 
-- **Essentials**: small and fast — platform launchers from the bundled payload, a **25-mile PMTiles extract** centered on **Fairlee, VT** (43.908°N, 72.143°W), and a copy of the local **`athena_index.db`** when it exists (personnel / roster / library index). Does not copy embedding or reranker models or full document mirrors.
+- **Essentials**: small and fast — platform launchers from the bundled payload, a **25-mile PMTiles extract** centered on a **generic US interior reference point** (39.828°N, 98.580°W), and a copy of the local **`athena_index.db`** when it exists (personnel / roster / library index). Does not copy embedding or reranker models or full document mirrors.
 - **Recommended**: copies embedding and reranker models, then **priority-based** payload packs until free space would drop below a **500MB** reserve.
 - **Absolute**: copies the full bundled payload tree and mirrors watched library folders plus the index database (see in-app export notes for wipe / “scorched earth” options).
 

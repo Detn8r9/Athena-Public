@@ -469,7 +469,7 @@ fn pick_best_local_pmtiles_source(app_data_dir: &Path) -> Option<PathBuf> {
     candidates.pop()
 }
 
-fn ensure_fairlee_proximity_pmtiles(
+fn ensure_example_region_proximity_pmtiles(
     app: &tauri::AppHandle,
     dest_root: &Path,
     app_data_dir: &Path,
@@ -477,15 +477,16 @@ fn ensure_fairlee_proximity_pmtiles(
     const PROTOMAPS_SOURCE_URL: &str =
         "https://data.source.coop/protomaps/openstreetmap/tiles/v3.pmtiles";
 
-    let center_lat = 43.908_f64;
-    let center_lon = -72.143_f64;
+    // Conterminous US geographic center (widely published reference point), not an operator home.
+    let center_lat = 39.828175_f64;
+    let center_lon = -98.579534_f64;
     let radius_miles = 25.0_f64;
     let (min_lon, min_lat, max_lon, max_lat) =
         approx_bbox_for_radius_miles(center_lon, center_lat, radius_miles);
 
     let out_dir = dest_root.join("data").join("maps");
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-    let out = out_dir.join("fairlee_vt_25mi.pmtiles");
+    let out = out_dir.join("example_region_25mi.pmtiles");
 
     let source = pick_best_local_pmtiles_source(app_data_dir)
         .and_then(|p| p.to_str().map(|s| s.to_string()))
@@ -2819,7 +2820,7 @@ fn export_expedition_to_usb(
 
     if example_region_reserved_bytes() <= expedition_remaining_bytes(budget_bytes, io) {
         io.emit_phase(app, "Building proximity offline map…", 0.44);
-        ensure_fairlee_proximity_pmtiles(app, dest_root, app_data_dir)?;
+        ensure_example_region_proximity_pmtiles(app, dest_root, app_data_dir)?;
         io.emit_phase(app, "Offline map ready.", 0.50);
     } else {
         io.emit_phase(
@@ -3043,7 +3044,7 @@ pub fn export_athena_to_usb(
             copy_bundled_payload_branches_to_usb(app, &dest_root, &mut io, 0.30, 0.42);
             io.emit_phase(app, "Payload stage complete.", 0.42);
             io.emit_phase(app, "Building proximity offline map…", 0.44);
-            ensure_fairlee_proximity_pmtiles(app, &dest_root, &app_data_dir)?;
+            ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir)?;
             io.emit_phase(app, "Offline map ready.", 0.50);
 
             if !emb_src.is_dir() {
@@ -3139,7 +3140,7 @@ pub fn export_athena_to_usb(
 
             copy_full_payload_to_usb_root(app, &dest_root, &mut io)?;
             io.emit_phase(app, "Building proximity offline map…", 0.44);
-            ensure_fairlee_proximity_pmtiles(app, &dest_root, &app_data_dir)?;
+            ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir)?;
             io.emit_phase(app, "Offline map ready.", 0.50);
 
             if !emb_src.is_dir() {
@@ -3261,15 +3262,17 @@ pub fn export_athena_to_usb(
 }
 
 #[cfg(test)]
-mod fairlee_tests {
+mod example_region_tests {
     use super::approx_bbox_for_radius_miles;
 
     #[test]
-    fn fairlee_vt_25mi_bbox_contains_center() {
+    fn example_region_25mi_bbox_contains_center() {
+        let center_lon = -98.579534_f64;
+        let center_lat = 39.828175_f64;
         let (min_lon, min_lat, max_lon, max_lat) =
-            approx_bbox_for_radius_miles(-72.143_f64, 43.908_f64, 25.0_f64);
-        assert!((-72.143_f64) >= min_lon && (-72.143_f64) <= max_lon, "lon range");
-        assert!(43.908_f64 >= min_lat && 43.908_f64 <= max_lat, "lat range");
+            approx_bbox_for_radius_miles(center_lon, center_lat, 25.0_f64);
+        assert!(center_lon >= min_lon && center_lon <= max_lon, "lon range");
+        assert!(center_lat >= min_lat && center_lat <= max_lat, "lat range");
         assert!(max_lon > min_lon && max_lat > min_lat);
     }
 }

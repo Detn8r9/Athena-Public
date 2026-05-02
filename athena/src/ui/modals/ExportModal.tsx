@@ -107,7 +107,7 @@ const MANUAL_TIER_CARDS: Array<{
     id: "bastion",
     title: "Bastion",
     systems:
-      "Full station intelligence: AI models, complete SQLite index and indexed documents, Fairlee, VT proximity terrain extract (25 mi), priority payload packs, offline maps excluding satellite rasters, and library folders with the same satellite skip (terrain / pins / markers stay in the database).",
+      "Full station intelligence: AI models, complete SQLite index and indexed documents, example US interior proximity terrain extract (25 mi), priority payload packs, offline maps excluding satellite rasters, and library folders with the same satellite skip (terrain / pins / markers stay in the database).",
   },
   {
     id: "citadel",
