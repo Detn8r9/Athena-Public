@@ -52,6 +52,7 @@ athena/src-tauri/target-local/
 athena/src-tauri/target-local-agent/
 athena/src-tauri/target-local-agent-check/
 athena/src-tauri/target-phase2b/
+athena/src-tauri/target-local-check/
 
 # --- Tauri generated ---
 **/gen/schemas/
@@ -80,6 +81,18 @@ logs/
 *.orig
 *.rej
 
+# --- Large local data (mirrors .cursorignore; Athena / IDE stabilization) ---
+AthenaData/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.zim
+*.zip
+*.tar
+*.pbf
+*manifest.json
+
 # --- Cursor: keep shared rules, drop local logs/state ---
 .cursor/*
 !.cursor/rules/
@@ -95,3 +108,7 @@ logs/
 **/user-profile-local/
 athena/**/screenshots/
 athena/**/.env.local
+
+# --- Workspace lockdown (IDE + file watchers) ---
+src-tauri/target/
+*.part

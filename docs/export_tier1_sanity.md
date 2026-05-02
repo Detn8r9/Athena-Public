@@ -21,4 +21,8 @@ Extraction needs a **source** `.pmtiles` (local offline map or remote URL as con
 
 ## Automated check (Rust)
 
-Add a unit test on `approx_bbox_for_radius_miles(-72.143, 43.908, 25.0)` to lock the Fairlee bbox math (see `portable.rs`).
+Add a unit test on `approx_bbox_for_radius_miles(-72.143, 43.908, 25.0)` to lock the Fairlee bbox math (see `domains/deployment/portable.rs`).
+
+## Academy Hub (manual)
+
+After a dev build (`npm run tauri dev` in `athena/`), open **Academy**, switch to **PDF archive**, confirm units appear from `payload/Academy/**/metadata.json`, open a unit, and confirm student/teacher panes (add `reader.pdf` / `lecture_guide.pdf` to test PDF rendering).

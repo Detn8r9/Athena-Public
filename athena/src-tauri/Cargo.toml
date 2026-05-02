@@ -25,7 +25,7 @@ tauri-plugin-dialog = "2"
 meshtastic = { version = "0.1.8", features = ["serde", "tokio"] }
 prost = "0.14"
 tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "fs", "io-std"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
 tokio-serial = "5.4"
 serialport = "4.6"
 mdns-sd = "0.18"
@@ -42,8 +42,10 @@ walkdir = "2"
 image = "0.25"
 crossbeam-channel = "0.5"
 sysinfo = "0.30"
+keepawake = "0.6"
 ureq = { version = "2", features = ["json"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "blocking"] }
+axum = { version = "0.7", default-features = false, features = ["json", "http1", "tokio", "query"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "io"] }
 zim = "0.4"
 quick-xml = "0.36"
@@ -73,9 +75,15 @@ tauri-plugin-shell = "2"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 rand = "0.8"
+socket2 = "0.5"
 geoconvert = "1.0"
+osmpbfreader = "0.16"
+polyline = "0.3"
 sqlite-vec = "0.1.8-alpha.1"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "ndarray", "tls-rustls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-macos-permissions = "2"
@@ -84,6 +92,11 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWi
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
 
 [features]
 default = []

@@ -39,6 +39,9 @@ export type Lexicon = {
   archiveAcademyNetworkTitle: string;
   archiveAcademyNetworkSubtitle: string;
   academyNetworkEmpty: string;
+  academyArchiveTwoLocationsNote: string;
+  zimOnDeviceBadge: string;
+  zimNotDownloadedBadge: string;
   archiveLocalNoMatches: string;
   archiveLocalTitle: string;
   archiveLocalSubtitle: string;
@@ -127,7 +130,6 @@ export type Lexicon = {
   settingsPanelThemes: string;
   settingsPanelThemeStudio: string;
   settingsPanelTroubleshooting: string;
-  settingsPanelUsbExport: string;
   settingsPanelDeveloper: string;
   settingsNavAria: string;
   settingsNavIntroLead: string;
@@ -135,7 +137,8 @@ export type Lexicon = {
   settingsNavMeshDisconnectedNote: string;
   settingsNavGroupProfileCalendar: string;
   settingsNavGroupAiKnowledge: string;
-  settingsNavGroupMapsRadio: string;
+  settingsNavGroupLocationMaps: string;
+  settingsNavGroupRadioVoice: string;
   settingsNavGroupLookFeel: string;
   settingsNavGroupBackupHelp: string;
   settingsNavGeneral: string;
@@ -420,7 +423,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   tabLocalArchive: "Local Archive",
   tabDownloadNetwork: "Download Network",
   archiveHubIntro:
-    "Local Archive lists files already in your data sources — use All, Packages, Documents, Maps, and Academy tabs with search and sort. Download Network adds Packages (tiers, à la carte), Academy (curriculum Kiwix archives), Documents (RAG / Kiwix), and Maps.",
+    "Local Archive: what is already on your drives (filter by Packages, Documents, Maps, Academy; search and sort). Download Network: install tiers, Academy ZIMs, RAG documents, and maps.",
   archivePrimaryTablistAria: "Archive: local files or download network",
   archiveNetworkTablistAria: "Download network sections",
   tabArchivePackages: "Packages",
@@ -438,13 +441,17 @@ const SURVIVAL_LEXICON: Lexicon = {
   archiveSearchFilesPlaceholder: "Search file name or path…",
   sectionAcademyCurriculum: "Academy downloads",
   sectionAcademyCurriculumBody:
-    "Kiwix archives for the Academy curriculum, grouped by grade band and subject. They install into library/academy/ like other tier files.",
+    "Same PhET, WikiBooks, and Khan URLs as Academy → ZIM downloads. Requisitions land in library/academy/ under your data source (indexed here and in Local Archive).",
   academyOtherDownloads: "Other academy files",
   archiveAcademyNetworkTitle: "Academy downloads",
   archiveAcademyNetworkSubtitle:
-    "Offline Kiwix packages aligned with the Academy curriculum—literacy, reference, and subject tracks—installed under library/academy/ for lessons and search.",
+    "Curriculum-aligned ZIMs (middle school science & reading, high school reference). Status reflects files found under your archive data sources.",
   academyNetworkEmpty:
     "No Academy catalog entries are listed in the network manifest yet. Tier bundles may still include Academy files under Packages.",
+  academyArchiveTwoLocationsNote:
+    "Academy → ZIM downloads sends files to the in-app Kiwix library (payload/ZIM_Archives). Requisitions here install to library/academy/ on your archive drive for indexing, search, and structured lessons—the mirror URLs are the same.",
+  zimOnDeviceBadge: "On device",
+  zimNotDownloadedBadge: "Not installed",
   archiveLocalNoMatches: "No files match this category or search.",
   archiveLocalTitle: "Your archive",
   archiveLocalSubtitle:
@@ -468,7 +475,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   regionalMaps: "Regional maps",
   setDownloadArea: "Set your download area",
   setDownloadAreaBody:
-    "The Satchel adds offline state maps (Protomaps) for where you are, plus nearby states when you are close to a border. Wikipedia and other tiers are unchanged.",
+    "The Satchel adds offline state maps (Protomaps) for where you are, plus nearby states when you are close to a border. Other tiers are unchanged.",
   locationFieldLabel: "US city, address, or ZIP",
   lookUpAndSave: "Look up and save",
   useNycDefault: "Use NYC default (offline)",
@@ -476,7 +483,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   setLocation: "Set location",
   changeArea: "Change area",
   noAreaWarning:
-    "No download area set — The Satchel will only include Wikipedia until you choose a US location for state maps.",
+    "No download area set — The Satchel will not add regional state maps until you choose a US location.",
   destinationSummary: "Primary destination",
   watchFoldersLabel: "Data source folders",
   fileMissingOnDisk: "Missing on disk (still in index)",
@@ -538,19 +545,19 @@ const SURVIVAL_LEXICON: Lexicon = {
   settingsPanelThemes: "Themes & Colors",
   settingsPanelThemeStudio: "Theme Studio",
   settingsPanelTroubleshooting: "Troubleshooting",
-  settingsPanelUsbExport: "USB export",
   settingsPanelDeveloper: "Developer",
   settingsNavAria: "Settings sections",
   settingsNavIntroLead:
-    "Pick a section below. New to ATHENA? Use Me for your operator account, then General (what the name means and your library folder), then AI & Models for chat. Backup & help covers USB transfer and the error log.",
+    "Sections are grouped: account & calendar, AI, location & maps, radio & voice, look & feel, then backup & diagnostics. New here? Open Me for your operator account, then General for the ATHENA name and library folder.",
   settingsNavMeshConnectedNote: " The mesh radio button appears when a Meshtastic device is connected.",
   settingsNavMeshDisconnectedNote:
     " No Meshtastic radio detected—mesh options are unavailable until a device is connected.",
   settingsNavGroupProfileCalendar: "General & calendar",
   settingsNavGroupAiKnowledge: "AI & Knowledge",
-  settingsNavGroupMapsRadio: "Maps, Radio & Devices",
+  settingsNavGroupLocationMaps: "Location & maps",
+  settingsNavGroupRadioVoice: "Radio & voice",
   settingsNavGroupLookFeel: "Look & feel",
-  settingsNavGroupBackupHelp: "Backup & help",
+  settingsNavGroupBackupHelp: "Backup & diagnostics",
   settingsNavGeneral: "General",
   settingsNavGeneralDesc: "About ATHENA, startup view, help, maintenance",
   settingsNavMeAccountHint: "Operator account",
@@ -586,7 +593,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   settingsNavTroubleshooting: "Troubleshooting",
   settingsNavTroubleshootingDesc: "Error log, shortcuts to Library and Help",
   settingsNavUsbExport: "USB export",
-  settingsNavUsbExportDesc: "Portable copy to a flash drive (optional format on macOS)",
+  settingsNavUsbExportDesc: "Aegis Protocol — tiered portable copy (optional format on macOS)",
 
   helpModalTitle: "Help & features",
   helpCloseAria: "Close help",
@@ -621,7 +628,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   helpTopicRadioCommsLabel: "Comms (radio)",
   helpTopicRadioCommsBlurb: "Serial radio terminal, channels",
   helpTopicSettingsLabel: "Settings",
-  helpTopicSettingsBlurb: "Profile, AI, maps, mesh, themes, USB export",
+  helpTopicSettingsBlurb: "Grouped menu: AI, maps, mesh, themes, Aegis USB export",
   helpTopicRepliesLabel: "Replies & playback",
   helpTopicRepliesBlurb: "TTS, copy, and citations",
   helpTopicHelpAssistantLabel: "Ask Athena",
@@ -840,7 +847,7 @@ const FALLOUT_LEXICON: Lexicon = {
   tabLocalArchive: "Vault Storage",
   tabDownloadNetwork: "Wasteland Network",
   archiveHubIntro:
-    "Vault Storage: same category tabs as the network (All, Packages, Documents, Maps, Academy) plus search and sort. Wasteland Network: Packages (bundles, à la carte), Academy (curriculum holotapes), Documents, Maps.",
+    "Vault Storage: what you already have (filter like the network: Packages, Documents, Maps, Academy; search and sort). Wasteland Network: install bundles, Academy holotapes, documents, maps.",
   archivePrimaryTablistAria: "Archive: vault storage or wasteland network",
   archiveNetworkTablistAria: "Wasteland network sections",
   tabArchivePackages: "Packages",
@@ -858,13 +865,17 @@ const FALLOUT_LEXICON: Lexicon = {
   archiveSearchFilesPlaceholder: "Search holotape name or path…",
   sectionAcademyCurriculum: "Academy holotapes",
   sectionAcademyCurriculumBody:
-    "Kiosk ZIMs by clearance band and course track. Deliveries route to library/academy/ like other sanctioned packs.",
+    "Same PhET / WikiBooks / Khan URLs as the Academy kiosk. Deliveries route to library/academy/ (indexed in Vault Storage).",
   academyOtherDownloads: "Unfiled academy payloads",
   archiveAcademyNetworkTitle: "Academy holotapes",
   archiveAcademyNetworkSubtitle:
-    "Sanctioned kiosk ZIMs for the Academy—reading, reference, and tracks by clearance—routed to library/academy/.",
+    "Kiosk ZIMs by clearance band and track. Status shows what is already in your vault paths.",
   academyNetworkEmpty:
     "No Academy entries in the wasteland manifest yet. Bundles under Packages may still include holotapes.",
+  academyArchiveTwoLocationsNote:
+    "Academy → ZIM downloads feeds the built-in Kiwix viewer (payload/ZIM_Archives). Scavenging here drops into library/academy/ on your vault path—same mirror URLs, different landing zone.",
+  zimOnDeviceBadge: "In vault",
+  zimNotDownloadedBadge: "Not in vault",
   archiveLocalNoMatches: "No holotapes match this filter.",
   archiveLocalTitle: "Vault inventory",
   archiveLocalSubtitle: "Registered tower paths and indexed files — filter like the Wasteland Network tabs, with search and sort.",
@@ -887,7 +898,7 @@ const FALLOUT_LEXICON: Lexicon = {
   regionalMaps: "Regional maps",
   setDownloadArea: "Set your surface coordinates",
   setDownloadAreaBody:
-    "The Satchel still pulls US state Protomaps from this pin; other tiers behave the same as before.",
+    "The Satchel still pulls US state Protomaps from this pin; other tiers are unchanged.",
   locationFieldLabel: "US city, address, or ZIP",
   lookUpAndSave: "Query atlas and save",
   useNycDefault: "Default to New York (offline)",
@@ -895,7 +906,7 @@ const FALLOUT_LEXICON: Lexicon = {
   setLocation: "Set coordinates",
   changeArea: "Replot",
   noAreaWarning:
-    "No surface pin saved — The Satchel only queues Wikipedia until you pick a US spot for state maps.",
+    "No surface pin saved — The Satchel will not add regional state maps until you pick a US spot.",
   destinationSummary: "Primary vault path",
   watchFoldersLabel: "Radio tower paths",
   fileMissingOnDisk: "File missing (ghost index)",
@@ -957,17 +968,17 @@ const FALLOUT_LEXICON: Lexicon = {
   settingsPanelThemes: "Themes & Colors",
   settingsPanelThemeStudio: "Theme Studio",
   settingsPanelTroubleshooting: "Diagnostics",
-  settingsPanelUsbExport: "Holotape export",
   settingsPanelDeveloper: "Overseer",
   settingsNavAria: "Vault settings sections",
   settingsNavIntroLead:
-    "Pick a section. New here? Me is your dweller account; General explains ATHENA and your stash path; AI & Archives powers chat. Holotapes & diagnostics covers USB transfer and the error log.",
+    "Sections are grouped: account & schedule, AI, location & maps, uplink & voice, look & feel, then holotapes & diagnostics. New here? Me is your dweller account; General explains ATHENA and your stash path.",
   settingsNavMeshConnectedNote: " The mesh uplink icon appears when a Meshtastic device is tethered.",
   settingsNavMeshDisconnectedNote:
     " No Meshtastic uplink detected—mesh options stay locked until hardware is connected.",
   settingsNavGroupProfileCalendar: "General & schedule",
   settingsNavGroupAiKnowledge: "AI & Archives",
-  settingsNavGroupMapsRadio: "Maps, Radio & Gear",
+  settingsNavGroupLocationMaps: "Location & maps",
+  settingsNavGroupRadioVoice: "Uplink & voice",
   settingsNavGroupLookFeel: "Look & feel",
   settingsNavGroupBackupHelp: "Holotapes & diagnostics",
   settingsNavGeneral: "General",
@@ -1003,7 +1014,7 @@ const FALLOUT_LEXICON: Lexicon = {
   settingsNavTroubleshooting: "Diagnostics",
   settingsNavTroubleshootingDesc: "Error log and deep probes",
   settingsNavUsbExport: "Holotape export",
-  settingsNavUsbExportDesc: "Copy the app and vault data to removable storage",
+  settingsNavUsbExportDesc: "Aegis Protocol — tiered vault copy to removable storage",
 
   helpModalTitle: "Manual & features",
   helpCloseAria: "Close manual",
@@ -1038,7 +1049,7 @@ const FALLOUT_LEXICON: Lexicon = {
   helpTopicRadioCommsLabel: "Comms (radio)",
   helpTopicRadioCommsBlurb: "Serial terminal and channel profiles",
   helpTopicSettingsLabel: "Settings",
-  helpTopicSettingsBlurb: "Profile, AI, maps, mesh, themes, USB export",
+  helpTopicSettingsBlurb: "Grouped menu: AI, maps, mesh, themes, Aegis USB export",
   helpTopicRepliesLabel: "Replies & playback",
   helpTopicRepliesBlurb: "TTS, copy, citations",
   helpTopicHelpAssistantLabel: "Ask Athena",

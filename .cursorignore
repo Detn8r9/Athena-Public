@@ -1,0 +1,17 @@
+AthenaData/
+target/
+node_modules/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.zim
+*.zip
+*.tar
+*.pbf
+*manifest.json
+
+# --- Workspace lockdown (IDE + file watchers) ---
+src-tauri/target/
+dist/
+*.part

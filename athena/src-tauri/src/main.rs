@@ -2,6 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    athena_lib::init_portable_app_data_override();
+    if let Err(e) = athena_lib::init_portable_app_data_override() {
+        eprintln!("[athena] FATAL: portable / AthenaData initialization failed: {e}");
+        std::process::exit(1);
+    }
     athena_lib::run()
 }

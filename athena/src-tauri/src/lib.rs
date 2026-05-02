@@ -1,73 +1,202 @@
+#[path = "domains/academy/academy.rs"]
 mod academy;
+#[path = "domains/auth/auth.rs"]
 mod auth;
+#[path = "platform/protocols/athena_map_protocol.rs"]
 mod athena_map_protocol;
+#[path = "platform/protocols/athena_mbtiles_tile_protocol.rs"]
 mod athena_mbtiles_tile_protocol;
+#[path = "domains/chat/chats.rs"]
 mod chats;
+#[path = "domains/ingestion/chunking.rs"]
 mod chunking;
+#[path = "platform/tauri/commands/mod.rs"]
 mod commands;
+#[path = "shared/config.rs"]
 mod config;
+#[path = "domains/db/db.rs"]
 mod db;
+#[path = "domains/ingestion/downloader.rs"]
 mod downloader;
+#[path = "domains/vector/neural_embed.rs"]
 mod neural_embed;
+#[path = "domains/vector/rerank.rs"]
 mod rerank;
+#[path = "domains/vector/embeddings.rs"]
 mod embeddings;
+#[path = "domains/hardware/hardware_map.rs"]
 mod hardware_map;
+#[path = "domains/indexing/indexer.rs"]
 mod indexer;
+#[path = "domains/ai/inference.rs"]
 mod inference;
+#[path = "domains/inventory/inventory.rs"]
 mod inventory;
+#[path = "domains/inventory/logistics_ai.rs"]
+mod logistics_ai;
+#[path = "domains/inventory/logistics_apply.rs"]
+mod logistics_apply;
 #[cfg(target_os = "linux")]
+#[path = "platform/os/isoc23_shim.rs"]
 mod isoc23_shim;
+#[path = "domains/ingestion/kiwix.rs"]
 mod kiwix;
+#[path = "domains/ingestion/kiwix_serve.rs"]
+mod kiwix_serve;
+#[path = "domains/ingestion/kiwix_tools.rs"]
 mod kiwix_tools;
+#[path = "domains/mesh/lan_cluster.rs"]
 mod lan_cluster;
+#[path = "domains/mesh/lan_identity.rs"]
 mod lan_identity;
+#[path = "domains/mesh/lan_chat.rs"]
+mod lan_chat;
+#[path = "domains/mesh/lan_packets.rs"]
 mod lan_packets;
+#[path = "domains/mesh/lan_sync.rs"]
 mod lan_sync;
+#[path = "domains/mesh/discovery.rs"]
+mod mesh_discovery;
+#[path = "domains/mesh/sync_api.rs"]
+mod mesh_sync_api;
+#[path = "domains/mesh/p2p_sync.rs"]
+mod mesh_p2p_sync;
+#[path = "domains/academy/learner.rs"]
 mod learner;
+#[path = "domains/ingestion/library_installer_location.rs"]
 mod library_installer_location;
 #[cfg(target_os = "macos")]
+#[path = "platform/os/macos_window.rs"]
 mod macos_window;
+#[path = "domains/maps/map_manager.rs"]
 mod map_manager;
+#[path = "domains/inventory/saved_places.rs"]
+mod saved_places;
+#[path = "domains/inventory/blockages.rs"]
+mod blockages;
+#[path = "domains/inventory/territories.rs"]
+mod territories;
+#[path = "domains/ai/ai_staging.rs"]
+mod ai_staging;
+#[path = "domains/routing/valhalla_service.rs"]
+mod valhalla_service;
+#[path = "domains/ai/ai_tools.rs"]
+mod ai_tools;
+#[path = "domains/maps/map_manager_catalog.rs"]
 mod map_manager_catalog;
+#[path = "domains/maps/map_manager_download.rs"]
 mod map_manager_download;
+#[path = "domains/maps/maps.rs"]
 mod maps;
+#[path = "domains/maps/mbtiles_io.rs"]
 mod mbtiles_io;
+#[path = "domains/mesh/mesh_ai.rs"]
 mod mesh_ai;
+#[path = "domains/mesh/mesh_calendar.rs"]
 mod mesh_calendar;
+#[path = "domains/mesh/mesh_router.rs"]
 mod mesh_router;
+#[path = "domains/mesh/mesh_listener.rs"]
 mod mesh_listener;
+#[path = "domains/mesh/mesh_logbook.rs"]
 mod mesh_logbook;
+#[path = "domains/mesh/mesh_sos.rs"]
 mod mesh_sos;
+#[path = "domains/mesh/mesh_radio.rs"]
 mod mesh_radio;
+#[path = "domains/ai/moondream.rs"]
 mod moondream;
+#[path = "domains/ingestion/ocr.rs"]
 mod ocr;
+#[path = "domains/routing/offline_routing.rs"]
 mod offline_routing;
+#[path = "domains/routing/offline_geocoder.rs"]
+mod offline_geocoder;
+#[path = "domains/routing/directions.rs"]
+mod directions;
+#[path = "domains/routing/valhalla_lifecycle.rs"]
+mod valhalla_lifecycle;
+#[path = "domains/ingestion/geofabrik_downloader.rs"]
+mod geofabrik_downloader;
+#[path = "domains/ai/ollama.rs"]
 mod ollama;
+#[path = "domains/ai/ollama_setup.rs"]
 mod ollama_setup;
+#[path = "domains/ai/openai_chat.rs"]
 mod openai_chat;
+#[path = "domains/ai/model_manager.rs"]
+mod model_manager;
+#[path = "domains/ai/chat.rs"]
+mod ai_console_chat;
+#[path = "domains/inventory/personnel_commander.rs"]
+mod personnel_commander;
+#[path = "domains/deployment/package_manager.rs"]
 mod package_manager;
+#[path = "domains/deployment/portable.rs"]
 mod portable;
+#[path = "shared/diagnostics.rs"]
 mod diagnostics;
+#[path = "domains/maps/pmtiles_io.rs"]
 mod pmtiles_io;
+#[path = "domains/maps/pmtiles_region_extract.rs"]
 mod pmtiles_region_extract;
+#[path = "domains/queue/quarantine.rs"]
 mod quarantine;
+#[path = "domains/radio/radio_manager.rs"]
 mod radio_manager;
+#[path = "domains/vector/rag_indexer.rs"]
 mod rag_indexer;
+#[path = "domains/queue/remote_queue.rs"]
 mod remote_queue;
+#[path = "domains/ingestion/satellite_region_download.rs"]
 mod satellite_region_download;
+#[path = "domains/radio/sdr_manager.rs"]
 mod sdr_manager;
+#[path = "domains/radio/sdr_radio.rs"]
 mod sdr_radio;
+#[path = "domains/db/spatial.rs"]
 mod spatial;
+#[path = "domains/routing/routing.rs"]
+mod routing;
+#[path = "domains/telemetry/monitor.rs"]
+mod telemetry_monitor;
+#[path = "domains/telemetry/logging.rs"]
+mod telemetry_logging;
+#[path = "domains/db/storage.rs"]
+mod storage;
+#[path = "domains/deployment/deployment.rs"]
+mod deployment;
+#[path = "domains/ingestion/library_ingest.rs"]
+mod library_ingest;
+#[path = "domains/deployment/deployment_manifest_cache.rs"]
+mod deployment_manifest_cache;
+#[path = "domains/deployment/deployment_queue_state.rs"]
+mod deployment_queue_state;
+#[path = "shared/system.rs"]
 mod system;
+#[path = "shared/telemetry.rs"]
 mod telemetry;
+#[path = "shared/theme.rs"]
 mod theme;
+#[path = "domains/maps/tile_pack.rs"]
 mod tile_pack;
 #[cfg(feature = "piper-tts")]
+#[path = "domains/ai/tts.rs"]
 mod tts;
+#[path = "domains/auth/user_profile.rs"]
 mod user_profile;
+#[path = "domains/hardware/usb.rs"]
 mod usb;
+#[path = "domains/vector/vector_index.rs"]
 mod vector_index;
+#[path = "domains/vector/document_rag_read.rs"]
+mod document_rag_read;
+#[path = "domains/vector/rag_chunk_worker.rs"]
+mod rag_chunk_worker;
+#[path = "domains/indexing/watcher.rs"]
 mod watcher;
+#[path = "domains/ingestion/zim_download.rs"]
+mod zim_download;
 
 /// Full product name (locked in). The UI and assistant persona may still use the short name **Athena**.
 pub const ATHENA_FULL_NAME: &str =
@@ -82,7 +211,7 @@ use crossbeam_channel::Sender;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_shell::process::CommandChild;
@@ -121,28 +250,21 @@ pub struct AppState {
     pub watcher_tx: Sender<WatchCommand>,
     pub active_offline_map_downloads: Arc<Mutex<HashSet<String>>>,
     pub active_package_downloads: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
+    pub active_zim_downloads: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     /// Serialize reads/writes of `athena_config.json`.
     pub config_lock: Arc<Mutex<()>>,
+    /// Set by `abort_chat_console_stream`; read by the console streaming pipeline to stop early.
+    pub console_stream_cancel: Arc<AtomicBool>,
+    /// Ephemeral HTTP port for the managed local llama server (`http://127.0.0.1:{port}/v1`); shared with `model_manager`.
+    pub managed_local_llm_http_port: Arc<Mutex<Option<u16>>>,
+    /// Global power-save mode flag (battery < 20%); used to gate background jobs like P2P replication.
+    pub power_save_mode: Arc<AtomicBool>,
 }
 
 
-/// Chat models: only `.gguf` files; skip hidden names (e.g. `.DS_Store`).
+/// Chat models: only validated `.gguf` files under `models/chat`; skip hidden names (e.g. `.DS_Store`).
 fn list_sorted_gguf_files(dir: &std::path::Path) -> Result<Vec<String>, String> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut names: Vec<String> = fs::read_dir(dir)
-        .map_err(|e| e.to_string())?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_file())
-        .filter(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            !name.starts_with('.') && name.to_lowercase().ends_with(".gguf")
-        })
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    Ok(names)
+    model_manager::list_sorted_validated_gguf_filenames(dir)
 }
 
 fn validate_model_subfolder_name(raw: &str) -> Result<String, String> {
@@ -181,6 +303,100 @@ fn scan_chat_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, St
     list_sorted_gguf_files(&state.model_paths.chat_models)
 }
 
+/// Spawn a llama.cpp-compatible `llama-server` when `ATHENA_LLAMA_SERVER_BIN` is set; binds to `127.0.0.1` on an ephemeral port.
+#[tauri::command]
+fn start_managed_local_llm_server(
+    state: tauri::State<'_, AppState>,
+    gguf_file_name: String,
+) -> Result<u16, String> {
+    let name = gguf_file_name.trim();
+    if name.is_empty() {
+        return Err("Model file name is empty.".to_string());
+    }
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err("Invalid model file name.".to_string());
+    }
+    let path = state.model_paths.chat_models.join(name);
+    model_manager::try_spawn_llama_server_localhost(&path)
+}
+
+#[tauri::command]
+fn get_managed_local_llm_http_base_url() -> Option<String> {
+    model_manager::managed_llama_openai_base_url()
+}
+
+#[tauri::command]
+async fn mesh_p2p_list_peers() -> Result<Vec<mesh_discovery::MeshDiscoveredPeer>, String> {
+    let reg = mesh_discovery::peer_registry();
+    let g = reg.read().await;
+    let mut v: Vec<_> = g.values().cloned().collect();
+    v.sort_by(|a, b| {
+        a.ipv4
+            .cmp(&b.ipv4)
+            .then_with(|| a.rest_port.cmp(&b.rest_port))
+            .then_with(|| a.node_id.cmp(&b.node_id))
+    });
+    Ok(v)
+}
+
+#[tauri::command]
+async fn mesh_p2p_sync_with_peer(manifest_url: String) -> Result<serde_json::Value, String> {
+    let u = manifest_url.trim();
+    let parsed = reqwest::Url::parse(u).map_err(|e| e.to_string())?;
+    if !mesh_sync_api::mesh_manifest_url_is_lan_safe(&parsed) {
+        return Err(
+            "manifest_url must use http:// with a localhost, .local, or private (RFC1918) IPv4 host."
+                .to_string(),
+        );
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let txt = client
+        .get(parsed)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&txt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mesh_p2p_manifest_diff(
+    state: tauri::State<'_, AppState>,
+    manifest_url: String,
+) -> Result<mesh_p2p_sync::P2pManifestDiffResult, String> {
+    mesh_p2p_sync::fetch_and_diff_manifest(Arc::clone(&state.db), &manifest_url).await
+}
+
+#[tauri::command]
+async fn mesh_p2p_replicate_from_peer(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    peer_base_url: String,
+) -> Result<(), String> {
+    let base = peer_base_url.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return Err("peer_base_url is empty.".to_string());
+    }
+    let manifest_url = format!("{base}/mesh/manifest");
+    let diff = mesh_p2p_sync::fetch_and_diff_manifest(Arc::clone(&state.db), &manifest_url).await?;
+    let athena_data_root = crate::portable::resolved_app_data_dir(&app)?;
+    mesh_p2p_sync::replicate_missing_files(
+        app,
+        Arc::clone(&state.db),
+        base,
+        athena_data_root,
+        diff.missing,
+    )
+    .await
+}
+
 #[tauri::command]
 fn scan_embedding_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     list_sorted_subdirs(&state.model_paths.embeddings_root)
@@ -208,6 +424,11 @@ fn kill_ollama_sidecar_if_running(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(not(mobile))]
+fn kill_kiwix_serve_sidecar_if_running(app: &tauri::AppHandle) {
+    kiwix_serve::kill_if_running(app);
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -217,11 +438,30 @@ fn greet(name: &str) -> String {
 #[tauri::command]
 async fn send_mesh_message(
     control: tauri::State<'_, mesh_listener::MeshRadioControl>,
+    session: tauri::State<'_, auth::AuthSession>,
     text: String,
     want_ack: Option<bool>,
     channel: Option<u32>,
     destination_node_id: Option<u32>,
 ) -> Result<(), String> {
+    let u = auth::authenticated_user(&session)?;
+    if u.clearance_level <= 0 {
+        if destination_node_id.is_some() {
+            return Err("Unauthorized: Guest may only broadcast on Open/Distress.".to_string());
+        }
+        if channel.unwrap_or(0) != 0 {
+            return Err("Unauthorized: Guest may only use Open/Distress channel (0).".to_string());
+        }
+        if want_ack.unwrap_or(false) {
+            return Err("Unauthorized: Guest cannot request ACK.".to_string());
+        }
+    }
+    let effective_channel = if u.clearance_level <= 0 {
+        0
+    } else {
+        // Channel 0 = open distress; Channel 1 = general operations default.
+        channel.unwrap_or(1)
+    };
     let text = text.trim().to_string();
     if text.is_empty() {
         return Err("Message text is empty.".to_string());
@@ -234,7 +474,7 @@ async fn send_mesh_message(
         .send_text_message(
             text,
             want_ack.unwrap_or(false),
-            channel.unwrap_or(0),
+            effective_channel,
             destination_node_id,
         )
         .await
@@ -669,6 +909,260 @@ async fn logbook_request_mesh_sync(
     control
         .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
         .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LogisticsSubmitAttach {
+    map_lat: Option<f64>,
+    map_lon: Option<f64>,
+    saved_place_id: Option<String>,
+    location_text: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogisticsLibrarySubmitResponse {
+    entry: db::LogisticsLibraryRow,
+    proposal_lines: Vec<db::InventoryProposalItemRow>,
+    line_outcomes: Vec<logistics_apply::LineOutcome>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InvQueueCountResponse {
+    pending_proposals: i64,
+    new_item_prompts: i64,
+    suppressed_duplicates: i64,
+}
+
+#[tauri::command]
+fn inv_queue_count(
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+) -> Result<InvQueueCountResponse, String> {
+    let u = auth::authenticated_user(&session)?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let g = state.db.lock().map_err(|e| e.to_string())?;
+    let day_ms: i64 = 86_400_000;
+    let pending = g.count_pending_proposals_for_submitter(&u.id)?;
+    let new_item = g.count_pending_add_item_proposals_for_submitter(&u.id)?;
+    let sup = g.count_suppressed_intakes_for_submitter(&u.id, now_ms - day_ms)?;
+    Ok(InvQueueCountResponse {
+        pending_proposals: pending,
+        new_item_prompts: new_item,
+        suppressed_duplicates: sup,
+    })
+}
+
+#[tauri::command]
+fn logistics_library_list_entries(state: tauri::State<'_, AppState>) -> Result<Vec<db::LogisticsLibraryRow>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list_logistics_library_entries(300)
+}
+
+#[tauri::command]
+fn reject_inventory_proposal(
+    proposal_id: String,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+) -> Result<(), String> {
+    let actor = auth::authenticated_user(&session)?;
+    if actor.rank_level < 3 {
+        return Err("Insufficient rank to reject inventory proposals.".to_string());
+    }
+    let pid = proposal_id.trim();
+    if pid.is_empty() {
+        return Err("proposalId is required.".to_string());
+    }
+    state
+        .db
+        .lock()
+        .map_err(|e| e.to_string())?
+        .inventory_proposal_set_status(pid, "rejected", None, None)
+}
+
+#[tauri::command]
+fn logistics_library_submit_message(
+    app: tauri::AppHandle,
+    message: String,
+    attached: Option<LogisticsSubmitAttach>,
+    force_apply: Option<bool>,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+) -> Result<LogisticsLibrarySubmitResponse, String> {
+    let actor = auth::authenticated_user(&session)?;
+    let body = message.trim().to_string();
+    if body.is_empty() {
+        return Err("Message is empty.".to_string());
+    }
+    if body.len() > 32_000 {
+        return Err("Message is too long (32k character limit).".to_string());
+    }
+
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let id = format!(
+        "ll-{}-{}",
+        created_at,
+        LOGBOOK_ENTRY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+
+    let author_name = actor
+        .display_name
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(actor.name.as_str());
+    let author_occupation = actor.division.as_str();
+
+    let (map_lat, map_lon, saved_place_id, location_text) = if let Some(ref a) = attached {
+        (a.map_lat, a.map_lon, a.saved_place_id.clone(), a.location_text.clone())
+    } else {
+        (None, None, None, None)
+    };
+
+    {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        g.insert_logistics_library_entry(
+            &id,
+            &body,
+            created_at,
+            author_name,
+            author_occupation,
+            Some(actor.id.as_str()),
+            Some(actor.rank_level),
+            Some(actor.division.as_str()),
+            actor.directorate.as_deref(),
+            actor.tier.as_deref(),
+            actor.job_title.as_deref(),
+            map_lat,
+            map_lon,
+            saved_place_id.as_deref(),
+            location_text.as_deref(),
+            "general",
+        )?;
+    }
+
+    let mut loc_hint: Option<String> = location_text
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if loc_hint.is_none() {
+        if let Some(ref spid) = saved_place_id {
+            let g = state.db.lock().map_err(|e| e.to_string())?;
+            if let Some(sp) = g.get_saved_place(spid)? {
+                loc_hint = Some(sp.name);
+            }
+        }
+    }
+
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let cfg = load_config(&app_data_dir);
+    let models = inference::load_models_for_inference(&cfg);
+    inference::ensure_inference_ready(&cfg, &models)?;
+
+    let ai = logistics_ai::classify_logistics_message(&cfg, &models, &body)
+        .unwrap_or_else(|_| logistics_ai::LogisticsAiResult {
+            section: "General".to_string(),
+            kind: "log_note".to_string(),
+            inventory: Vec::new(),
+        });
+    let section = ai.section.trim().to_string();
+    let ai_json = serde_json::to_string(&ai).unwrap_or_else(|_| "{}".to_string());
+    let force = force_apply.unwrap_or(false);
+
+    let (mut line_outcomes, pending_lines) = {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        logistics_apply::process_inventory_lines(
+            &g,
+            &actor,
+            &id,
+            &ai,
+            created_at,
+            force,
+            loc_hint.as_deref(),
+        )?
+    };
+
+    let mut proposal_id: Option<String> = None;
+    {
+        let g = state.db.lock().map_err(|e| e.to_string())?;
+        g.logistics_annotation_upsert(&id, &section, &ai_json, "pending", created_at)?;
+        if !pending_lines.is_empty() {
+            let pid = uuid::Uuid::new_v4().to_string();
+            g.inventory_proposal_create(&pid, &id, Some(actor.id.as_str()), created_at)?;
+            for pl in &pending_lines {
+                g.inventory_proposal_item_insert(
+                    &pl.id,
+                    &pid,
+                    pl.action.as_str(),
+                    pl.division.as_str(),
+                    pl.item_name.as_str(),
+                    pl.category.as_str(),
+                    pl.quantity,
+                    pl.confidence,
+                    pl.line_location.as_deref(),
+                )?;
+            }
+            proposal_id = Some(pid);
+        }
+    }
+
+    let proposal_lines = if let Some(ref pid) = proposal_id {
+        state
+            .db
+            .lock()
+            .map_err(|e| e.to_string())?
+            .inventory_proposal_list_items(pid)?
+    } else {
+        Vec::new()
+    };
+
+    if let Some(ref pid) = proposal_id {
+        for o in &mut line_outcomes {
+            if o.kind == "newItemPrompt" || o.kind == "pendingProposal" {
+                o.proposal_id = Some(pid.clone());
+            }
+        }
+    }
+
+    let proposal_status = if proposal_id.is_some() {
+        Some("pending".to_string())
+    } else {
+        None
+    };
+
+    Ok(LogisticsLibrarySubmitResponse {
+        entry: db::LogisticsLibraryRow {
+            entry_id: id,
+            body,
+            created_at,
+            author_name: author_name.to_string(),
+            author_rank_level: Some(actor.rank_level),
+            author_division: Some(actor.division),
+            author_directorate: actor.directorate.clone(),
+            author_tier: actor.tier.clone(),
+            author_job_title: actor.job_title.clone(),
+            section,
+            proposal_id,
+            proposal_status,
+            map_lat,
+            map_lon,
+            saved_place_id,
+            location_text,
+        },
+        proposal_lines,
+        line_outcomes,
+    })
 }
 
 #[tauri::command]
@@ -1172,7 +1666,7 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
         }
         let ctx = watcher::resolve_ingest_context(&*db, &app_data_dir, path);
         let ctx_tuple = ctx.as_ref().map(|(k, r)| (k.as_str(), r.as_path()));
-        if indexer::skip_if_up_to_date(path, &*db, ctx_tuple).is_some() {
+        if indexer::skip_if_up_to_date(path, &*db, ctx_tuple, None).is_some() {
             continue;
         }
         let ingest_display_name = path
@@ -1186,7 +1680,7 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
         match result {
             Ok(Some(mut data)) => {
                 indexer::fill_relative_path_key(&mut data, ctx_tuple, path);
-                println!("[athena] Checkpoint M1: ingest_files got Some; upsert_file");
+                tracing::info!("ingest_files: index_file returned Some; upsert_file");
                 if let Err(e) = db.upsert_file(
                     &data.path,
                     &data.file_type,
@@ -1199,13 +1693,13 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
                     data.page_count.map(|n| n as i64),
                     data.relative_path.as_deref(),
                 ) {
-                    eprintln!("[athena] Fatal Ingestion Error: ingest upsert_file failed: {:?}", e);
+                    tracing::error!(error = %e, "Fatal Ingestion Error: ingest upsert_file failed");
                     continue;
                 }
-                println!("[athena] Checkpoint M2: upsert ok; maybe index_document");
+                tracing::info!("ingest_files: upsert ok; maybe index_document");
                 if let Some(ref text) = data.text_content {
                     if !text.trim().is_empty() {
-                        println!("[athena] Checkpoint M3: calling vector_index::index_document");
+                        tracing::info!("ingest_files: calling vector_index::index_document");
                         match vector_index::index_document(
                             &db,
                             &p,
@@ -1215,7 +1709,7 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
                         ) {
                             Ok(()) => {}
                             Err(e) => {
-                                eprintln!("[athena] Fatal Ingestion Error: {:?}", e);
+                                tracing::error!(error = %e, "Fatal Ingestion Error: vector index");
                             }
                         }
                     }
@@ -1322,6 +1816,50 @@ struct RebuildProgress {
     processed: u32,
     total: usize,
     failed: u32,
+}
+
+#[tauri::command]
+async fn export_athena_to_usb(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    destination_path: String,
+    export_type: String,
+    wipe_after: bool,
+    format_first: bool,
+    device_path: Option<String>,
+    expedition_budget_bytes: Option<u64>,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        portable::export_athena_to_usb(
+            &app_handle,
+            &db,
+            destination_path,
+            export_type,
+            wipe_after,
+            format_first,
+            device_path,
+            expedition_budget_bytes,
+        )
+    })
+    .await
+    .map_err(|e| format!("Export task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn aegis_export_preflight(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    destination_path: Option<String>,
+) -> Result<portable::AegisExportPreflight, String> {
+    let db = Arc::clone(&state.db);
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        portable::aegis_export_preflight(&app_handle, &db, destination_path)
+    })
+    .await
+    .map_err(|e| format!("Preflight task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -1991,6 +2529,222 @@ fn set_user_location(app: tauri::AppHandle, value: Option<String>) -> Result<(),
     config.user_location_address = value.filter(|s| !s.trim().is_empty());
     save_config(&app_data_dir, &config)?;
     Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MapDisplaySettings {
+    #[serde(default)]
+    coord_format: Option<String>,
+    #[serde(default)]
+    unit_system: Option<String>,
+    #[serde(default)]
+    default_travel_mode: Option<String>,
+    #[serde(default)]
+    last_known_gps_lat: Option<f64>,
+    #[serde(default)]
+    last_known_gps_lng: Option<f64>,
+}
+
+#[tauri::command]
+fn get_map_display_settings(app: tauri::AppHandle) -> Result<MapDisplaySettings, String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let c = load_config(&app_data_dir);
+    Ok(MapDisplaySettings {
+        coord_format: c.map_coord_format,
+        unit_system: c.map_unit_system,
+        default_travel_mode: c.map_default_travel_mode,
+        last_known_gps_lat: c.last_known_gps_lat,
+        last_known_gps_lng: c.last_known_gps_lng,
+    })
+}
+
+#[tauri::command]
+fn set_map_display_settings(
+    app: tauri::AppHandle,
+    value: MapDisplaySettings,
+) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut c = load_config(&app_data_dir);
+    c.map_coord_format = value.coord_format;
+    c.map_unit_system = value.unit_system;
+    c.map_default_travel_mode = value.default_travel_mode;
+    c.last_known_gps_lat = value.last_known_gps_lat;
+    c.last_known_gps_lng = value.last_known_gps_lng;
+    save_config(&app_data_dir, &c)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MapAssistantResponse {
+    reply: String,
+    tool_results: Vec<ai_tools::MapToolResult>,
+}
+
+#[tauri::command]
+async fn map_assistant_send(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+    user_message: String,
+    context_json: Option<serde_json::Value>,
+) -> Result<MapAssistantResponse, String> {
+    println!("--- ATHENA INVOCATION START ---");
+    let _u = auth::authenticated_user(&session)?;
+    let msg = user_message.trim();
+    if msg.is_empty() {
+        return Err("Message is empty.".to_string());
+    }
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let config = load_config(&app_data_dir);
+    let mut sys = "You are ATHENA, a tactical command map assistant. Never assume internet access. \
+        There is NO online geocoding; place names resolve from offline OSM index (if built), map markers, and tactical POIs. \
+        CRITICAL: The user's current location and focus is defined by the coordinates in the injected JSON context. NEVER say you do not have access to their location. You have their exact viewport center. \
+        CRITICAL: NEVER invent a street address or city. If you need a human-readable label, use the reverse_geocode tool. If reverse geocode is unavailable, report coordinates only. \
+        If the injected context contains 'inside_territories', you MUST use that data to answer questions about where the user is or what territory they are looking at. \
+        For A-to-B directions use `directions` with free-text from/to. \
+        To run a tool, output exactly one line: TOOL: {\"tool\":\"NAME\",\"args\":{...}} \
+        Tools: \
+        - search_markers {query} -> saved markers with lat/lng \
+        - search_pois {query} -> tactical POIs with lat/lon \
+        - reverse_geocode {lat, lon, max_results?, region_id?} -> nearest offline geocoder labels (do not guess) \
+        - directions {from, to, mode} -> road/path route when Valhalla is up, else straight-line; distance, ETA; mode: drive|walk|bike|offroad \
+        - update_territory_status {name, new_status: friendly|enemy|disputed|unexplored} -> updates a saved territory by name (clearance 4+ only) \
+        If nothing resolves, ask the user to build a geocode index from PBF or add markers."
+        .to_string();
+    let merged_context = match context_json {
+        Some(mut cj) => {
+            let center = cj.get("center").and_then(|c| c.as_array());
+            let lng = center.and_then(|c| c.get(0)).and_then(|v| v.as_f64());
+            let lat = center.and_then(|c| c.get(1)).and_then(|v| v.as_f64());
+            if let (Some(lng), Some(lat)) = (lng, lat) {
+                if let Ok(db) = state.db.lock() {
+                    if let Ok(sc) = crate::spatial::get_spatial_context(&db, lng, lat) {
+                        if let Some(it) = sc.get("inside_territories").cloned() {
+                            cj["inside_territories"] = it;
+                        }
+                    }
+                }
+            }
+            println!("SPATIAL CONTEXT: {:?}", cj);
+            Some(cj)
+        }
+        None => None,
+    };
+    if let Some(ref ctx) = merged_context {
+        if let Ok(s) = serde_json::to_string_pretty(ctx) {
+            use std::fmt::Write;
+            let _ = write!(sys, "\nCurrent Viewport Spatial Context:\n{s}");
+        }
+    }
+    let messages = vec![
+        ollama::ChatMessage {
+            role: "system".to_string(),
+            content: sys,
+        },
+        ollama::ChatMessage {
+            role: "user".to_string(),
+            content: msg.to_string(),
+        },
+    ];
+    // CRITICAL: LLM inference must not run on the Tauri main thread (macOS pinwheel / UI stall).
+    // Also: hard-timeout so the UI never waits forever if the backend hangs.
+    println!("SENDING TO OLLAMA...");
+    let raw = {
+        use std::time::Duration;
+        let fut = tauri::async_runtime::spawn_blocking(move || {
+            // reqwest::blocking (used by Ollama/OpenAI-compatible clients) can internally create a Tokio runtime.
+            // That runtime must be created/dropped on a blocking thread, not on a Tokio worker thread, or Tokio will panic.
+            let ollama_models = inference::load_models_for_inference(&config);
+            inference::chat_unified(&config, &ollama_models, messages, None)
+        });
+        match tokio::time::timeout(Duration::from_secs(60), fut).await {
+            Ok(joined) => joined.map_err(|e| format!("Inference task join error: {e}"))??,
+            Err(_) => {
+                return Err(
+                    "Map assistant timed out waiting for the inference backend. Verify Ollama (or your OpenAI-compatible server) is running and responsive."
+                        .to_string(),
+                );
+            }
+        }
+    };
+    println!("OLLAMA RAW RESPONSE: {:?}", raw);
+    let default_center = merged_context
+        .as_ref()
+        .and_then(|cj| cj.get("center"))
+        .and_then(|c| c.as_array())
+        .and_then(|a| {
+            let lng = a.get(0).and_then(|v| v.as_f64())?;
+            let lat = a.get(1).and_then(|v| v.as_f64())?;
+            Some([lng, lat])
+        });
+    let (reply, tool_results) =
+        ai_tools::extract_and_run_tools(&app, &state, &*session, default_center, &raw);
+    Ok(MapAssistantResponse {
+        reply,
+        tool_results,
+    })
+}
+
+#[tauri::command]
+fn geocode_search_cmd(
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+    query: String,
+    region_id: Option<String>,
+    max_results: Option<u32>,
+) -> Result<Vec<db::GeocodeMatch>, String> {
+    let _u = auth::authenticated_user(&session)?;
+    let fts = crate::offline_geocoder::user_query_to_fts_match(&query)
+        .ok_or_else(|| "Enter a place name or address keywords.".to_string())?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let take = max_results.unwrap_or(12).clamp(1, 100) as usize;
+    db.geocode_search_fts(&fts, region_id.as_deref().filter(|s| !s.is_empty()), take)
+}
+
+#[tauri::command]
+fn geocode_reverse_cmd(
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+    lat: f64,
+    lon: f64,
+    region_id: Option<String>,
+    max_results: Option<u32>,
+) -> Result<Vec<db::GeocodeMatch>, String> {
+    let _u = auth::authenticated_user(&session)?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let take = max_results.unwrap_or(8).clamp(1, 50) as usize;
+    db.geocode_nearest(
+        lat,
+        lon,
+        region_id.as_deref().filter(|s| !s.is_empty()),
+        take,
+    )
+}
+
+#[tauri::command]
+fn geocode_rebuild_from_pbf_cmd(
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+    region_id: String,
+    pbf_path: String,
+) -> Result<crate::offline_geocoder::GeocodeBuildStats, String> {
+    let _u = auth::authenticated_user(&session)?;
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    crate::offline_geocoder::build_index_from_pbf(&db, &region_id, std::path::Path::new(&pbf_path))
+}
+
+#[tauri::command]
+fn directions_resolve_cmd(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: tauri::State<'_, auth::AuthSession>,
+    from: String,
+    to: String,
+    mode: String,
+) -> Result<crate::directions::DirectionsResolveResult, String> {
+    let _u = auth::authenticated_user(&session)?;
+    crate::directions::directions_resolve_impl(&app, &state, from, to, mode)
 }
 
 fn normalize_mbtiles_file_name(name: &str) -> Option<String> {
@@ -3694,7 +4448,12 @@ fn scan_kiwix_zim_files(app: tauri::AppHandle) -> Result<Vec<DiscoveredZim>, Str
         let g = state.db.lock().map_err(|e| e.to_string())?;
         compute_watcher_folders(&*g, &app_data_dir, &config)?
     };
-    let roots: Vec<std::path::PathBuf> = folders.into_iter().map(std::path::PathBuf::from).collect();
+    let mut roots: Vec<std::path::PathBuf> = folders.into_iter().map(std::path::PathBuf::from).collect();
+    if let Ok(zdir) = kiwix_serve::zim_archives_dir(&app) {
+        if !roots.iter().any(|r| r == &zdir) {
+            roots.push(zdir);
+        }
+    }
     kiwix_scan_zim_files_multi(&roots)
 }
 
@@ -4325,7 +5084,9 @@ fn send_message_stream(
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
 
-    let session_user_id = auth::authenticated_user(&session)?.id.clone();
+    let session_user = auth::authenticated_user(&session)?;
+    let session_user_id = session_user.id.clone();
+    let is_guest = session_user.clearance_level <= 0;
     let state = app.state::<AppState>();
     let db_arc = Arc::clone(&state.db);
     let model_opts_for_stream = model_options;
@@ -4335,6 +5096,41 @@ fn send_message_stream(
     let chat_id_clone = chat_id.clone();
     let history_owner_id = session_user_id.clone();
     std::thread::spawn(move || {
+        if is_guest {
+            // Level 0 guest: bypass ALL RAG / vector DB / local chat context.
+            let config = load_config(&app_data_dir_clone);
+            let models = load_models_for_inference(&config);
+            let system_content = "You are a basic survival assistant. You do not know about Project ATHENA, its personnel, or its operations. Provide general, safe advice only. Do not mention internal systems, security, or databases. If asked about ATHENA, say you don't know.";
+            let messages = vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system_content.to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: message.clone(),
+                },
+            ];
+            let mut on_chunk = |chunk: &str| {
+                let _ = app_emit.emit(STREAM_CHUNK_EVENT, chunk);
+            };
+            let on_done = || {
+                let _ = app_emit.emit(STREAM_DONE_EVENT, ());
+            };
+            if let Err(e) = chat_stream_unified(
+                &config,
+                &models,
+                messages,
+                &mut on_chunk,
+                on_done,
+                model_opts_for_stream,
+                None,
+            ) {
+                let _ = app_emit.emit(STREAM_ERROR_EVENT, e);
+                let _ = app_emit.emit(STREAM_DONE_EVENT, ());
+            }
+            return;
+        }
         let app_data_dir = app_data_dir_clone;
         let config = load_config(&app_data_dir);
         let history_ref = history_clone.as_deref().unwrap_or(&[]);
@@ -4668,6 +5464,7 @@ fn send_message_stream(
             &mut on_chunk,
             on_done,
             model_opts_for_stream,
+            None,
         ) {
             let _ = app_emit.emit(STREAM_ERROR_EVENT, e);
         }
@@ -4689,6 +5486,8 @@ pub fn run() {
             // Resilience Layer: always initialize a shared status object so the UI can show
             // maintenance/health even if the rest of setup fails.
             app.manage(diagnostics::ResilienceState::default());
+            #[cfg(not(mobile))]
+            app.manage(kiwix_serve::KiwixServeState::default());
             let initial = diagnostics::run_startup_diagnostics(&app.handle());
             diagnostics::set_status(&app.handle(), initial);
 
@@ -4699,12 +5498,18 @@ pub fn run() {
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                     let mut components = std::collections::BTreeMap::<String, String>::new();
-                    for name in ["pmtiles", "tesseract", "pdftoppm", "ollama"] {
-                        let args: &[&str] = match name {
+                    let sidecar_names: &[&str] = if cfg!(not(mobile)) {
+                        &["pmtiles", "tesseract", "pdftoppm", "ollama", "kiwix-serve"]
+                    } else {
+                        &["pmtiles", "tesseract", "pdftoppm", "ollama"]
+                    };
+                    for name in sidecar_names {
+                        let args: &[&str] = match *name {
                             "pmtiles" => &["--version"],
                             "tesseract" => &["--version"],
                             "pdftoppm" => &["-h"],
                             "ollama" => &["--version"],
+                            "kiwix-serve" => &["--version"],
                             _ => &["--version"],
                         };
                         let status = match handle.shell().sidecar(name) {
@@ -4719,6 +5524,8 @@ pub fn run() {
                         };
                         components.insert(format!("sidecar:{name}"), status);
                     }
+                    #[cfg(not(mobile))]
+                    kiwix_serve::supervise_or_restart(&handle);
                     diagnostics::update_heartbeat(&handle, components);
                 });
             }
@@ -4762,6 +5569,12 @@ pub fn run() {
             ocr::init_ocr_environment(app.handle());
             let app_data_dir = crate::portable::resolved_app_data_dir(&app.handle())?;
             std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+            let deployment_queue_state = std::sync::Arc::new(
+                deployment_queue_state::DeploymentQueueStateManager::open_clearing_stale_session(
+                    &app_data_dir,
+                )?,
+            );
+            app.manage(deployment_queue_state);
             let model_paths = ensure_model_directories(&app_data_dir)?;
             let _ = map_manager_download::ensure_offline_maps_directory(&app_data_dir);
             let _ = map_manager_download::cleanup_stale_part_files(&app_data_dir);
@@ -4860,6 +5673,8 @@ pub fn run() {
                 app_data_dir.clone(),
                 Arc::clone(&db),
             );
+            lan_chat::spawn_lan_chat_listener(app.handle().clone(), Arc::clone(&db));
+            let db_for_mesh_p2p = Arc::clone(&db);
             let (watcher_tx, watcher_rx) = crossbeam_channel::unbounded();
             run_watcher_loop(Arc::clone(&db), watcher_rx, app_data_dir.clone(), app.handle().clone());
             let config = load_config(&app_data_dir);
@@ -4867,15 +5682,61 @@ pub fn run() {
                 let g = db.lock().map_err(|e| e.to_string())?;
                 compute_watcher_folders(&*g, &app_data_dir, &config)?
             };
+            let power_save_mode = Arc::new(AtomicBool::new(false));
+            telemetry_logging::init_field_logging(&app_data_dir);
             app.manage(AppState {
                 db,
                 model_paths,
                 watcher_tx: watcher_tx.clone(),
                 active_offline_map_downloads: Arc::new(Mutex::new(HashSet::new())),
                 active_package_downloads: Arc::new(Mutex::new(HashMap::new())),
+                active_zim_downloads: Arc::new(Mutex::new(HashMap::new())),
                 config_lock: Arc::new(Mutex::new(())),
+                console_stream_cancel: Arc::new(AtomicBool::new(false)),
+                managed_local_llm_http_port: model_manager::managed_llm_port_holder(),
+                power_save_mode: Arc::clone(&power_save_mode),
             });
             let _ = watcher_tx.send(WatchCommand::SetFolders(folders));
+
+            // Telemetry + power-save toggling (dedicated thread).
+            telemetry_monitor::spawn_telemetry_monitor(
+                app.handle().clone(),
+                app_data_dir.clone(),
+                Arc::clone(&power_save_mode),
+            );
+            // Gate new P2P replication work under power-save mode.
+            mesh_p2p_sync::set_power_save_flag(Arc::clone(&power_save_mode));
+
+            // OOBE: if we're using OS AppData fallback, prompt the UI to pick a field storage root.
+            if !portable::portable_layout_detected() {
+                let _ = app.handle().emit(
+                    "athena:oobe-required",
+                    serde_json::json!({
+                        "reason": "portable_layout_missing",
+                        "currentRoot": app_data_dir.to_string_lossy(),
+                        "hint": "Select a designated storage drive for AthenaData (external SSD recommended). Restart required."
+                    }),
+                );
+            }
+
+            // Field laptop pruning on boot (runs off the reactor).
+            {
+                let db_prune = Arc::clone(&app.state::<AppState>().db);
+                let root = app_data_dir.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Ok(g) = db_prune.lock() {
+                        let _ = g.prune_lan_chat_messages_older_than_days(14);
+                    }
+                    crate::db::prune_orphan_p2p_parts_in_unsorted(&root, 24);
+                });
+            }
+
+            #[cfg(not(mobile))]
+            mesh_sync_api::spawn_mesh_p2p_stack(
+                app.handle().clone(),
+                db_for_mesh_p2p,
+                app_data_dir.clone(),
+            );
 
             #[cfg(not(mobile))]
             let spawned_sidecar: Option<CommandChild> = match app.handle().shell().sidecar("ollama") {
@@ -4920,6 +5781,10 @@ pub fn run() {
             let (ollama_child, use_legacy_ollama_launch) = (None, true);
 
             app.manage(OllamaState(Mutex::new(ollama_child)));
+            #[cfg(not(mobile))]
+            if let Err(e) = kiwix_serve::spawn_or_update(&app.handle()) {
+                eprintln!("[athena] kiwix-serve: initial spawn skipped or failed: {e}");
+            }
             app.manage(radio_manager::RadioState::new());
             app.manage(auth::AuthSession::default());
 
@@ -5006,7 +5871,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             diagnostics::get_resilience_status,
+            diagnostics::export_diagnostics_json,
+            diagnostics::get_app_data_dir_path,
             auth::authenticate_pin,
+            auth::authenticate_guest,
             auth::logout,
             auth::set_my_personnel_display_name,
             auth::set_my_personnel_login_name,
@@ -5017,16 +5885,37 @@ pub fn run() {
             auth::add_personnel,
             auth::remove_personnel,
             auth::list_personnel,
+            auth::get_org_chart,
+            auth::list_role_catalog,
+            auth::add_role_catalog_entry,
+            auth::get_personnel_profile,
+            auth::list_command_notifications,
+            auth::count_unacked_command_notifications,
+            auth::ack_command_notification,
+            auth::ack_all_command_notifications,
             inventory::list_inventory,
             inventory::add_inventory_item,
             inventory::update_inventory_quantity,
             inventory::update_inventory_category,
             inventory::list_inventory_log,
             inventory::edit_log_fingerprint,
+            inventory::apply_inventory_proposal,
+            inventory::rollback_inventory_change,
+            inventory::update_inventory_directorate,
+            inv_queue_count,
+            logistics_library_list_entries,
+            logistics_library_submit_message,
+            reject_inventory_proposal,
             hardware_map::check_hardware_status,
             remote_queue::get_queue_status,
             remote_queue::enqueue_request,
             scan_chat_models,
+            start_managed_local_llm_server,
+            get_managed_local_llm_http_base_url,
+            mesh_p2p_list_peers,
+            mesh_p2p_sync_with_peer,
+            mesh_p2p_manifest_diff,
+            mesh_p2p_replicate_from_peer,
             scan_embedding_models,
             scan_reranker_models,
             get_watch_folder,
@@ -5111,6 +6000,14 @@ pub fn run() {
             get_map_catalog,
             get_offline_map_manager_catalog,
             list_downloaded_offline_map_ids,
+            storage::check_available_storage,
+            deployment::deployment_check_disk_space,
+            deployment::deployment_scan_files,
+            deployment::deployment_start_downloads,
+            deployment::deployment_pause_downloads,
+            deployment::deployment_is_running,
+            deployment::deployment_get_queue_snapshot,
+            deployment::deployment_open_athena_data_folder,
             pmtiles_region_extract::extract_pmtiles_region,
             satellite_region_download::start_satellite_region_download,
             download_offline_map,
@@ -5142,6 +6039,40 @@ pub fn run() {
             map_manager::save_drawing,
             map_manager::get_drawings,
             map_manager::delete_drawing,
+            get_map_display_settings,
+            set_map_display_settings,
+            map_assistant_send,
+            saved_places::list_saved_places,
+            saved_places::add_saved_place,
+            saved_places::delete_saved_place,
+            blockages::list_route_blockages,
+            blockages::propose_route_blockage,
+            blockages::review_route_blockage,
+            territories::get_territories,
+            territories::upsert_territory,
+            territories::delete_territory,
+            ai_staging::ai_stage_change,
+            ai_staging::ai_list_staged,
+            ai_staging::ai_count_pending,
+            ai_staging::ai_review_change,
+            ai_staging::ai_get_autoapprove_rules,
+            ai_staging::ai_set_autoapprove_rule,
+            ai_staging::ai_delete_autoapprove_rule,
+            valhalla_service::valhalla_get_status,
+            valhalla_service::valhalla_route,
+            valhalla_service::map_offline_route_geojson,
+            valhalla_service::valhalla_list_regions,
+            valhalla_service::valhalla_set_active_region,
+            valhalla_service::valhalla_register_routing_region,
+            geocode_search_cmd,
+            geocode_reverse_cmd,
+            geocode_rebuild_from_pbf_cmd,
+            directions_resolve_cmd,
+            valhalla_lifecycle::valhalla_docker_start,
+            valhalla_lifecycle::valhalla_docker_stop,
+            routing::start_valhalla_engine,
+            routing::stop_valhalla_engine,
+            geofabrik_downloader::geofabrik_download_regions_within_radius,
             list_chats,
             get_chat,
             save_chat,
@@ -5169,7 +6100,9 @@ pub fn run() {
             commands::package::get_models_dir,
             commands::package::set_models_dir,
             commands::chat_console::chat_console_stream,
-            portable::export_athena_to_usb,
+            commands::chat_console::abort_chat_console_stream,
+            export_athena_to_usb,
+            aegis_export_preflight,
             usb::get_available_usbs,
             commands::library_source::open_library_source,
             send_mesh_message,
@@ -5203,6 +6136,7 @@ pub fn run() {
             academy_mark_lesson_complete,
             academy_get_lesson_html,
             academy_list_pdf_units,
+            zim_download::download_zim,
             calendar_list_events,
             calendar_upsert_event,
             calendar_delete_event,
@@ -5227,12 +6161,30 @@ pub fn run() {
             sdr_manager::sdr_start,
             sdr_manager::sdr_stop,
             sdr_manager::sdr_status,
+            sdr_manager::sdr_set_frequency,
+            lan_chat::lan_chat_list_messages,
+            lan_chat::lan_chat_send_message,
+            portable::oobe_set_athena_data_root,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
+                #[cfg(not(mobile))]
+                mesh_sync_api::signal_mesh_p2p_shutdown();
                 kill_ollama_sidecar_if_running(app_handle);
+                model_manager::shutdown_managed_local_inference();
+                #[cfg(not(mobile))]
+                kill_kiwix_serve_sidecar_if_running(app_handle);
+                #[cfg(not(mobile))]
+                {
+                    let app = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        // If the UI started Valhalla via `docker compose up -d`, request a bounded shutdown on exit.
+                        let _ = routing::stop_valhalla_engine(app).await;
+                    });
+                }
+                lan_chat::stop_lan_chat_listener();
                 sdr_manager::stop_sdr_internal(app_handle);
             }
         });
