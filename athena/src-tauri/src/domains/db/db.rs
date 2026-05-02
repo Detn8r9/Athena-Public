@@ -169,8 +169,9 @@ fn fts_keywords_to_match_query(keywords: &[String]) -> Option<String> {
 }
 
 
-/// Canonical lock-screen login for the default architect seat (case-insensitive).
-/// The `athena_architect` badge is only set for this account via migration, never by rank promotion.
+/// Default lock-screen login when creating the architect row from scratch (case-insensitive).
+/// The `athena_architect` badge is assigned by migration to whoever holds the bootstrapped architect
+/// PIN, or to this login name if no PIN match exists; renaming the login does not revoke the badge.
 pub const PERSONNEL_ARCHITECT_LOGIN: &str = "StationArchitect";
 
 /// SHA-256 hex digest of trimmed UTF-8 PIN bytes (interim; prefer Argon2 for production hardening).
@@ -2092,13 +2093,6 @@ END;
             )
             .map_err(|e| e.to_string())?;
 
-        // Before clearing badges: normalize architect row login to the current canonical constant so
-        // upgrades from older local defaults keep a single identifiable row across releases.
-        let _ = conn.execute(
-            "UPDATE personnel SET name = ?1 WHERE athena_architect = 1",
-            params![PERSONNEL_ARCHITECT_LOGIN],
-        );
-
         conn.execute("UPDATE personnel SET athena_architect = 0", [])
             .map_err(|e| e.to_string())?;
 
@@ -2106,14 +2100,27 @@ END;
         let now_ms = Utc::now().timestamp_millis();
 
         if seeded == 0 {
+            // First seed: prefer the row that already matches the architect PIN (custom login names),
+            // then the canonical login, then create the default row.
             let n = conn
                 .execute(
+                    "UPDATE personnel SET rank_level = 5, clearance_level = 5, pin_hash = ?1, athena_architect = 1, division = 'COMMAND',
+                     display_name = CASE WHEN display_name IS NULL OR trim(display_name) = '' THEN 'Station Architect' ELSE display_name END
+                     WHERE id = (SELECT id FROM personnel WHERE pin_hash = ?1 ORDER BY created_at ASC LIMIT 1)",
+                    params![hash, hash],
+                )
+                .map_err(|e| e.to_string())?;
+            let n = if n == 0 {
+                conn.execute(
                     "UPDATE personnel SET rank_level = 5, clearance_level = 5, pin_hash = ?1, athena_architect = 1, division = 'COMMAND',
                      display_name = CASE WHEN display_name IS NULL OR trim(display_name) = '' THEN 'Station Architect' ELSE display_name END
                      WHERE lower(name) = lower(?2)",
                     params![hash, PERSONNEL_ARCHITECT_LOGIN],
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string())?
+            } else {
+                n
+            };
             if n == 0 {
                 let id = uuid::Uuid::new_v4().to_string();
                 conn.execute(
@@ -2129,10 +2136,22 @@ END;
             )
             .map_err(|e| e.to_string())?;
         } else {
-            let _ = conn.execute(
-                "UPDATE personnel SET athena_architect = 1, rank_level = 5, clearance_level = 5 WHERE lower(name) = lower(?1)",
-                params![PERSONNEL_ARCHITECT_LOGIN],
-            );
+            // Re-assert a single architect seat on every open: whoever holds the bootstrapped PIN keeps
+            // the badge (supports renamed logins); otherwise fall back to the canonical login row.
+            let n = conn
+                .execute(
+                    "UPDATE personnel SET athena_architect = 1, rank_level = 5, clearance_level = 5
+                     WHERE id = (SELECT id FROM personnel WHERE pin_hash = ?1 ORDER BY created_at ASC LIMIT 1)",
+                    params![hash],
+                )
+                .map_err(|e| e.to_string())?;
+            if n == 0 {
+                let _ = conn.execute(
+                    "UPDATE personnel SET athena_architect = 1, rank_level = 5, clearance_level = 5
+                     WHERE lower(name) = lower(?1)",
+                    params![PERSONNEL_ARCHITECT_LOGIN],
+                );
+            }
         }
 
         Ok(())
@@ -2698,13 +2717,6 @@ END;
         if clash > 0 {
             return Err("That login name is already in use.".to_string());
         }
-        let prev_architect: i32 = conn
-            .query_row(
-                "SELECT COALESCE(athena_architect, 0) FROM personnel WHERE id = ?1 LIMIT 1",
-                params![id],
-                |r| r.get::<_, i64>(0).map(|v| v as i32),
-            )
-            .unwrap_or(0);
         let n = conn
             .execute(
                 "UPDATE personnel SET name = ?1 WHERE id = ?2",
@@ -2713,12 +2725,6 @@ END;
             .map_err(|e| e.to_string())?;
         if n == 0 {
             return Err("Personnel record not found.".to_string());
-        }
-        if prev_architect == 1 && !new_name.eq_ignore_ascii_case(PERSONNEL_ARCHITECT_LOGIN) {
-            let _ = conn.execute(
-                "UPDATE personnel SET athena_architect = 0 WHERE id = ?1",
-                params![id],
-            );
         }
         Ok(())
     }
@@ -2866,12 +2872,6 @@ END;
             }
         }
 
-        let next_architect = if prev_architect == 1 && !login_name.eq_ignore_ascii_case(PERSONNEL_ARCHITECT_LOGIN) {
-            0
-        } else {
-            prev_architect
-        };
-
         let n = conn
             .execute(
                 "UPDATE personnel SET name = ?1, display_name = ?2, division = ?3, rank_level = ?4, clearance_level = ?4, operational_status = ?5, directorate = ?6, tier = ?7, job_title = ?8, athena_architect = ?9, domain = ?10, role_l1 = ?11, role_l2 = ?12, role_l3 = ?13, role_l4 = ?14 WHERE id = ?15",
@@ -2884,7 +2884,7 @@ END;
                     dir,
                     t,
                     jt,
-                    next_architect as i64,
+                    prev_architect as i64,
                     dom,
                     rl1,
                     rl2,
