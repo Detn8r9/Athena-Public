@@ -7,6 +7,10 @@
     "build": "npm --prefix athena run build",
     "test": "npm --prefix athena run test",
     "preview": "npm --prefix athena run preview",
+    "verify-catalog": "npm --prefix athena run verify-catalog --",
+    "verify-catalog-probe": "npm --prefix athena run verify-catalog-probe --",
+    "audit-local": "npm --prefix athena run audit-local --",
+    "prune-partials": "npm --prefix athena run prune-partials --",
     "tauri": "npm --prefix athena run tauri --",
     "tauri:dev": "npm --prefix athena run tauri -- dev",
     "tauri:build": "npm --prefix athena run tauri -- build"

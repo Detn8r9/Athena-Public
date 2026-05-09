@@ -457,6 +457,10 @@ interface MapViewProps {
   /** Enabled MBTiles rasters for the main map (file names with `.mbtiles`). */
   enabledMainMapRasterArchiveFileNames?: string[];
   onMainMapArchiveRasterLayersChange?: (archiveFileNames: string[]) => void;
+  /** Opens centralized Data Acquisition (Maps tab) instead of legacy in-map WAN downloads. */
+  onOpenDataAcquisition?: () => void;
+  /** Resolved GGUF basename / Ollama tag for map-scoped inference (wired from App; map chat send still lives in App). */
+  resolvedInferenceModel?: string | null;
 }
 
 export function MapView({
@@ -494,6 +498,8 @@ export function MapView({
   authRankLevel = 0,
   enabledMainMapRasterArchiveFileNames,
   onMainMapArchiveRasterLayersChange,
+  onOpenDataAcquisition,
+  resolvedInferenceModel: _resolvedInferenceModel,
 }: MapViewProps) {
   const tacticalVis = useMemo(
     () => mergeTacticalLayerVisibility(tacticalLayerVisibility),
@@ -1744,6 +1750,7 @@ export function MapView({
             onClose={() => setLayersOpen(false)}
             enabledMainMapRasterArchiveFileNames={enabledMainMapRasterArchiveFileNames}
             onMainMapArchiveRasterLayersChange={onMainMapArchiveRasterLayersChange}
+            onOpenDataAcquisition={onOpenDataAcquisition}
           />
           <SavedPlacesPanel
             open={savedOpen}
@@ -1997,6 +2004,7 @@ export function MapView({
             savedUserLocationAddress={savedUserLocationAddress}
             routeToLatLng={routeHereLatLng}
             routeRequestSeq={routeHereSeq}
+            onOpenDataAcquisition={onOpenDataAcquisition}
           />
         ) : null}
         {showRoute ? <RoutePanel map={mlMap} onClose={() => setShowRoute(false)} /> : null}
@@ -2061,6 +2069,7 @@ export function MapView({
             satPreviewStart.current = null;
             setSatelliteDownloadStatus("");
           }}
+          onOpenDataAcquisition={onOpenDataAcquisition}
         />
       </div>
       {!embedded && (

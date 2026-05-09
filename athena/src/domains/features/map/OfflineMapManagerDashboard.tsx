@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { motion, AnimatePresence } from "framer-motion";
-import { MAP_CATALOG, tilesIntersectingCircle, bboxFromCenterAndRadiusMiles, MAX_EXTRACT_RADIUS_MILES } from "../../../shared/lib/MapCatalogIndex";
+import { motion } from "framer-motion";
+import { tilesIntersectingCircle, MAX_EXTRACT_RADIUS_MILES } from "../../../shared/lib/MapCatalogIndex";
 import { ErrorBoundary } from "../../../app/ErrorBoundary";
 import { MapArchivePreviewMap } from "./MapArchivePreviewMap";
-import { MapArchiveMapTypeCard } from "./MapArchiveMapTypeCard";
 
 export interface OfflineMapManagerDashboardProps {
   open: boolean;
@@ -13,6 +12,8 @@ export interface OfflineMapManagerDashboardProps {
   tileGeocodeOverride: string;
   tileRadiusMiles: number;
   onTileRadiusMilesChange: (miles: number) => void;
+  /** When set, map tile acquisition is routed to the Data Acquisition hub instead of in-map downloads. */
+  onOpenDataAcquisition?: () => void;
 }
 
 export function OfflineMapManagerDashboard({
@@ -22,6 +23,7 @@ export function OfflineMapManagerDashboard({
   tileGeocodeOverride,
   tileRadiusMiles,
   onTileRadiusMilesChange,
+  onOpenDataAcquisition,
 }: OfflineMapManagerDashboardProps) {
   const [locationDraft, setLocationDraft] = useState("");
   const [locationStatus, setLocationStatus] = useState<string | null>(null);
@@ -29,8 +31,6 @@ export function OfflineMapManagerDashboard({
   const [center, setCenter] = useState<{ lat: number; lon: number } | null>(null);
   const [geocodeError, setGeocodeError] = useState<string | null>(null);
   const [geocoding, setGeocoding] = useState(false);
-
-  const acquirableMaps = useMemo(() => MAP_CATALOG.filter((m) => m.acquirable), []);
 
   useEffect(() => {
     if (!open) {
@@ -57,9 +57,7 @@ export function OfflineMapManagerDashboard({
   };
 
   const geocodeQuery = (tileGeocodeOverride.trim() || locationDraft.trim() || savedUserLocationAddress.trim()).trim();
-  const canRunDownloads = geocodeQuery.length > 0 && center !== null && !geocoding && geocodeError == null;
   const radiusMiles = Math.max(0.1, Math.min(tileRadiusMiles, MAX_EXTRACT_RADIUS_MILES));
-  const bbox = center ? bboxFromCenterAndRadiusMiles(center.lat, center.lon, radiusMiles) : null;
 
   useEffect(() => {
     if (!open) {
@@ -223,28 +221,25 @@ export function OfflineMapManagerDashboard({
           </ErrorBoundary>
         </div>
 
-        <div className="map-archive-manager__recs" aria-label="Map types">
-          <h3 className="map-archive-manager__h3">Download for this area</h3>
+        <div className="map-archive-manager__recs" aria-label="Map acquisition">
+          <h3 className="map-archive-manager__h3">Acquire map archives</h3>
           <p className="text-muted small" style={{ marginTop: 0, marginBottom: 16, maxWidth: 44 * 16 }}>
-            Estimates are approximate. Large radii or satellite cost more disk. Enable MBTiles in{" "}
-            <strong>Layers</strong> after a satellite job completes.
+            Raster and vector tile jobs for this preview are started from the centralized <strong>Data Acquisition</strong> hub under{" "}
+            <strong>Maps</strong>. Use the preview above to plan radius and placement, then open the hub to queue downloads.
           </p>
-          <AnimatePresence mode="popLayout">
-            {acquirableMaps.map((m) => (
-              <MapArchiveMapTypeCard
-                key={m.id}
-                mapType={m}
-                radiusMiles={radiusMiles}
-                canRun={Boolean(canRunDownloads && bbox)}
-                minLon={bbox?.min_lon ?? 0}
-                minLat={bbox?.min_lat ?? 0}
-                maxLon={bbox?.max_lon ?? 0}
-                maxLat={bbox?.max_lat ?? 0}
-                locationLabel={geocodeQuery}
-                open={open}
-              />
-            ))}
-          </AnimatePresence>
+          {onOpenDataAcquisition ? (
+            <button
+              type="button"
+              className="primary"
+              style={{ width: "100%", maxWidth: 360 }}
+              onClick={() => {
+                onClose();
+                onOpenDataAcquisition();
+              }}
+            >
+              Open Data Acquisition (Maps)
+            </button>
+          ) : null}
         </div>
       </motion.div>
     </div>

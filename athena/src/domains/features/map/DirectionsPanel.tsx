@@ -115,6 +115,7 @@ export function DirectionsPanel({
   savedUserLocationAddress,
   routeToLatLng,
   routeRequestSeq,
+  onOpenDataAcquisition,
 }: {
   map: MlMap | null;
   onClose: () => void;
@@ -122,6 +123,7 @@ export function DirectionsPanel({
   savedUserLocationAddress?: string;
   routeToLatLng?: { lat: number; lng: number } | null;
   routeRequestSeq?: number;
+  onOpenDataAcquisition?: () => void;
 }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -581,6 +583,7 @@ export function DirectionsPanel({
             open={routingOpen}
             onClose={() => setRoutingOpen(false)}
             savedUserLocationAddress={savedUserLocationAddress ?? ""}
+            onOpenDataAcquisition={onOpenDataAcquisition}
           />
         </AnimatePresence>
           <button type="button" className="secondary small-btn" onClick={onOpenAdvancedRoute}>

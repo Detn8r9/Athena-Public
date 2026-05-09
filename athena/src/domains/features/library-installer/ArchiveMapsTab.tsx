@@ -70,7 +70,7 @@ export function ArchiveMapsTab({
   stats,
   formatBytes,
   formatLibraryFileSizeBytes,
-  onDownloadMap,
+  onDownloadMap: _onDownloadMap,
   onOpenMapFileManager,
   onOpenOfflineMapSettings,
   onOpenExternalUrl,
@@ -129,14 +129,7 @@ export function ArchiveMapsTab({
             {downloadedMaps.some((m) => m.region === mapsSuggestion.region && m.style === mapsSuggestion.style) ? (
               <span className="text-muted"> — already downloaded</span>
             ) : (
-              <button
-                type="button"
-                className="settings-map-suggestion-dl"
-                onClick={() => void onDownloadMap(mapsSuggestion)}
-                disabled={networkReachable === false}
-              >
-                Download
-              </button>
+              <span className="text-muted small"> — acquire via Data Acquisition → Maps</span>
             )}
           </div>
         )}
@@ -160,14 +153,7 @@ export function ArchiveMapsTab({
                     {acquired ? (
                       <span className="text-muted small">Downloaded</span>
                     ) : (
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => void onDownloadMap(entry)}
-                        disabled={networkReachable === false}
-                      >
-                        Download
-                      </button>
+                      <span className="text-muted small">Use Data Acquisition → Maps</span>
                     )}
                   </li>
                 );

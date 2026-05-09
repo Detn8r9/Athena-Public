@@ -12,6 +12,7 @@ type MapLayersPanelProps = {
   onClose: () => void;
   enabledMainMapRasterArchiveFileNames?: string[];
   onMainMapArchiveRasterLayersChange?: (archiveFileNames: string[]) => void;
+  onOpenDataAcquisition?: () => void;
 };
 
 /**
@@ -22,6 +23,7 @@ export function MapLayersPanel({
   onClose,
   enabledMainMapRasterArchiveFileNames = [],
   onMainMapArchiveRasterLayersChange,
+  onOpenDataAcquisition,
 }: MapLayersPanelProps) {
   const [hasSat, setHasSat] = useState(false);
   const [downloadedIds, setDownloadedIds] = useState<string[]>([]);
@@ -111,6 +113,7 @@ export function MapLayersPanel({
             tileGeocodeOverride={""}
             tileRadiusMiles={tileRadiusMiles}
             onTileRadiusMilesChange={(m) => setTileRadiusMiles(m)}
+            onOpenDataAcquisition={onOpenDataAcquisition}
           />,
           document.body,
         )

@@ -3,19 +3,29 @@
     "id": "kiwix-wikimed",
     "name": "WikiMed Archive",
     "description": "The largest comprehensive offline medical encyclopedia.",
-    "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_medicine_max.zim",
-    "fileName": "library/medical/wikipedia_en_medicine_max.zim",
+    "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_medicine_maxi_2026-04.zim",
+    "fileName": "library/medical/wikipedia_en_medicine_maxi_2026-04.zim",
     "sizeBytes": 2200000000,
-    "defaultTiers": ["small", "medium", "large", "xl"]
+    "defaultTiers": [
+      "small",
+      "medium",
+      "large",
+      "xl"
+    ]
   },
   {
     "id": "ose-blueprints",
     "name": "Global Village Construction Set",
     "description": "Open Source Ecology blueprints for the 50 machines that build a civilization.",
-    "url": "https://download.kiwix.org/zim/other/opensourceecology_en_all_max.zim",
-    "fileName": "library/engineering/opensourceecology_en_all_max.zim",
+    "url": "https://archive.org/download/osewiki_en_all_2019-08/osewiki_en_all_2019-08.zim",
+    "fileName": "library/engineering/osewiki_en_all_2019-08.zim",
     "sizeBytes": 1800000000,
-    "defaultTiers": ["small", "medium", "large", "xl"]
+    "defaultTiers": [
+      "small",
+      "medium",
+      "large",
+      "xl"
+    ]
   },
   {
     "id": "survivor-library",
@@ -24,6 +34,57 @@
     "url": "https://archive.org/download/SurvivorLibrary/SurvivorLibrary.zip",
     "fileName": "library/survival/SurvivorLibrary.zip",
     "sizeBytes": 85000000000,
-    "defaultTiers": ["medium", "large", "xl"]
+    "defaultTiers": [
+      "medium",
+      "large",
+      "xl"
+    ]
+  },
+  {
+    "id": "kiwix-ifixit",
+    "name": "iFixit Repair Manuals",
+    "description": "Offline teardown and repair manuals for thousands of electronics and vehicles.",
+    "url": "https://download.kiwix.org/zim/ifixit/ifixit_en_all_2025-12.zim",
+    "fileName": "library/repair/ifixit_en_all_2025-12.zim",
+    "sizeBytes": 3500000000,
+    "defaultTiers": [
+      "medium",
+      "large",
+      "xl"
+    ]
+  },
+  {
+    "id": "kiwix-stackoverflow",
+    "name": "Stack Exchange Dump",
+    "description": "Complete offline archive of Stack Overflow and technical exchanges.",
+    "url": "https://download.kiwix.org/zim/stack_exchange/stackoverflow.com_en_all_2023-11.zim",
+    "fileName": "library/engineering/stackoverflow.com_en_all_2023-11.zim",
+    "sizeBytes": 75000000000,
+    "defaultTiers": [
+      "large",
+      "xl"
+    ]
+  },
+  {
+    "id": "kiwix-gutenberg",
+    "name": "Project Gutenberg",
+    "description": "Over 70,000 free eBooks containing classic human literature and philosophy.",
+    "url": "https://download.kiwix.org/zim/gutenberg/gutenberg_en_all_2025-11.zim",
+    "fileName": "library/books/gutenberg_en_all_2025-11.zim",
+    "sizeBytes": 206000000000,
+    "defaultTiers": [
+      "xl"
+    ]
+  },
+  {
+    "id": "kiwix-wikipedia-full-en",
+    "name": "Wikipedia (Full English)",
+    "description": "Complete text and images of the entirety of English Wikipedia.",
+    "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_maxi_2025-08.zim",
+    "fileName": "library/knowledge/wikipedia_en_all_maxi_2025-08.zim",
+    "sizeBytes": 111000000000,
+    "defaultTiers": [
+      "xl"
+    ]
   }
 ]

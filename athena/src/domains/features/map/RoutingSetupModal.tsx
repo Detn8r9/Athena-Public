@@ -17,10 +17,12 @@ export function RoutingSetupModal({
   open,
   onClose,
   savedUserLocationAddress,
+  onOpenDataAcquisition,
 }: {
   open: boolean;
   onClose: () => void;
   savedUserLocationAddress: string;
+  onOpenDataAcquisition?: () => void;
 }) {
   const [locationDraft, setLocationDraft] = useState("");
   const [locationExpanded, setLocationExpanded] = useState(true);
@@ -370,9 +372,22 @@ export function RoutingSetupModal({
           </AnimatePresence>
 
           <div className="map-archive-card__action">
-            <button type="button" className="map-archive-card__dl" onClick={() => void downloadRoutingData()} disabled={!canDownload}>
-              {busy ? "Downloading…" : "Download routing data"}
-            </button>
+            {onOpenDataAcquisition ? (
+              <button
+                type="button"
+                className="map-archive-card__dl"
+                onClick={() => {
+                  onClose();
+                  onOpenDataAcquisition();
+                }}
+              >
+                Open Data Acquisition (Maps)
+              </button>
+            ) : (
+              <button type="button" className="map-archive-card__dl" onClick={() => void downloadRoutingData()} disabled={!canDownload}>
+                {busy ? "Downloading…" : "Download routing data"}
+              </button>
+            )}
           </div>
 
           {statusMsg ? (

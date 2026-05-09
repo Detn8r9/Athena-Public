@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
 import manifestJson from "./academy_manifest.json";
 import { normalizePathSlashes } from "../../../shared/lib/path";
+import type { StagedDownloadJob } from "../../../shared/dataAcquisition/stagedDownloadJobs";
 
 type PresetId = "small" | "medium" | "large" | "xl";
 
@@ -28,7 +29,7 @@ type FileScanReport = {
   oversized: PartialFileStatus[];
 };
 
-type DownloadJob = { url: string; fileName: string; expectedBytes: number };
+type DownloadJob = StagedDownloadJob;
 
 type DownloadProgressPayload = {
   fileName: string;
@@ -72,6 +73,7 @@ type ManifestItem = {
   fileName: string;
   sizeBytes: number;
   defaultTiers: ManifestTier[];
+  alternateUrls?: string[];
 };
 
 const MANIFEST = (Array.isArray(manifestJson) ? manifestJson : []) as ManifestItem[];
@@ -173,7 +175,15 @@ function PillProgress({ percent }: { percent: number }) {
 
 type UiStage = "select" | "downloading" | "summary";
 
-export function AcademyDownloader() {
+export interface AcademyDownloaderProps {
+  deferPrimaryDownloadButton?: boolean;
+  onAddToDownloadQueue?: (jobs: StagedDownloadJob[]) => void;
+}
+
+export function AcademyDownloader({
+  deferPrimaryDownloadButton = false,
+  onAddToDownloadQueue,
+}: AcademyDownloaderProps = {}) {
   const [stage, setStage] = useState<UiStage>("select");
   const [preset, setPreset] = useState<PresetId>("medium");
   const [enabledById, setEnabledById] = useState<Record<string, boolean>>(() => {
@@ -301,6 +311,7 @@ export function AcademyDownloader() {
         url: row.it.url,
         fileName: row.it.fileName,
         expectedBytes: partial ? partial.expectedBytes : row.it.sizeBytes,
+        alternateUrls: row.it.alternateUrls,
       });
     }
     return jobs;
@@ -490,14 +501,35 @@ export function AcademyDownloader() {
                 {overBudget ? <div className="mac-warn">Not enough free space for the selected downloads.</div> : null}
               </div>
 
-              <button
-                type="button"
-                className="mac-primary"
-                disabled={scan == null || selectedJobs.length === 0 || overBudget}
-                onClick={() => void startDownload()}
-              >
-                Download
-              </button>
+              {deferPrimaryDownloadButton ? (
+                <div className="mac-installer__queue-actions">
+                  <button
+                    type="button"
+                    className="mac-primary"
+                    disabled={scan == null || selectedJobs.length === 0 || overBudget || !onAddToDownloadQueue}
+                    onClick={() => onAddToDownloadQueue?.(selectedJobs)}
+                  >
+                    Add to download queue
+                  </button>
+                  <button
+                    type="button"
+                    className="mac-secondary"
+                    disabled={scan == null || selectedJobs.length === 0 || overBudget}
+                    onClick={() => void startDownload()}
+                  >
+                    Download this tab only
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="mac-primary"
+                  disabled={scan == null || selectedJobs.length === 0 || overBudget}
+                  onClick={() => void startDownload()}
+                >
+                  Download
+                </button>
+              )}
             </div>
           </motion.div>
         ) : null}

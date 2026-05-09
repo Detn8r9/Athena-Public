@@ -82,6 +82,88 @@ function suggestedOllamaModelIdFromFilename(filename: string): string {
   return base || filename;
 }
 
+/**
+ * Subscribe to package download terminal events first, then start `download_package` (which returns as soon as the
+ * background task is spawned). Resolves when the file is renamed in place, or on error/cancel/timeout.
+ */
+async function invokeModelsPackageDownloadAndWait(
+  args: {
+    downloadUrl: string;
+    destinationFolder: string;
+    downloadId: string;
+    fileName: string;
+  },
+  timeoutMs: number,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const downloadId = args.downloadId;
+  return await new Promise((resolve) => {
+    let finished = false;
+    const unsubscribers: Array<() => void> = [];
+    let timer: number | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        timer = undefined;
+      }
+      unsubscribers.forEach((u) => u());
+    };
+    const done = (r: { ok: true } | { ok: false; message: string }) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve(r);
+    };
+
+    void (async () => {
+      try {
+        unsubscribers.push(
+          await listen<{ manifestType: string; downloadId: string }>("package_download_complete", (e) => {
+            const p = e.payload;
+            if (!p || p.manifestType !== "models" || p.downloadId !== downloadId) return;
+            done({ ok: true });
+          }),
+        );
+        unsubscribers.push(
+          await listen<{ manifestType: string; downloadId: string; error?: string }>("package_download_error", (e) => {
+            const p = e.payload;
+            if (!p || p.manifestType !== "models" || p.downloadId !== downloadId) return;
+            done({ ok: false, message: String(p.error ?? "Download failed.") });
+          }),
+        );
+        unsubscribers.push(
+          await listen<{ manifestType: string; downloadId: string }>("package_download_cancelled", (e) => {
+            const p = e.payload;
+            if (!p || p.manifestType !== "models" || p.downloadId !== downloadId) return;
+            done({ ok: false, message: "Download cancelled." });
+          }),
+        );
+      } catch (e) {
+        done({ ok: false, message: e != null ? String(e) : "Failed to subscribe to download events." });
+        return;
+      }
+
+      timer = window.setTimeout(
+        () => done({ ok: false, message: "Timed out waiting for download to finish." }),
+        timeoutMs,
+      );
+
+      try {
+        await invoke("download_package", {
+          args: {
+            manifestType: "models",
+            downloadUrl: args.downloadUrl,
+            destinationFolder: args.destinationFolder,
+            downloadId: args.downloadId,
+            fileName: args.fileName,
+          },
+        });
+      } catch (e) {
+        done({ ok: false, message: e != null ? String(e) : "Could not start download." });
+      }
+    })();
+  });
+}
+
 export function ChatConsoleView() {
   const lx = useLexicon();
   const [modelManifest, setModelManifest] = useState<ModelManifest | null>(null);
@@ -299,17 +381,19 @@ export function ChatConsoleView() {
     const downloadId = entry.filename;
     setModelDownloadingId(downloadId);
     try {
-      await invoke("download_package", {
-        args: {
-          manifestType: "models",
+      const outcome = await invokeModelsPackageDownloadAndWait(
+        {
           downloadUrl: entry.url,
           destinationFolder: dir,
           downloadId,
           fileName: entry.filename,
         },
-      });
-    } catch (e) {
-      setLines((prev) => [...prev, { id: crypto.randomUUID(), role: "status", content: e != null ? String(e) : "Could not start download." }]);
+        3 * 60 * 60 * 1000,
+      );
+      if (!outcome.ok) {
+        setLines((prev) => [...prev, { id: crypto.randomUUID(), role: "status", content: outcome.message }]);
+      }
+    } finally {
       setModelDownloadingId(null);
     }
   }
@@ -485,10 +569,10 @@ export function ChatConsoleView() {
                   {l.role === "user" ? "You" : l.role === "assistant" ? "Athena" : "Status"}
                 </div>
                 <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.35 }}>{l.content}</div>
-                {l.role === "assistant" && l.sources && l.sources.length > 0 ? (
+                {l.role === "assistant" && (l.sources?.length ?? 0) > 0 ? (
                   <div style={{ marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "center" }} aria-label="Sources from your library">
                     <span className="text-muted small">Sources:</span>
-                    {l.sources.map((c, idx) =>
+                    {l.sources!.map((c, idx) =>
                       c.filePath ? (
                         <button
                           key={`${c.filePath}-${c.pageNumber ?? "x"}-${idx}`}

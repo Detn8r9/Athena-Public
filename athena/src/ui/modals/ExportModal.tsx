@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { AegisExportIoPanel, type AegisExportProgress, type AegisIoHistories } from "../../pages/export/AegisExportIoPanel";
 
 export type UsbDriveInfo = {
@@ -10,8 +11,14 @@ export type UsbDriveInfo = {
   device_path: string;
 };
 
-/** Rust `export_type` values for `export_athena_to_usb`. */
-export type ExportTier = "outpost" | "bastion" | "citadel" | "expedition";
+/** UI tiers for Aegis Hive Mind export. */
+export type ExportTier = "fastNode" | "sisterServer";
+
+type DiscoveredLocalGgufModel = {
+  fileName: string;
+  absolutePath: string;
+  sizeBytes: number;
+};
 
 export type AegisExpeditionPlanStep = {
   key: string;
@@ -31,6 +38,8 @@ export type AegisExportPreflight = {
   slimSqliteBytes: number;
   fullSqliteBytes: number;
   modelsBytes: number;
+  chatModelsAllBytes: number;
+  chatModelsSmallestBytes: number;
   exampleRegionExtractEstimateBytes: number;
   exampleRegionReservedBytes: number;
   offlineMapsNonSatelliteBytes: number;
@@ -51,7 +60,17 @@ export type AegisExportPreflight = {
   destinationFitsOutpost: boolean | null;
   destinationFitsBastion: boolean | null;
   destinationFitsCitadel: boolean | null;
+  destinationFitsFastNode?: boolean | null;
+  destinationFitsSisterServer?: boolean | null;
+  fastNodeMeasureStatus?: string;
+  sisterServerMeasureStatus?: string;
   expeditionPlan: AegisExpeditionPlanStep[] | null;
+};
+
+export type AegisPreflightProgressEvent = {
+  done: boolean;
+  error?: string | null;
+  preflight?: AegisExportPreflight | null;
 };
 
 type Props = {
@@ -63,6 +82,8 @@ type Props = {
   onScorchedEarthChange: (v: boolean) => void;
   busy: boolean;
   exportProgress: AegisExportProgress | null;
+  /** Rust/backend or IPC error detail while export is running or after failure. */
+  exportErrorDetail: string | null;
   exportIoHistories: AegisIoHistories;
   status: string | null;
   onStartExport: (args: {
@@ -71,6 +92,7 @@ type Props = {
     formatFirst: boolean;
     exportType: ExportTier;
     expeditionBudgetBytes: number | null;
+    selectedExternalChatModelPath: string | null;
   }) => void;
 };
 
@@ -92,28 +114,30 @@ function formatDurationSeconds(secs: number): string {
   return `~${hrs} hr`;
 }
 
+function normalizeMeasureStatus(raw: string | undefined | null): "ready" | "calculating" | "error" | "unknown" {
+  const s = (raw ?? "").trim().toLowerCase();
+  if (s === "calculating") return "calculating";
+  if (s === "error") return "error";
+  if (s === "ready") return "ready";
+  return "unknown";
+}
+
 const MANUAL_TIER_CARDS: Array<{
-  id: Exclude<ExportTier, "expedition">;
+  id: ExportTier;
   title: string;
   systems: string;
 }> = [
   {
-    id: "outpost",
-    title: "Outpost",
+    id: "fastNode",
+    title: "Fast Node (default)",
     systems:
-      "Lean field kit: application, Windows/Linux launchers, and a slim copy of the station database (personnel, chats, logbook, radio, mesh, calendar, map pins — library vectors and ingested file index omitted). No AI models, no offline map extract.",
+      "Minimal field node: application binaries + OS launchers + slim configuration + slim station DB + one small local chat model. Explicitly excludes massive offline maps, full library mirrors, and large payload packs. Designed to boot quickly and join the Hive Mind network.",
   },
   {
-    id: "bastion",
-    title: "Bastion",
+    id: "sisterServer",
+    title: "Sister Server (full clone)",
     systems:
-      "Full station intelligence: AI models, complete SQLite index and indexed documents, example US interior proximity terrain extract (25 mi), priority payload packs, offline maps excluding satellite rasters, and library folders with the same satellite skip (terrain / pins / markers stay in the database).",
-  },
-  {
-    id: "citadel",
-    title: "Citadel",
-    systems:
-      "Everything ATHENA uses locally: full bundled payload, all offline maps, all library folders, models, and the full database. Use when the USB is large enough; Scorched Earth is only offered here.",
+      "Full clone: complete application payload, all local AI models, full databases, and complete offline maps. Intended to broadcast/serve resources to the Hive Mind network.",
   },
 ];
 
@@ -126,6 +150,7 @@ export function ExportModal({
   onScorchedEarthChange,
   busy,
   exportProgress,
+  exportErrorDetail,
   exportIoHistories,
   status,
   onStartExport,
@@ -138,12 +163,16 @@ export function ExportModal({
   const [pf, setPf] = useState<AegisExportPreflight | null>(null);
   const [pfLoading, setPfLoading] = useState(false);
   const [pfErr, setPfErr] = useState<string | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredLocalGgufModel[]>([]);
+  const [discoveringModels, setDiscoveringModels] = useState(false);
+  const [discoverErr, setDiscoverErr] = useState<string | null>(null);
+  const [selectedExternalChatModelPath, setSelectedExternalChatModelPath] = useState<string | null>(null);
 
   const isMac =
     typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "");
 
   useEffect(() => {
-    if (tier !== "citadel" && scorchedEarth) {
+    if (tier !== "sisterServer" && scorchedEarth) {
       onScorchedEarthChange(false);
     }
   }, [tier, scorchedEarth, onScorchedEarthChange]);
@@ -182,71 +211,110 @@ export function ExportModal({
     if (!open) {
       setPf(null);
       setPfErr(null);
+      setDiscoveredModels([]);
+      setDiscoverErr(null);
+      setDiscoveringModels(false);
+      setSelectedExternalChatModelPath(null);
       return;
     }
     let cancelled = false;
+    let unlisten: UnlistenFn | undefined;
     setPfLoading(true);
     setPfErr(null);
+    setPf(null);
     const dest = selected?.mount_point?.trim() ? selected.mount_point : null;
-    void invoke<AegisExportPreflight>("aegis_export_preflight", { destinationPath: dest })
-      .then((r) => {
-        if (!cancelled) setPf(r);
-      })
-      .catch((e) => {
+
+    void (async () => {
+      try {
+        unlisten = await listen<AegisPreflightProgressEvent>("athena:aegis-preflight-progress", (ev) => {
+          if (cancelled) return;
+          const p = ev.payload;
+          if (p.error) setPfErr(p.error);
+          if (p.preflight) setPf(p.preflight);
+          if (p.done) setPfLoading(false);
+        });
+        await invoke("start_aegis_export_preflight", { destinationPath: dest });
+      } catch (e) {
         if (!cancelled) {
-          setPf(null);
           setPfErr(e instanceof Error ? e.message : String(e));
+          setPfLoading(false);
         }
-      })
-      .finally(() => {
-        if (!cancelled) setPfLoading(false);
-      });
+      }
+    })();
+
     return () => {
       cancelled = true;
+      unlisten?.();
     };
   }, [open, selected?.mount_point]);
 
-  const tierFits = useMemo(() => {
-    if (!selected || !pf) return true;
-    if (tier === "outpost") return pf.destinationFitsOutpost !== false;
-    if (tier === "bastion") return pf.destinationFitsBastion !== false;
-    if (tier === "citadel") return pf.destinationFitsCitadel !== false;
-    const u = pf.destinationUsableExpeditionBudgetBytes ?? 0;
-    return u >= 16 * 1024 * 1024;
-  }, [selected, pf, tier]);
+  const needsExternalModelScan =
+    open && tier === "fastNode" && pf != null && (pf.chatModelsSmallestBytes ?? 0) <= 0;
 
-  const expeditionBudget =
-    pf?.destinationUsableExpeditionBudgetBytes != null
-      ? Math.floor(pf.destinationUsableExpeditionBudgetBytes)
-      : null;
+  useEffect(() => {
+    if (!needsExternalModelScan) return;
+    if (discoveringModels) return;
+    if (discoveredModels.length > 0) return;
+    setDiscoveringModels(true);
+    setDiscoverErr(null);
+    void invoke<DiscoveredLocalGgufModel[]>("scan_local_device_for_models")
+      .then((rows) => setDiscoveredModels(rows ?? []))
+      .catch((e) => setDiscoverErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setDiscoveringModels(false));
+  }, [needsExternalModelScan, discoveringModels, discoveredModels.length]);
+
+  const tierFits = useMemo(() => {
+    if (!selected) return true;
+    if (!pf) return true;
+    const fitFast = pf.destinationFitsFastNode ?? pf.destinationFitsOutpost;
+    const fitSister = pf.destinationFitsSisterServer ?? pf.destinationFitsCitadel;
+    if (tier === "fastNode") return fitFast !== false;
+    return fitSister !== false;
+  }, [selected, pf, tier]);
 
   const exportReady =
     !busy &&
     !noUsb &&
     !loading &&
     !formatBlocked &&
-    !pfLoading &&
-    pf != null &&
+    selected != null &&
     tierFits &&
-    (tier !== "expedition" || (expeditionBudget != null && expeditionBudget >= 16 * 1024 * 1024));
+    (!needsExternalModelScan || (selectedExternalChatModelPath != null && selectedExternalChatModelPath.trim() !== ""));
 
-  function tierSizeLine(id: Exclude<ExportTier, "expedition">): string {
-    if (!pf) return "Measuring…";
+  const exportButtonTitle = useMemo(() => {
+    if (noUsb) return "No USB drive detected.";
+    if (!exportReady) {
+      return "Pick a drive and tier that fit this volume, fix format/device path, or satisfy Fast Node model requirements.";
+    }
+    if (pfLoading) {
+      return "Sizes may still be updating in the background; export is allowed unless a tier is marked too small.";
+    }
+    return undefined;
+  }, [noUsb, exportReady, pfLoading]);
+
+  function tierSizeLine(id: ExportTier): string {
+    if (!pf) return pfLoading ? "Calibrating…" : "Measuring…";
+    const st = normalizeMeasureStatus(id === "fastNode" ? pf.fastNodeMeasureStatus : pf.sisterServerMeasureStatus);
     const mib = pf.assumedWriteMebibytesPerSec;
-    if (id === "outpost") {
-      return `${formatBytes(pf.outpostTotalBytes)} · ${formatDurationSeconds(pf.outpostEstimatedSeconds)} @ ${mib} MiB/s`;
+    const core =
+      id === "fastNode"
+        ? `${formatBytes(pf.outpostTotalBytes)} · ${formatDurationSeconds(pf.outpostEstimatedSeconds)} @ ${mib} MiB/s`
+        : `${formatBytes(pf.citadelTotalBytes)} · ${formatDurationSeconds(pf.citadelEstimatedSeconds)} @ ${mib} MiB/s`;
+    if (st === "calculating") {
+      return `Calculating… (some folders used a quick shallow size; totals may be low) · ${core}`;
     }
-    if (id === "bastion") {
-      return `${formatBytes(pf.bastionTotalBytes)} · ${formatDurationSeconds(pf.bastionEstimatedSeconds)} @ ${mib} MiB/s`;
+    if (st === "error") {
+      return `Size check incomplete · ${core}`;
     }
-    return `${formatBytes(pf.citadelTotalBytes)} · ${formatDurationSeconds(pf.citadelEstimatedSeconds)} @ ${mib} MiB/s`;
+    return core;
   }
 
-  function tierGreyed(id: Exclude<ExportTier, "expedition">): boolean {
+  function tierGreyed(id: ExportTier): boolean {
     if (!pf || !selected) return false;
-    if (id === "outpost") return pf.destinationFitsOutpost === false;
-    if (id === "bastion") return pf.destinationFitsBastion === false;
-    return pf.destinationFitsCitadel === false;
+    const fitFast = pf.destinationFitsFastNode ?? pf.destinationFitsOutpost;
+    const fitSister = pf.destinationFitsSisterServer ?? pf.destinationFitsCitadel;
+    if (id === "fastNode") return fitFast === false;
+    return fitSister === false;
   }
 
   function handleStart() {
@@ -269,7 +337,8 @@ export function ExportModal({
       devicePath: selected.device_path?.trim() ? selected.device_path : null,
       formatFirst,
       exportType: tier,
-      expeditionBudgetBytes: tier === "expedition" ? expeditionBudget : null,
+      expeditionBudgetBytes: null,
+      selectedExternalChatModelPath: tier === "fastNode" ? selectedExternalChatModelPath : null,
     });
   }
 
@@ -286,16 +355,13 @@ export function ExportModal({
         </div>
         <div className="library-body" style={{ padding: "0.75rem 1rem 1rem", maxWidth: "min(720px, 92vw)" }}>
           <p className="text-muted small" style={{ marginTop: 0 }}>
-            Pick a removable drive, review measured sizes, then choose how much of ATHENA to copy. Expedition fills the drive in priority order after a small safety buffer.
+            Pick a removable drive, review measured sizes, then choose the Hive Mind role you want this USB to deploy.
           </p>
           <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
-            <strong>Why tiers differ:</strong> Bastion and Citadel measure the <em>full</em> application bundle plus USB <code>data/</code> models, database, maps, and libraries. Outpost uses a <em>slimmer</em> app copy: it skips non-launcher folders under bundled{" "}
-            <code>payload/</code> <em>and</em> the bundled <code>Resources/embedding</code> and <code>Resources/reranker</code> trees (default ONNX weights from <code>tauri.conf.json</code>), while still writing Windows/Linux launchers at the drive root. That
-            is usually where most of the “~50+ GB” similarity was coming from before.
+            <strong>Fast Node:</strong> minimal payload for quick boot and network join (one small local chat model; no full maps or library mirrors).
           </p>
           <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
-            <strong>Compression:</strong> Zipping the whole stick would not match “run from USB” unless you extract first. Outpost shrinks the real bytes written by omitting non-essential pack folders from the Mac/Windows app copy; already-compressed assets
-            (models, some archives) rarely shrink much further.
+            <strong>Sister Server:</strong> full clone intended to broadcast/serve resources to the Hive Mind network.
           </p>
 
           {loading ? (
@@ -335,9 +401,7 @@ export function ExportModal({
           ) : null}
           {pf && selected ? (
             <p className="text-muted small" style={{ marginTop: 0 }}>
-              Free on volume: {formatBytes(pf.destinationAvailableBytes ?? selected.available_space)} · Usable for Expedition
-              (after {formatBytes(pf.expeditionSecurityBufferBytes)} buffer):{" "}
-              {formatBytes(pf.destinationUsableExpeditionBudgetBytes ?? 0)}
+              Free on volume: {formatBytes(pf.destinationAvailableBytes ?? selected.available_space)}
               {pf.applicationBundleBytesOutpost < pf.applicationBytes ? (
                 <>
                   {" "}
@@ -349,7 +413,7 @@ export function ExportModal({
           ) : null}
 
           <h3 className="text-muted small" style={{ margin: "0.75rem 0 0.35rem", letterSpacing: "0.04em" }}>
-            Manual export
+            Hive Mind export tiers
           </h3>
           <div style={{ display: "grid", gap: "0.5rem", marginBottom: "0.75rem" }}>
             {MANUAL_TIER_CARDS.map((c) => {
@@ -380,73 +444,61 @@ export function ExportModal({
             })}
           </div>
 
-          <h3 className="text-muted small" style={{ margin: "0.5rem 0 0.35rem", letterSpacing: "0.04em" }}>
-            Expedition (auto)
-          </h3>
-          <button
-            type="button"
-            className={tier === "expedition" ? "glass-action-btn" : "secondary"}
-            style={{ textAlign: "left", width: "100%", justifyContent: "flex-start", marginBottom: "0.5rem" }}
-            onClick={() => onTierChange("expedition")}
-            disabled={
-              busy ||
-              (pf != null &&
-                selected != null &&
-                (pf.destinationUsableExpeditionBudgetBytes == null || pf.destinationUsableExpeditionBudgetBytes < 16 * 1024 * 1024))
-            }
-            title={
-              pf != null && (pf.destinationUsableExpeditionBudgetBytes ?? 0) < 16 * 1024 * 1024
-                ? "USB too small for Expedition (needs at least 16 MiB after the safety buffer)."
-                : undefined
-            }
-          >
-            <div style={{ display: "grid", gap: "0.15rem" }}>
-              <div style={{ fontWeight: 700 }}>Expedition</div>
-              <div className="text-muted small">
-                Copies essentials first (app, launchers, models, database, terrain extract), then maps without satellite rasters, library
-                folders, payload packs, and finally satellite tiles until the budget is exhausted.
-              </div>
-            </div>
-          </button>
-
-          {tier === "expedition" && pf?.expeditionPlan && pf.expeditionPlan.length > 0 ? (
-            <div
-              style={{
-                marginBottom: "0.75rem",
-                maxHeight: "220px",
-                overflow: "auto",
-                border: "1px solid rgba(255,255,255,0.08)",
-                borderRadius: "8px",
-                padding: "0.5rem 0.65rem",
-              }}
-            >
+          {tier === "fastNode" ? (
+            <div style={{ marginBottom: "0.75rem" }}>
               <div className="text-muted small" style={{ marginBottom: "0.35rem" }}>
-                Staging preview (same order as export)
+                {needsExternalModelScan
+                  ? "No local chat models found in ATHENA’s models directory. Select a `.gguf` from this device to include as the Fast Node’s single model."
+                  : "Fast Node will include one small local chat model (smallest `.gguf` under ATHENA’s models directory)."}
               </div>
-              <table className="text-muted small" style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr>
-                    <th style={{ textAlign: "left", padding: "0.2rem 0.35rem" }}>Stage</th>
-                    <th style={{ textAlign: "right", padding: "0.2rem 0.35rem" }}>Bytes</th>
-                    <th style={{ textAlign: "center", padding: "0.2rem 0.35rem" }}>Fits</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pf.expeditionPlan.map((row) => (
-                    <tr key={row.key}>
-                      <td style={{ padding: "0.2rem 0.35rem" }}>{row.label}</td>
-                      <td style={{ textAlign: "right", padding: "0.2rem 0.35rem" }}>{formatBytes(row.bytes)}</td>
-                      <td style={{ textAlign: "center", padding: "0.2rem 0.35rem" }}>{row.willCopy ? "Yes" : "No"}</td>
-                    </tr>
+              {discoveringModels ? <p className="text-muted small">Scanning this device for `.gguf` models…</p> : null}
+              {discoverErr ? (
+                <p className="text-muted small" role="alert">
+                  Model scan failed: {discoverErr}
+                </p>
+              ) : null}
+              {needsExternalModelScan && discoveredModels.length > 0 ? (
+                <div
+                  style={{
+                    maxHeight: "180px",
+                    overflow: "auto",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    borderRadius: "8px",
+                    padding: "0.5rem 0.65rem",
+                  }}
+                >
+                  {discoveredModels.slice(0, 250).map((m) => (
+                    <button
+                      key={m.absolutePath}
+                      type="button"
+                      className={selectedExternalChatModelPath === m.absolutePath ? "glass-action-btn" : "secondary"}
+                      style={{
+                        width: "100%",
+                        justifyContent: "space-between",
+                        textAlign: "left",
+                        marginBottom: "0.35rem",
+                      }}
+                      onClick={() => setSelectedExternalChatModelPath(m.absolutePath)}
+                      disabled={busy}
+                      title={m.absolutePath}
+                    >
+                      <span style={{ fontWeight: 700 }}>{m.fileName}</span>
+                      <span className="text-muted small">{formatBytes(m.sizeBytes)}</span>
+                    </button>
                   ))}
-                </tbody>
-              </table>
+                </div>
+              ) : null}
+              {needsExternalModelScan && discoveredModels.length === 0 && !discoveringModels && !discoverErr ? (
+                <p className="text-muted small" role="alert">
+                  No `.gguf` models were found in common locations (Ollama / LM Studio / GPT4All / Downloads).
+                </p>
+              ) : null}
             </div>
           ) : null}
 
           {!tierFits && selected && pf && !pfLoading ? (
             <p className="text-muted small" role="alert" style={{ marginTop: 0 }}>
-              The selected volume does not have enough free space for this export mode. Choose a larger drive or Expedition.
+              The selected volume does not have enough free space for this export mode. Choose a larger drive.
             </p>
           ) : null}
 
@@ -471,12 +523,12 @@ export function ExportModal({
               type="checkbox"
               checked={scorchedEarth}
               onChange={(e) => onScorchedEarthChange(e.target.checked)}
-              disabled={busy || tier !== "citadel"}
+              disabled={busy || tier !== "sisterServer"}
             />
             <span style={{ color: "var(--danger, #ef4444)" }}>
               <span className="dev-toggle-label">Scorched Earth Protocol</span>
               <p className="small" style={{ margin: "0.35rem 0 0", opacity: 0.92 }}>
-                When enabled, all local data will be erased from this computer after a successful Citadel export.
+                When enabled, all local data will be erased from this computer after a successful Sister Server export.
               </p>
             </span>
           </label>
@@ -492,7 +544,7 @@ export function ExportModal({
               type="button"
               className="secondary"
               disabled={!exportReady}
-              title={noUsb ? "No USB drive detected." : !exportReady ? "Wait for sizing or pick a valid tier." : undefined}
+              title={exportButtonTitle}
               onClick={() => void handleStart()}
             >
               {busy ? "Exporting…" : "Export"}
@@ -527,6 +579,20 @@ export function ExportModal({
                 );
               })()}
             </div>
+          ) : null}
+          {exportErrorDetail ? (
+            <p
+              className="small"
+              role="alert"
+              style={{
+                marginTop: "0.5rem",
+                color: "var(--danger, #ef4444)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {exportErrorDetail}
+            </p>
           ) : null}
           {status ? (
             <p className="text-muted small" style={{ marginTop: "0.65rem" }} aria-live="polite">

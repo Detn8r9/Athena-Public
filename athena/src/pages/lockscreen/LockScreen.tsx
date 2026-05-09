@@ -141,7 +141,7 @@ export function LockScreen() {
 
   useEffect(() => {
     let ticks = 0;
-    let id: ReturnType<typeof setInterval> | undefined;
+    let id: number | undefined;
     const pollDevice = async () => {
       try {
         const d = await invoke<LockDeviceStats>("get_device_stats");

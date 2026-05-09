@@ -10,7 +10,8 @@ import {
   ChevronDown,
   ChevronUp,
   ChevronRight,
-  Map,
+  HardDriveDownload,
+  Map as MapIcon,
   MessageSquare,
   Library,
   GraduationCap,
@@ -87,11 +88,11 @@ function LauncherIcon({ children }: { children: ReactNode }) {
     <span
       className="glass-panel"
       style={{
-        width: "2.3rem",
-        height: "2.3rem",
+        width: "1.61rem",
+        height: "1.61rem",
         display: "grid",
         placeItems: "center",
-        borderRadius: "0.75rem",
+        borderRadius: "0.56rem",
         color: "var(--primary)",
         background: "color-mix(in srgb, var(--surface-solid) 84%, transparent)",
       }}
@@ -108,7 +109,7 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     label: "Chat",
     icon: (
       <LauncherIcon>
-        <MessageSquare size={20} strokeWidth={2} aria-hidden />
+        <MessageSquare size={18} strokeWidth={2} aria-hidden />
       </LauncherIcon>
     ),
   },
@@ -117,7 +118,7 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     label: "Tactical Map",
     icon: (
       <LauncherIcon>
-        <Map size={20} strokeWidth={2} aria-hidden />
+        <MapIcon size={18} strokeWidth={2} aria-hidden />
       </LauncherIcon>
     ),
   },
@@ -126,7 +127,7 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     label: "Calendar",
     icon: (
       <LauncherIcon>
-        <CalendarDays size={20} strokeWidth={2} aria-hidden />
+        <CalendarDays size={18} strokeWidth={2} aria-hidden />
       </LauncherIcon>
     ),
   },
@@ -135,7 +136,7 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     label: "Academy",
     icon: (
       <LauncherIcon>
-        <GraduationCap size={20} strokeWidth={2} aria-hidden />
+        <GraduationCap size={18} strokeWidth={2} aria-hidden />
       </LauncherIcon>
     ),
   },
@@ -144,7 +145,16 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     label: "Library",
     icon: (
       <LauncherIcon>
-        <Library size={20} strokeWidth={2} aria-hidden />
+        <Library size={18} strokeWidth={2} aria-hidden />
+      </LauncherIcon>
+    ),
+  },
+  {
+    key: "data_acquisition",
+    label: "Data Acquisition",
+    icon: (
+      <LauncherIcon>
+        <HardDriveDownload size={18} strokeWidth={2} aria-hidden />
       </LauncherIcon>
     ),
   },
@@ -153,7 +163,7 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     label: "Communications Hub",
     icon: (
       <LauncherIcon>
-        <CommsHubIcon size={20} strokeWidth={2} />
+        <CommsHubIcon size={18} strokeWidth={2} />
       </LauncherIcon>
     ),
   },
@@ -162,7 +172,7 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     label: "Field log & logistics",
     icon: (
       <LauncherIcon>
-        <BookOpen size={20} strokeWidth={2} aria-hidden />
+        <BookOpen size={18} strokeWidth={2} aria-hidden />
       </LauncherIcon>
     ),
   },
@@ -171,7 +181,7 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     label: "Personnel",
     icon: (
       <LauncherIcon>
-        <Users size={20} strokeWidth={2} aria-hidden />
+        <Users size={18} strokeWidth={2} aria-hidden />
       </LauncherIcon>
     ),
   },
@@ -187,6 +197,14 @@ function filterLauncherByRank(
   return items;
 }
 
+type LauncherItem = { key: DashboardDestination; label: string; icon: ReactNode };
+
+/** Right column: grouped app launchers (order within sector is fixed for muscle memory). */
+const OPERATIONAL_SECTORS: Array<{ id: string; title: string; keys: DashboardDestination[] }> = [
+  { id: "tactical", title: "Tactical Operations", keys: ["chat", "map", "comms_hub"] },
+  { id: "intel", title: "Intelligence & Data", keys: ["academy", "archive", "data_acquisition"] },
+  { id: "command", title: "Command & Logistics", keys: ["logbook", "personnel", "calendar"] },
+];
 
 function formatUptime(sec: number): string {
   const d = Math.floor(sec / 86400);
@@ -215,6 +233,11 @@ function ThinBar({ percent }: { percent: number }) {
 
 export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardViewProps) {
   const launcherItems = useMemo(() => filterLauncherByRank(buildLauncherItems(), authRank), [authRank]);
+  const launcherByKey = useMemo(() => {
+    const m = new Map<DashboardDestination, LauncherItem>();
+    for (const it of launcherItems) m.set(it.key, it);
+    return m;
+  }, [launcherItems]);
   const pageVisible = usePageVisible();
   const [stats, setStats] = useState<SystemStatsPayload | null>(null);
   const [statsErr, setStatsErr] = useState<string | null>(null);
@@ -343,258 +366,250 @@ export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardV
 
   const cpuPct = useMemo(() => (stats ? Math.max(0, Math.min(100, stats.cpu_usage)) : 0), [stats]);
 
-  /** Match horizontal inset to grid gap so edge→first tile spacing equals tile gaps. */
-  const dashGap = "0.9rem";
-
   return (
-    <div
-      style={{
-        display: "grid",
-        gap: dashGap,
-        width: "100%",
-        boxSizing: "border-box",
-        padding: `0 ${dashGap}`,
-      }}
-    >
-      <section className="glass-panel" style={{ padding: "0.6rem 0.8rem" }}>
-        {statsErr ? (
-          <p className="error" role="alert" style={{ margin: 0 }}>
-            {statsErr}
-          </p>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={() => setSystemExpanded((v) => !v)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: "0.8rem",
-                flexWrap: "wrap",
-                width: "100%",
-                background: "none",
-                border: "none",
-                padding: 0,
-                cursor: "pointer",
-                color: "inherit",
-                textAlign: "left",
-              }}
-              aria-expanded={systemExpanded}
-              aria-label={systemExpanded ? "Collapse system details" : "Expand system details"}
-            >
-              <span style={{ color: "var(--primary)", display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
-                System Status
-                {systemExpanded ? <ChevronUp size={16} aria-hidden /> : <ChevronDown size={16} aria-hidden />}
-              </span>
-              <span className="text-muted" style={{ fontSize: "0.72rem" }}>
-                {systemExpanded ? "Hide details" : "Tap for disk, network, battery"}
-              </span>
-            </button>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.8rem", flexWrap: "wrap", marginTop: "0.45rem" }}>
-              <div style={{ display: "grid", gap: "0.25rem", minWidth: "240px", flex: 1 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem" }}>
-                  <span>CPU {cpuPct.toFixed(1)}%</span>
-                  <span>RAM {stats ? `${stats.used_memory.toFixed(1)} / ${stats.total_memory.toFixed(1)} GB` : "—"}</span>
-                </div>
-                <ThinBar percent={cpuPct} />
-                <ThinBar percent={memoryPct} />
-              </div>
-            </div>
-            {stats ? (
-              <p className="text-muted" style={{ margin: "0.35rem 0 0", fontSize: "0.72rem", lineHeight: 1.45, wordBreak: "break-word" }}>
-                {[
-                  stats.host_name ?? undefined,
-                  `${formatUptime(stats.uptime_secs)} up`,
-                  `load ${stats.load_one.toFixed(2)} ${stats.load_five.toFixed(2)} ${stats.load_fifteen.toFixed(2)}`,
-                  stats.physical_cores != null
-                    ? `${stats.logical_cpus} threads / ${stats.physical_cores} cores`
-                    : `${stats.logical_cpus} threads`,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-                {stats.cpu_brand ? ` · ${stats.cpu_brand}` : ""}
-              </p>
-            ) : null}
-            {systemExpanded ? (
-              <div className="dashboard-system-expanded-grid">
-                {detailErr ? (
-                  <p className="error" role="alert" style={{ margin: 0 }}>
-                    {detailErr}
-                  </p>
-                ) : detailStats ? (
-                  <>
-                    <div className="dashboard-system-metric">
-                      <span>Hostname</span>
-                      <span>{detailStats.host_name ?? "—"}</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>OS</span>
-                      <span>{detailStats.long_os_version ?? detailStats.os_name ?? "—"}</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Kernel</span>
-                      <span>{detailStats.kernel_version ?? "—"}</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>CPU</span>
-                      <span>{detailStats.cpu_brand ?? "—"}</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Arch</span>
-                      <span>{detailStats.cpu_arch ?? "—"}</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Uptime</span>
-                      <span>{formatUptime(detailStats.uptime_secs)}</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Load avg</span>
-                      <span>
-                        {detailStats.load_one.toFixed(2)} / {detailStats.load_five.toFixed(2)} /{" "}
-                        {detailStats.load_fifteen.toFixed(2)}
-                      </span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Processors</span>
-                      <span>
-                        {detailStats.physical_cores != null
-                          ? `${detailStats.logical_cpus} logical / ${detailStats.physical_cores} physical`
-                          : `${detailStats.logical_cpus} logical`}
-                      </span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>CPU (telemetry)</span>
-                      <span>{detailStats.cpu_usage_pct.toFixed(1)}%</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>RAM</span>
-                      <span>
-                        {detailStats.ram_total_mb >= 1024
-                          ? `${(detailStats.ram_used_mb / 1024).toFixed(2)} / ${(detailStats.ram_total_mb / 1024).toFixed(2)} GB`
-                          : `${detailStats.ram_used_mb} / ${detailStats.ram_total_mb} MB`}
-                      </span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Swap</span>
-                      <span>
-                        {detailStats.swap_total_mb > 0
-                          ? `${(detailStats.swap_used_mb / 1024).toFixed(2)} / ${(detailStats.swap_total_mb / 1024).toFixed(2)} GB`
-                          : "—"}
-                      </span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Storage</span>
-                      <span>
-                        {detailStats.disk_total_gb > 0
-                          ? `${detailStats.disk_used_gb.toFixed(1)} / ${detailStats.disk_total_gb.toFixed(1)} GB`
-                          : "—"}
-                      </span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Disk read</span>
-                      <span>
-                        {diskSpeedReadMbps != null && diskSpeedReadMbps > 0 ? `${diskSpeedReadMbps.toFixed(2)} MB/s` : "—"}
-                      </span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Disk write</span>
-                      <span>
-                        {diskSpeedWriteMbps != null && diskSpeedWriteMbps > 0 ? `${diskSpeedWriteMbps.toFixed(2)} MB/s` : "—"}
-                      </span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Network ↓</span>
-                      <span>{netSpeedRxKbps != null ? `${netSpeedRxKbps.toFixed(0)} kB/s` : "—"}</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Network ↑</span>
-                      <span>{netSpeedTxKbps != null ? `${netSpeedTxKbps.toFixed(0)} kB/s` : "—"}</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>Battery</span>
-                      <span>
-                        {detailStats.battery_pct != null && detailStats.battery_pct !== undefined
-                          ? `${Math.round(detailStats.battery_pct)}%${
-                              detailStats.battery_charging ? " · charging / AC" : ""
-                            }${
-                              detailStats.battery_time_to_empty_minutes != null &&
-                              detailStats.battery_time_to_empty_minutes !== undefined &&
-                              detailStats.battery_charging !== true
-                                ? ` · ~${detailStats.battery_time_to_empty_minutes} min to 0%`
-                                : ""
-                            }`
-                          : "—"}
-                      </span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>GPU</span>
-                      <span>{detailStats.gpu_usage_pct != null ? `${Math.round(detailStats.gpu_usage_pct)}%` : "—"}</span>
-                    </div>
-                    <div className="dashboard-system-metric">
-                      <span>CPU temp</span>
-                      <span>{detailStats.cpu_temp_c != null ? `${Math.round(detailStats.cpu_temp_c)}°C` : "—"}</span>
-                    </div>
-                  </>
-                ) : (
-                  <p className="text-muted" style={{ margin: 0 }}>
-                    Loading…
-                  </p>
-                )}
-              </div>
-            ) : null}
-          </>
-        )}
-      </section>
-
-      <button
-        type="button"
-        className="dashboard-triage-tile glass-panel"
-        data-triage-trigger
-        onClick={() => onOpenTriage()}
-      >
-        <span
-          className="glass-panel"
-          style={{
-            width: "2.3rem",
-            height: "2.3rem",
-            display: "grid",
-            placeItems: "center",
-            borderRadius: "0.75rem",
-            color: "#fff",
-            background: "rgba(0,0,0,0.2)",
-          }}
-          aria-hidden
-        >
-          <AlertTriangle size={22} strokeWidth={2.25} />
-        </span>
-        <span style={{ display: "grid", gap: "0.15rem", textAlign: "left" }}>
-          <span className="dashboard-triage-label" style={{ color: "#fff" }}>
-            Triage
-          </span>
-          <span className="dashboard-triage-sub" style={{ color: "rgba(255,255,255,0.92)" }}>
-            Emergency actions &amp; medical quick reference
-          </span>
-        </span>
-      </button>
-
-      <div className="dashboard-launcher-row">
-        <section
-          className="glass-panel dashboard-recent-comms"
-          style={{ padding: "0.8rem" }}
-        >
-          <div
+    <div className="dashboard-operational-shell">
+      <div className="dashboard-system-span">
+        <section className="glass-panel dashboard-widget-sidebar__block" style={{ padding: "0.6rem 0.8rem" }}>
+      {statsErr ? (
+        <p className="error" role="alert" style={{ margin: 0 }}>
+          {statsErr}
+        </p>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => setSystemExpanded((v) => !v)}
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              gap: "0.5rem",
+              gap: "0.8rem",
               flexWrap: "wrap",
-              marginBottom: "0.65rem",
+              width: "100%",
+              background: "none",
+              border: "none",
+              padding: 0,
+              cursor: "pointer",
+              color: "inherit",
+              textAlign: "left",
             }}
+            aria-expanded={systemExpanded}
+            aria-label={systemExpanded ? "Collapse system details" : "Expand system details"}
           >
-            <h3 style={{ margin: 0, color: "var(--primary)" }}>Recent Comms</h3>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "center" }}>
+            <span style={{ color: "var(--primary)", display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
+              System Status
+              {systemExpanded ? <ChevronUp size={16} aria-hidden /> : <ChevronDown size={16} aria-hidden />}
+            </span>
+            <span className="text-muted" style={{ fontSize: "0.72rem" }}>
+              {systemExpanded ? "Hide details" : "Tap for disk, network, battery"}
+            </span>
+          </button>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.8rem", flexWrap: "wrap", marginTop: "0.45rem" }}>
+            <div style={{ display: "grid", gap: "0.25rem", minWidth: "240px", flex: 1 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.82rem" }}>
+                <span>CPU {cpuPct.toFixed(1)}%</span>
+                <span>RAM {stats ? `${stats.used_memory.toFixed(1)} / ${stats.total_memory.toFixed(1)} GB` : "—"}</span>
+              </div>
+              <ThinBar percent={cpuPct} />
+              <ThinBar percent={memoryPct} />
+            </div>
+          </div>
+          {stats ? (
+            <p className="text-muted" style={{ margin: "0.35rem 0 0", fontSize: "0.72rem", lineHeight: 1.45, wordBreak: "break-word" }}>
+              {[
+                stats.host_name ?? undefined,
+                `${formatUptime(stats.uptime_secs)} up`,
+                `load ${stats.load_one.toFixed(2)} ${stats.load_five.toFixed(2)} ${stats.load_fifteen.toFixed(2)}`,
+                stats.physical_cores != null
+                  ? `${stats.logical_cpus} threads / ${stats.physical_cores} cores`
+                  : `${stats.logical_cpus} threads`,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              {stats.cpu_brand ? ` · ${stats.cpu_brand}` : ""}
+            </p>
+          ) : null}
+          {systemExpanded ? (
+            <div className="dashboard-system-expanded-grid">
+              {detailErr ? (
+                <p className="error" role="alert" style={{ margin: 0 }}>
+                  {detailErr}
+                </p>
+              ) : detailStats ? (
+                <>
+                  <div className="dashboard-system-metric">
+                    <span>Hostname</span>
+                    <span>{detailStats.host_name ?? "—"}</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>OS</span>
+                    <span>{detailStats.long_os_version ?? detailStats.os_name ?? "—"}</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Kernel</span>
+                    <span>{detailStats.kernel_version ?? "—"}</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>CPU</span>
+                    <span>{detailStats.cpu_brand ?? "—"}</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Arch</span>
+                    <span>{detailStats.cpu_arch ?? "—"}</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Uptime</span>
+                    <span>{formatUptime(detailStats.uptime_secs)}</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Load avg</span>
+                    <span>
+                      {detailStats.load_one.toFixed(2)} / {detailStats.load_five.toFixed(2)} /{" "}
+                      {detailStats.load_fifteen.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Processors</span>
+                    <span>
+                      {detailStats.physical_cores != null
+                        ? `${detailStats.logical_cpus} logical / ${detailStats.physical_cores} physical`
+                        : `${detailStats.logical_cpus} logical`}
+                    </span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>CPU (telemetry)</span>
+                    <span>{detailStats.cpu_usage_pct.toFixed(1)}%</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>RAM</span>
+                    <span>
+                      {detailStats.ram_total_mb >= 1024
+                        ? `${(detailStats.ram_used_mb / 1024).toFixed(2)} / ${(detailStats.ram_total_mb / 1024).toFixed(2)} GB`
+                        : `${detailStats.ram_used_mb} / ${detailStats.ram_total_mb} MB`}
+                    </span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Swap</span>
+                    <span>
+                      {detailStats.swap_total_mb > 0
+                        ? `${(detailStats.swap_used_mb / 1024).toFixed(2)} / ${(detailStats.swap_total_mb / 1024).toFixed(2)} GB`
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Storage</span>
+                    <span>
+                      {detailStats.disk_total_gb > 0
+                        ? `${detailStats.disk_used_gb.toFixed(1)} / ${detailStats.disk_total_gb.toFixed(1)} GB`
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Disk read</span>
+                    <span>
+                      {diskSpeedReadMbps != null && diskSpeedReadMbps > 0 ? `${diskSpeedReadMbps.toFixed(2)} MB/s` : "—"}
+                    </span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Disk write</span>
+                    <span>
+                      {diskSpeedWriteMbps != null && diskSpeedWriteMbps > 0 ? `${diskSpeedWriteMbps.toFixed(2)} MB/s` : "—"}
+                    </span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Network ↓</span>
+                    <span>{netSpeedRxKbps != null ? `${netSpeedRxKbps.toFixed(0)} kB/s` : "—"}</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Network ↑</span>
+                    <span>{netSpeedTxKbps != null ? `${netSpeedTxKbps.toFixed(0)} kB/s` : "—"}</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>Battery</span>
+                    <span>
+                      {detailStats.battery_pct != null && detailStats.battery_pct !== undefined
+                        ? `${Math.round(detailStats.battery_pct)}%${
+                            detailStats.battery_charging ? " · charging / AC" : ""
+                          }${
+                            detailStats.battery_time_to_empty_minutes != null &&
+                            detailStats.battery_time_to_empty_minutes !== undefined &&
+                            detailStats.battery_charging !== true
+                              ? ` · ~${detailStats.battery_time_to_empty_minutes} min to 0%`
+                              : ""
+                          }`
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>GPU</span>
+                    <span>{detailStats.gpu_usage_pct != null ? `${Math.round(detailStats.gpu_usage_pct)}%` : "—"}</span>
+                  </div>
+                  <div className="dashboard-system-metric">
+                    <span>CPU temp</span>
+                    <span>{detailStats.cpu_temp_c != null ? `${Math.round(detailStats.cpu_temp_c)}°C` : "—"}</span>
+                  </div>
+                </>
+              ) : (
+                <p className="text-muted" style={{ margin: 0 }}>
+                  Loading…
+                </p>
+              )}
+            </div>
+          ) : null}
+        </>
+      )}
+        </section>
+      </div>
+
+      <div className="dashboard-triage-span dashboard-triage-wrap">
+        <button
+          type="button"
+          className="dashboard-triage-tile glass-panel"
+          data-triage-trigger
+          onClick={() => onOpenTriage()}
+        >
+          <span
+            className="glass-panel"
+            style={{
+              width: "2.3rem",
+              height: "2.3rem",
+              display: "grid",
+              placeItems: "center",
+              borderRadius: "0.75rem",
+              color: "#fff",
+              background: "rgba(0,0,0,0.2)",
+            }}
+            aria-hidden
+          >
+            <AlertTriangle size={22} strokeWidth={2.25} />
+          </span>
+          <span style={{ display: "grid", gap: "0.15rem", textAlign: "left" }}>
+            <span className="dashboard-triage-label" style={{ color: "#fff" }}>
+              Triage
+            </span>
+            <span className="dashboard-triage-sub" style={{ color: "rgba(255,255,255,0.92)" }}>
+              Emergency actions &amp; medical quick reference
+            </span>
+          </span>
+        </button>
+      </div>
+
+      <div className="dashboard-app-body">
+        <aside className="dashboard-recent-comms-column" aria-label="Recent communications">
+          <section
+            className="glass-panel dashboard-recent-comms dashboard-recent-comms--column dashboard-widget-sidebar__block"
+            style={{ padding: "0.8rem" }}
+          >
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                gap: "0.55rem",
+                marginBottom: "0.65rem",
+                flexShrink: 0,
+              }}
+            >
               <button
                 type="button"
                 className="glass-action-btn"
@@ -605,6 +620,7 @@ export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardV
                   gap: "0.35rem",
                   fontSize: "0.82rem",
                   padding: "0.35rem 0.65rem",
+                  alignSelf: "flex-start",
                 }}
                 aria-label="Open Communications Hub"
               >
@@ -612,57 +628,74 @@ export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardV
                 Communications Hub
                 <ChevronRight size={16} strokeWidth={2} aria-hidden />
               </button>
+              <h3 style={{ margin: 0, color: "var(--primary)" }}>Recent Comms</h3>
             </div>
-          </div>
-          {logs.length === 0 ? (
-            <p className="text-muted" style={{ margin: 0 }}>
-              No recent radio traffic.
-            </p>
-          ) : (
-            <div style={{ display: "grid", gap: "0.55rem" }}>
-              {logs.map((log) => (
-                <div key={log.id} className="glass-panel" style={{ padding: "0.55rem 0.7rem", borderRadius: "10px" }}>
-                  <div className="text-muted" style={{ fontSize: "0.78rem" }}>
-                    {new Date(log.timestamp).toLocaleString()} · {log.direction}
-                  </div>
-                  <div style={{ marginTop: "0.2rem", wordBreak: "break-word" }}>{log.message}</div>
+            <div className="dashboard-recent-comms__scroll">
+              {logs.length === 0 ? (
+                <p className="text-muted" style={{ margin: 0 }}>
+                  No recent radio traffic.
+                </p>
+              ) : (
+                <div style={{ display: "grid", gap: "0.55rem" }}>
+                  {logs.map((log) => (
+                    <div key={log.id} className="glass-panel" style={{ padding: "0.55rem 0.7rem", borderRadius: "10px" }}>
+                      <div className="text-muted" style={{ fontSize: "0.78rem" }}>
+                        {new Date(log.timestamp).toLocaleString()} · {log.direction}
+                      </div>
+                      <div style={{ marginTop: "0.2rem", wordBreak: "break-word" }}>{log.message}</div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
-          )}
-        </section>
-
-        <section
-          className="dashboard-app-launcher"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-            gap: "0.9rem",
-            alignContent: "start",
-          }}
-        >
-          {launcherItems.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              className="glass-panel"
-              onClick={() => onNavigate(item.key)}
-              style={{
-                aspectRatio: "1 / 1",
-                border: "none",
-                display: "grid",
-                placeItems: "center",
-                gap: "0.3rem",
-                cursor: "pointer",
-                background: "color-mix(in srgb, var(--surface-solid) 82%, transparent)",
-              }}
-              aria-label={`Open ${item.label}`}
-            >
-              {item.icon}
-              <span style={{ fontSize: "0.9rem", color: "var(--primary)" }}>{item.label}</span>
-            </button>
+          </section>
+        </aside>
+        <main className="dashboard-main-stage" aria-label="Operational sectors">
+          {OPERATIONAL_SECTORS.map((sector) => (
+          <section key={sector.id} className="dashboard-sector">
+            <h2 className="dashboard-sector__header">{sector.title}</h2>
+            <div className="dashboard-sector__grid">
+              {sector.keys.map((key) => {
+                const item = launcherByKey.get(key);
+                if (!item) return null;
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className="glass-panel dashboard-sector__tile"
+                    onClick={() => onNavigate(item.key)}
+                    style={{
+                      aspectRatio: "1 / 1",
+                      border: "none",
+                      display: "grid",
+                      placeItems: "center",
+                      gap: "0.21rem",
+                      padding: "0.35rem 0.26rem",
+                      cursor: "pointer",
+                      background: "color-mix(in srgb, var(--surface-solid) 82%, transparent)",
+                    }}
+                    aria-label={`Open ${item.label}`}
+                  >
+                    {item.icon}
+                    <span
+                      style={{
+                        fontSize: "1.05rem",
+                        lineHeight: 1.15,
+                        color: "var(--primary)",
+                        textAlign: "center",
+                        maxWidth: "100%",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      {item.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
           ))}
-        </section>
+        </main>
       </div>
     </div>
   );

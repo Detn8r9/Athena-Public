@@ -28,6 +28,8 @@ export type MapSettingsPopoverProps = {
   satelliteDownloadJobId: string | null;
   onStartSatelliteDownloadFromSelection: () => void;
   onCancelSatelliteBoxSelection: () => void;
+  /** When set, replaces in-map satellite download with navigation to Data Acquisition. */
+  onOpenDataAcquisition?: () => void;
 };
 
 export function MapSettingsPopover({
@@ -49,6 +51,7 @@ export function MapSettingsPopover({
   satelliteDownloadJobId,
   onStartSatelliteDownloadFromSelection,
   onCancelSatelliteBoxSelection,
+  onOpenDataAcquisition,
   showSatelliteUi = true,
 }: MapSettingsPopoverProps) {
   const [open, setOpen] = useState(false);
@@ -203,14 +206,25 @@ export function MapSettingsPopover({
                 >
                   {satelliteDrawModeEnabled ? "Stop drawing box" : "Draw download box"}
                 </button>
-                <button
-                  type="button"
-                  className="map-settings-satellite-btn"
-                  disabled={satelliteSelectionBounds === null || satelliteDownloadBusy}
-                  onClick={onStartSatelliteDownloadFromSelection}
-                >
-                  {satelliteDownloadBusy ? "Downloading…" : "Download selected area"}
-                </button>
+                {onOpenDataAcquisition ? (
+                  <button
+                    type="button"
+                    className="map-settings-satellite-btn"
+                    disabled={satelliteSelectionBounds === null}
+                    onClick={onOpenDataAcquisition}
+                  >
+                    Data Acquisition — Maps
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="map-settings-satellite-btn"
+                    disabled={satelliteSelectionBounds === null || satelliteDownloadBusy}
+                    onClick={onStartSatelliteDownloadFromSelection}
+                  >
+                    {satelliteDownloadBusy ? "Downloading…" : "Download selected area"}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="map-settings-satellite-btn"

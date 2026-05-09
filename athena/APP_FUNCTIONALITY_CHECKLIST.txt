@@ -1,0 +1,176 @@
+ATHENA – Manual Functionality Verification Checklist
+Date: 2026-05-09
+
+How to use this checklist
+- Work top to bottom.
+- Mark each item PASS/FAIL.
+- If FAIL: write the exact steps + any visible error text + (if applicable) the relevant terminal log line.
+
+------------------------------------------------------------
+0) Startup / Health
+------------------------------------------------------------
+[ ] App launches to login or guest screen without crashing.
+[ ] No “TypeError” banners or unhandled errors in normal app runtime (Tauri window).
+[ ] Maintenance/diagnostics screen (if present) loads and shows sidecar health (pmtiles/tesseract/pdftoppm/ollama/kiwix-serve as applicable).
+
+------------------------------------------------------------
+1) Authentication / Guest access
+------------------------------------------------------------
+[ ] Log in with a valid operator name + PIN succeeds.
+[ ] “Access as Guest (Emergency/Refugee)” succeeds and enters guest dashboard.
+[ ] Log out returns to login screen.
+
+------------------------------------------------------------
+2) Universal Header (top bar) – Navigation + Status
+------------------------------------------------------------
+Header buttons
+[ ] Power button opens station power menu; “Station minimal mode” works; logout-only works.
+[ ] Home icon navigates to Home/Dashboard.
+[ ] Chat icon navigates to Chat.
+[ ] Archive/Library icon opens Archive view.
+[ ] Calendar button navigates to Calendar.
+[ ] Settings (gear) opens Settings modal.
+[ ] Help opens Help modal.
+
+AI model selection button (Bot)
+[ ] Bot button opens Settings modal directly to AI panel (not main menu).
+[ ] AI panel: changing Chat model / Embedding model / Reranker works and persists after closing/reopening.
+
+Status indicators
+[ ] Node status dot tooltip shows expected state (local/network/disconnected).
+[ ] Indexing bar appears only when ingestion queue has items; clicking opens ingestion dropdown.
+[ ] Indexing dropdown lists “In progress” and “Queued” items with per-item bars.
+
+------------------------------------------------------------
+3) Settings – Core panels
+------------------------------------------------------------
+General
+[ ] Feature toggles apply immediately and persist on restart (where applicable).
+
+AI / Knowledge
+[ ] Changing model override applies to chat responses.
+[ ] “Show sources” behavior matches expectations (sources hidden when none are relevant).
+
+Maps
+[ ] Map settings panel opens; downloading/using offline maps is available when enabled.
+
+Mesh
+[ ] Mesh settings open; any mesh-related toggles persist.
+
+Appearance / Themes
+[ ] Switching themes applies without visual corruption.
+
+Troubleshooting / Logs
+[ ] Error log loads.
+[ ] Any “open folder” actions work (where present).
+
+------------------------------------------------------------
+4) Data Acquisition (Downloads)
+------------------------------------------------------------
+Tabs and queue
+[ ] Switching tabs (Packages/Academy/Maps/AI Models/Documents) updates the visible panel correctly.
+[ ] Queue button opens Queue tab; badge count matches planned + active jobs.
+[ ] “Start downloads” is visible (docked) and clickable when items are queued.
+[ ] “Clear planned” removes queued items and updates planned size.
+
+Open downloads folder
+[ ] “Open downloads” opens:  <app_data_dir>/downloads  in the native file explorer.
+[ ] Verify expected subfolders exist:
+    - downloads/packages
+    - downloads/academy
+    - downloads/maps
+    - downloads/models
+    - downloads/documents
+
+Download routing sanity
+[ ] Download a “package” item (e.g. iFixit ZIM) and confirm it lands in downloads/packages.
+[ ] Download a map artifact and confirm it lands in downloads/maps.
+[ ] Download a model and confirm it lands in downloads/models.
+
+Error handling
+[ ] If a URL is bad, the UI shows a readable error and the app remains usable.
+
+------------------------------------------------------------
+5) Library / Knowledge Catalog (Watch folder + Local docs)
+------------------------------------------------------------
+Watch folder configuration
+[ ] Set watch folder via Library/Knowledge Catalog UI.
+[ ] “Open watch folder” opens the chosen path in the OS file explorer.
+[ ] Adding a file into the watch folder triggers ingestion (or is discoverable via refresh) without manual DB scanning.
+
+Ingestion types
+[ ] Add a .txt or .md → it appears in Library list with correct file type and source package.
+[ ] Add a .pdf → text extraction works (or error shown if encrypted).
+[ ] Add an image (.png/.jpg) → OCR happens if configured; resulting entry appears (or clear error).
+[ ] Add a .zip/.tar archive into a watched folder → extracts and ingests contents; original archive deleted only for the “downloaded package archive” pipeline where intended.
+
+Library display / grouping
+[ ] Local docs list is sourced from the DB (not raw directory scan).
+[ ] Documents are grouped by Source Package, then by File Type.
+[ ] Items update in near-real-time when embedding completes.
+
+------------------------------------------------------------
+6) RAG / Chat (Retrieval)
+------------------------------------------------------------
+Basic chat
+[ ] Chat sends messages and receives responses.
+[ ] If no relevant sources match (similarity threshold), response still answers from general knowledge and does not claim sources.
+
+Sources UI
+[ ] When sources array is empty, “Sources:” label is hidden.
+[ ] When sources exist, they are relevant and above threshold.
+
+Topic refresh
+[ ] Changing subject changes retrieval results (no “stuck” old topic bleed).
+
+------------------------------------------------------------
+7) ZIM (Kiwix) content
+------------------------------------------------------------
+[ ] Download a ZIM into downloads/packages.
+[ ] Indexing progress increases over time and eventually completes.
+[ ] Kiwix serve (if bundled) serves the ZIM on localhost; app does not hard-fail if kiwix-serve is missing.
+[ ] ZIM entries become searchable/usable by RAG after indexing.
+
+------------------------------------------------------------
+8) Maps (if enabled)
+------------------------------------------------------------
+[ ] Map view opens and renders a basemap.
+[ ] Download offline tiles/extracts (as configured) and confirm they are usable offline.
+[ ] Search / routing features behave (where configured).
+
+------------------------------------------------------------
+9) Comms / Mesh / Radio (if hardware available)
+------------------------------------------------------------
+[ ] Comms hub opens.
+[ ] Mesh views load (even if no peers).
+[ ] Radio view loads; if no serial device, app shows a clear message and remains stable.
+
+------------------------------------------------------------
+10) Calendar / Logbook / Personnel / Quartermaster / Logistics
+------------------------------------------------------------
+Calendar
+[ ] Calendar view opens; create/edit entries (if enabled) persists.
+
+Logbook / Logistics
+[ ] Logbook opens; entries list loads; create/edit works.
+[ ] Inventory screens load; add item works; changes persist.
+
+Personnel / Org chart
+[ ] Personnel view loads and respects clearance.
+[ ] Org chart opens (if authorized) and returns back.
+
+------------------------------------------------------------
+11) Export / USB (if you use it)
+------------------------------------------------------------
+[ ] Export modal opens; selecting destination works.
+[ ] Copy runs; progress updates; result is verifiable on disk.
+
+------------------------------------------------------------
+Notes / Issues observed during automated audit
+------------------------------------------------------------
+- Localhost browser smoke test (non-Tauri) is not representative: Tauri APIs (invoke/dialog) may be undefined.
+- Automated builds/tests should be run as:
+  - npm run build   (frontend)
+  - cargo check     (backend)
+  - cargo test      (backend unit tests)
+

@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, Printer } from "lucide-react";
-import { academyZimOffersForUi, type AcademyZimOfferForUi } from "../../shared/academyZimCatalog";
-import { AcademyDownloader } from "../../domains/features/academy/AcademyDownloader";
 
 const KIWIX_ORIGIN = "http://localhost:8080";
-
-const ZIM_OFFERS: AcademyZimOfferForUi[] = academyZimOffersForUi();
 
 interface AcademyLesson {
   id: string;
@@ -37,30 +32,13 @@ interface AcademyLessonHtml {
   html: string;
 }
 
-type MainTab = "library" | "downloads" | "curriculum";
+type MainTab = "library" | "curriculum";
 
 type Nav =
   | { level: "subjects" }
   | { level: "grades"; subjectId: string; subjectLabel: string }
   | { level: "units"; subjectId: string; subjectLabel: string; grade: AcademyAgeGroup }
   | { level: "unit"; subjectLabel: string; gradeLabel: string; lesson: AcademyLesson };
-
-interface ZimDownloadProgressPayload {
-  downloadId: string;
-  bytesDownloaded: number;
-  totalBytes: number | null;
-  percent: number | null;
-}
-
-interface ZimDownloadCompletePayload {
-  downloadId: string;
-  path: string;
-}
-
-interface ZimDownloadErrorPayload {
-  downloadId: string;
-  message: string;
-}
 
 function makeTeacherGuideHtml(args: { subjectLabel: string; gradeLabel: string; lessonTitle: string; articleUrl: string }) {
   const { subjectLabel, gradeLabel, lessonTitle, articleUrl } = args;
@@ -108,22 +86,15 @@ function makeTeacherGuideHtml(args: { subjectLabel: string; gradeLabel: string; 
 </html>`;
 }
 
-type DownloadRowState =
-  | { status: "idle" }
-  | { status: "downloading"; percent: number; bytesDownloaded: number; totalBytes: number | null }
-  | { status: "done" }
-  | { status: "error"; message: string };
-
 export function AcademyModule() {
   const [mainTab, setMainTab] = useState<MainTab>("library");
-  const [iframeKey, setIframeKey] = useState(0);
+  const [iframeKey] = useState(0);
   const [curriculum, setCurriculum] = useState<AcademyCurriculumRoot | null>(null);
   const [nav, setNav] = useState<Nav>({ level: "subjects" });
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [studentHtml, setStudentHtml] = useState<string | null>(null);
   const [studentTitle, setStudentTitle] = useState<string>("");
   const [loadingUnit, setLoadingUnit] = useState(false);
-  const [downloadRows, setDownloadRows] = useState<Record<string, DownloadRowState>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -137,62 +108,6 @@ export function AcademyModule() {
     })();
     return () => {
       cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let disposed = false;
-    const unsubs: Array<() => void> = [];
-
-    void (async () => {
-      const u1 = await listen<ZimDownloadProgressPayload>("zim_download_progress", (ev) => {
-        const pld = ev.payload;
-        setDownloadRows((prev) => ({
-          ...prev,
-          [pld.downloadId]: {
-            status: "downloading",
-            percent:
-              pld.percent ??
-              (pld.totalBytes ? Math.min(100, (pld.bytesDownloaded / pld.totalBytes) * 100) : 0),
-            bytesDownloaded: pld.bytesDownloaded,
-            totalBytes: pld.totalBytes,
-          },
-        }));
-      });
-      if (disposed) {
-        u1();
-        return;
-      }
-      unsubs.push(u1);
-
-      const u2 = await listen<ZimDownloadCompletePayload>("zim_download_complete", (ev) => {
-        const pld = ev.payload;
-        setDownloadRows((prev) => ({ ...prev, [pld.downloadId]: { status: "done" } }));
-        setIframeKey((k) => k + 1);
-      });
-      if (disposed) {
-        u2();
-        return;
-      }
-      unsubs.push(u2);
-
-      const u3 = await listen<ZimDownloadErrorPayload>("zim_download_error", (ev) => {
-        const pld = ev.payload;
-        setDownloadRows((prev) => ({
-          ...prev,
-          [pld.downloadId]: { status: "error", message: pld.message },
-        }));
-      });
-      if (disposed) {
-        u3();
-        return;
-      }
-      unsubs.push(u3);
-    })();
-
-    return () => {
-      disposed = true;
-      unsubs.forEach((u) => u());
     };
   }, []);
 
@@ -300,31 +215,10 @@ export function AcademyModule() {
     win.print();
   }, [nav, studentHtml, teacherHtml, studentTitle]);
 
-  const startZimDownload = useCallback(async (offer: AcademyZimOfferForUi) => {
-    setDownloadRows((prev) => ({ ...prev, [offer.id]: { status: "idle" } }));
-    try {
-      await invoke("download_zim", {
-        args: {
-          url: offer.url,
-          fileName: offer.fileName,
-          downloadId: offer.id,
-        },
-      });
-    } catch (e) {
-      setDownloadRows((prev) => ({
-        ...prev,
-        [offer.id]: { status: "error", message: e != null ? String(e) : "Download failed to start." },
-      }));
-    }
-  }, []);
-
   const tabBar = (
     <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "center" }}>
       <button type="button" className={mainTab === "library" ? "glass-action-btn" : "secondary"} onClick={() => setMainTab("library")}>
         Kiwix library
-      </button>
-      <button type="button" className={mainTab === "downloads" ? "glass-action-btn" : "secondary"} onClick={() => setMainTab("downloads")}>
-        ZIM downloads
       </button>
       <button type="button" className={mainTab === "curriculum" ? "glass-action-btn" : "secondary"} onClick={() => setMainTab("curriculum")}>
         Curriculum lessons
@@ -357,94 +251,6 @@ export function AcademyModule() {
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-downloads"
           />
         </div>
-      </div>
-    );
-  }
-
-  if (mainTab === "downloads") {
-    return (
-      <div className="glass-panel app-view-placeholder" style={{ display: "grid", gap: "0.75rem", padding: "1rem" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between" }}>
-          <h2 className="app-view-placeholder-title" style={{ margin: 0 }}>
-            ZIM downloads
-          </h2>
-          {tabBar}
-        </div>
-        <p className="text-muted" style={{ margin: 0 }}>
-          Files save into <code>payload/ZIM_Archives</code>. Large downloads can take hours; keep the app open and on power.
-        </p>
-        <div className="glass-panel" style={{ padding: 0 }}>
-          <AcademyDownloader />
-        </div>
-        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.75rem" }}>
-          {ZIM_OFFERS.map((offer) => {
-            const row = downloadRows[offer.id];
-            const pct =
-              row?.status === "downloading"
-                ? row.percent
-                : row?.status === "done"
-                  ? 100
-                  : 0;
-            return (
-              <li key={offer.id} className="glass-panel" style={{ padding: "0.75rem", display: "grid", gap: "0.5rem" }}>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div>
-                    <div style={{ fontWeight: 700 }}>{offer.label}</div>
-                    <div className="text-muted" style={{ fontSize: "0.9rem", marginTop: "0.25rem" }}>
-                      {offer.description} · Approx. {offer.approxSize}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="glass-action-btn"
-                    disabled={row?.status === "downloading"}
-                    onClick={() => void startZimDownload(offer)}
-                  >
-                    {row?.status === "downloading" ? "Downloading…" : row?.status === "done" ? "Download again" : "Download"}
-                  </button>
-                </div>
-                <div
-                  role="progressbar"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(pct)}
-                  style={{
-                    height: "10px",
-                    borderRadius: "6px",
-                    background: "var(--glass-border, rgba(255,255,255,0.12))",
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${Math.min(100, Math.max(0, pct))}%`,
-                      height: "100%",
-                      background: "var(--accent, #4f8cff)",
-                      transition: "width 0.2s ease-out",
-                    }}
-                  />
-                </div>
-                {row?.status === "downloading" ? (
-                  <div className="text-muted" style={{ fontSize: "0.85rem" }}>
-                    {row.totalBytes != null
-                      ? `${(row.bytesDownloaded / 1_000_000).toFixed(1)} / ${(row.totalBytes / 1_000_000).toFixed(1)} MB`
-                      : `${(row.bytesDownloaded / 1_000_000).toFixed(1)} MB downloaded`}
-                  </div>
-                ) : null}
-                {row?.status === "error" ? (
-                  <p className="error" role="alert" style={{ margin: 0 }}>
-                    {row.message}
-                  </p>
-                ) : null}
-                {row?.status === "done" ? (
-                  <p className="text-muted" style={{ margin: 0 }}>
-                    Finished. Open <strong>Kiwix library</strong> to browse (the server reloads automatically).
-                  </p>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
       </div>
     );
   }

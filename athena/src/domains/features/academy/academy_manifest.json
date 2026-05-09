@@ -6,34 +6,49 @@
     "url": "https://download.geofabrik.de/north-america-latest.osm.pbf",
     "fileName": "maps/vector/north-america-latest.osm.pbf",
     "sizeBytes": 13500000000,
-    "defaultTiers": ["small", "medium", "large", "xl"]
+    "defaultTiers": [
+      "small",
+      "medium",
+      "large",
+      "xl"
+    ]
   },
   {
     "id": "kiwix-wikipedia-en",
     "name": "Wikipedia (English - No Images)",
     "description": "The complete English text of Wikipedia for historical preservation.",
-    "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_nopic.zim",
-    "fileName": "library/encyclopedia/wikipedia_en_all_nopic.zim",
+    "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_nopic_2026-03.zim",
+    "fileName": "library/encyclopedia/wikipedia_en_all_nopic_2026-03.zim",
     "sizeBytes": 55000000000,
-    "defaultTiers": ["medium", "large", "xl"]
+    "defaultTiers": [
+      "medium",
+      "large",
+      "xl"
+    ]
   },
   {
     "id": "project-gutenberg",
     "name": "Project Gutenberg Library",
     "description": "Over 60,000 public domain literature and reference books.",
-    "url": "https://download.kiwix.org/zim/gutenberg/gutenberg_en_all.zim",
-    "fileName": "library/literature/gutenberg_en_all.zim",
+    "url": "https://download.kiwix.org/zim/gutenberg/gutenberg_en_all_2025-11.zim",
+    "fileName": "library/literature/gutenberg_en_all_2025-11.zim",
     "sizeBytes": 70000000000,
-    "defaultTiers": ["large", "xl"]
+    "defaultTiers": [
+      "large",
+      "xl"
+    ]
   },
   {
     "id": "arxiv-physics-math",
-    "name": "ArXiv Physics & Math Archive",
-    "description": "Millions of high-level theoretical physics and mathematics papers.",
-    "url": "https://archive.org/download/arxiv-bulk/arxiv_physics_math_bulk.zip",
-    "fileName": "library/science/arxiv_physics_math_bulk.zip",
-    "sizeBytes": 450000000000,
-    "defaultTiers": ["large", "xl"]
+    "name": "arXiv PDF bulk (monthly chunk)",
+    "description": "A real Internet Archive bulk chunk of arXiv PDFs (one monthly package). Full arXiv bulk is split across many items on archive.org; this entry validates large-binary downloads without pinning a dead filename.",
+    "url": "https://archive.org/download/arXiv_pdf_0010_002/arXiv_pdf_0010_002.tar",
+    "fileName": "library/science/arXiv_pdf_0010_002.tar",
+    "sizeBytes": 288604160,
+    "defaultTiers": [
+      "large",
+      "xl"
+    ]
   },
   {
     "id": "satellite-imagery-na",
@@ -42,6 +57,8 @@
     "url": "magnet:?xt=urn:btih:placeholder_for_mbtiles",
     "fileName": "maps/satellite/na_satellite_z15.mbtiles",
     "sizeBytes": 1500000000000,
-    "defaultTiers": ["xl"]
+    "defaultTiers": [
+      "xl"
+    ]
   }
 ]

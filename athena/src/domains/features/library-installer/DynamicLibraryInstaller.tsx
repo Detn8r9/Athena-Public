@@ -4,6 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
 import manifestJson from "./manifest.json";
 import { normalizePathSlashes } from "../../../shared/lib/path";
+import type { StagedDownloadJob } from "../../../shared/dataAcquisition/stagedDownloadJobs";
+import { useDownloadQueueStore } from "../../../stores/downloadQueueStore";
 
 type PresetId = "small" | "medium" | "large" | "xl";
 
@@ -28,7 +30,7 @@ type FileScanReport = {
   oversized: PartialFileStatus[];
 };
 
-type DownloadJob = { url: string; fileName: string; expectedBytes: number };
+type DownloadJob = StagedDownloadJob;
 
 type DownloadProgressPayload = {
   fileName: string;
@@ -72,9 +74,97 @@ type ManifestItem = {
   fileName: string;
   sizeBytes: number;
   defaultTiers: ManifestTier[];
+  alternateUrls?: string[];
 };
 
 const MANIFEST = (Array.isArray(manifestJson) ? manifestJson : []) as ManifestItem[];
+
+/** Tactical Library row: authoritative labels and catalog sizes (decimal GB for display sums). */
+type TacticalCatalogEntry = {
+  id: string;
+  name: string;
+  description: string;
+  sizeGb: number;
+};
+
+const TACTICAL_DATA_CATALOG: TacticalCatalogEntry[] = [
+  {
+    id: "wikimed",
+    name: "WikiMed Archive",
+    description: "The largest comprehensive offline medical encyclopedia.",
+    sizeGb: 2.05,
+  },
+  {
+    id: "gvcs",
+    name: "Global Village Construction Set",
+    description: "Open Source Ecology blueprints for the 50 machines that build a civilization.",
+    sizeGb: 1.68,
+  },
+  {
+    id: "ifixit",
+    name: "iFixit Repair Manuals",
+    description: "Offline teardown and repair manuals for thousands of electronics and vehicles.",
+    sizeGb: 3.5,
+  },
+  {
+    id: "survivor",
+    name: "The Survivor Library",
+    description: "Complete repository of 19th-century industrial and agricultural technology.",
+    sizeGb: 80.0,
+  },
+  {
+    id: "stackexchange",
+    name: "Stack Exchange Dump",
+    description: "Complete offline archive of Stack Overflow and technical exchanges.",
+    sizeGb: 45.0,
+  },
+  {
+    id: "maps_global",
+    name: "Global Map Tiles (Z0-14)",
+    description: "Offline PMTiles for global street-level routing and geographic awareness.",
+    sizeGb: 65.0,
+  },
+  {
+    id: "gutenberg",
+    name: "Project Gutenberg",
+    description: "Over 70,000 free eBooks containing classic human literature and philosophy.",
+    sizeGb: 35.0,
+  },
+  {
+    id: "wikipedia_full",
+    name: "Wikipedia (Full English)",
+    description: "Complete text and images of the entirety of English Wikipedia.",
+    sizeGb: 115.0,
+  },
+];
+
+/** Maps catalog `id` to `manifest.json` package id when a deployment target exists. */
+const CATALOG_ID_TO_MANIFEST_ID: Partial<Record<string, string>> = {
+  wikimed: "kiwix-wikimed",
+  gvcs: "ose-blueprints",
+  survivor: "survivor-library",
+  ifixit: "kiwix-ifixit",
+  stackexchange: "kiwix-stackoverflow",
+  gutenberg: "kiwix-gutenberg",
+  wikipedia_full: "kiwix-wikipedia-full-en",
+};
+
+const TACTICAL_PRESET_IDS: Record<PresetId, readonly string[]> = {
+  small: ["wikimed", "gvcs"],
+  medium: ["wikimed", "gvcs", "ifixit", "survivor"],
+  large: ["wikimed", "gvcs", "ifixit", "survivor", "stackexchange", "maps_global"],
+  xl: ["wikimed", "gvcs", "ifixit", "survivor", "stackexchange", "maps_global", "gutenberg", "wikipedia_full"],
+};
+
+function manifestItemForCatalogId(catalogId: string): ManifestItem | undefined {
+  const mid = CATALOG_ID_TO_MANIFEST_ID[catalogId];
+  if (!mid) return undefined;
+  return MANIFEST.find((m) => m.id === mid);
+}
+
+function presetIdSet(preset: PresetId): Set<string> {
+  return new Set(TACTICAL_PRESET_IDS[preset]);
+}
 
 function fmtBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -89,6 +179,16 @@ function fmtBytes(bytes: number): string {
 function clampPct(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, n));
+}
+
+/** Display GB exactly as catalog decimals (not IEC GiB). */
+function fmtCatalogGb(gb: number): string {
+  if (!Number.isFinite(gb) || gb <= 0) return "0.00 GB";
+  return `${gb.toFixed(2)} GB`;
+}
+
+function catalogGbToBytes(gb: number): number {
+  return gb * 1024 ** 3;
 }
 
 function SegmentedControl({
@@ -173,12 +273,23 @@ function PillProgress({ percent }: { percent: number }) {
 
 type UiStage = "select" | "downloading" | "summary";
 
-export function DynamicLibraryInstaller() {
+export interface DynamicLibraryInstallerProps {
+  /** When true, show hub queue actions: download this tab only; selection mirrors the global download cart. */
+  deferPrimaryDownloadButton?: boolean;
+}
+
+export function DynamicLibraryInstaller({ deferPrimaryDownloadButton = false }: DynamicLibraryInstallerProps = {}) {
   const [stage, setStage] = useState<UiStage>("select");
   const [preset, setPreset] = useState<PresetId>("medium");
   const [enabledById, setEnabledById] = useState<Record<string, boolean>>(() => {
+    if (deferPrimaryDownloadButton) {
+      const out: Record<string, boolean> = {};
+      for (const it of TACTICAL_DATA_CATALOG) out[it.id] = false;
+      return out;
+    }
+    const allow = presetIdSet("medium");
     const out: Record<string, boolean> = {};
-    for (const it of MANIFEST) out[it.id] = Array.isArray(it.defaultTiers) && it.defaultTiers.includes("medium");
+    for (const it of TACTICAL_DATA_CATALOG) out[it.id] = allow.has(it.id);
     return out;
   });
 
@@ -238,77 +349,112 @@ export function DynamicLibraryInstaller() {
 
   const applyPreset = useCallback((id: PresetId) => {
     setPreset(id);
-    setEnabledById((prev) => {
-      const next: Record<string, boolean> = { ...prev };
-      for (const it of MANIFEST) next[it.id] = Array.isArray(it.defaultTiers) && it.defaultTiers.includes(id);
+    const allow = presetIdSet(id);
+    setEnabledById(() => {
+      const next: Record<string, boolean> = {};
+      for (const it of TACTICAL_DATA_CATALOG) next[it.id] = allow.has(it.id);
       return next;
     });
   }, []);
 
-  const packagesWithStatus = useMemo(() => {
-    return MANIFEST.map((it) => {
-      const fileName = normalizePathSlashes(it.fileName);
-      const installed = installedSet.has(fileName);
-      const enabled = Boolean(enabledById[it.id]);
-      const totalBytes = it.sizeBytes || 0;
-      const partial = partialByPath.get(fileName);
-      const overs = oversizedByPath.get(fileName);
-      const remainingBytes = installed
-        ? 0
-        : partial
-          ? Math.max(0, partial.expectedBytes - partial.downloadedBytes)
-          : overs
-            ? overs.expectedBytes
-            : it.sizeBytes;
-      return { it: { ...it, fileName }, installed, enabled, totalBytes, remainingBytes };
+  const catalogRowsWithStatus = useMemo(() => {
+    return TACTICAL_DATA_CATALOG.map((cat) => {
+      const it = manifestItemForCatalogId(cat.id);
+      const fileName = it ? normalizePathSlashes(it.fileName) : "";
+      const installed = it ? installedSet.has(fileName) : false;
+      const enabled = Boolean(enabledById[cat.id]);
+      const partial = it ? partialByPath.get(fileName) : undefined;
+      const overs = it ? oversizedByPath.get(fileName) : undefined;
+      const manifestBytes = it?.sizeBytes ?? 0;
+      const remainingBytes = !it
+        ? catalogGbToBytes(cat.sizeGb)
+        : installed
+          ? 0
+          : partial
+            ? Math.max(0, partial.expectedBytes - partial.downloadedBytes)
+            : overs
+              ? overs.expectedBytes
+              : manifestBytes;
+      const rightLabel =
+        !it || installed
+          ? fmtCatalogGb(cat.sizeGb)
+          : partial || overs
+            ? fmtBytes(remainingBytes)
+            : fmtCatalogGb(cat.sizeGb);
+      return { cat, it, fileName, installed, enabled, remainingBytes, rightLabel };
     });
   }, [enabledById, installedSet, partialByPath, oversizedByPath]);
 
   useEffect(() => {
-    // Installed packages must be disabled.
+    // Installed deployment targets must be toggled off.
     setEnabledById((prev) => {
       let changed = false;
       const next = { ...prev };
-      for (const row of packagesWithStatus) {
-        if (row.installed && next[row.it.id]) {
-          next[row.it.id] = false;
+      for (const row of catalogRowsWithStatus) {
+        if (row.installed && next[row.cat.id]) {
+          next[row.cat.id] = false;
           changed = true;
         }
       }
       return changed ? next : prev;
     });
-  }, [packagesWithStatus]);
+  }, [catalogRowsWithStatus]);
 
-  const selectedRemainingBytes = useMemo(() => {
-    let total = 0;
-    for (const row of packagesWithStatus) {
+  /** Sum of catalog `sizeGb` for enabled rows that still need a download (excludes installed manifest-backed rows). */
+  const selectedCatalogGbSum = useMemo(() => {
+    let sum = 0;
+    for (const row of catalogRowsWithStatus) {
       if (!row.enabled) continue;
-      total += row.remainingBytes;
+      if (row.it && row.installed) continue;
+      sum += row.cat.sizeGb;
     }
-    return total;
-  }, [packagesWithStatus]);
+    return sum;
+  }, [catalogRowsWithStatus]);
+
+  const selectedCatalogBytesApprox = catalogGbToBytes(selectedCatalogGbSum);
 
   const availableBytes = disk?.availableBytes ?? 0;
-  const overBudget = selectedRemainingBytes > 0 && availableBytes > 0 && selectedRemainingBytes > availableBytes;
+  const overBudget =
+    selectedCatalogBytesApprox > 0 && availableBytes > 0 && selectedCatalogBytesApprox > availableBytes;
 
   const selectedJobs: DownloadJob[] = useMemo(() => {
     const jobs: DownloadJob[] = [];
-    for (const row of packagesWithStatus) {
-      if (!row.enabled) continue;
-      if (installedSet.has(row.it.fileName)) continue;
-      const partial = partialByPath.get(row.it.fileName);
+    for (const row of catalogRowsWithStatus) {
+      if (!row.enabled || !row.it) continue;
+      if (installedSet.has(row.fileName)) continue;
+      const partial = partialByPath.get(row.fileName);
       jobs.push({
         url: row.it.url,
-        fileName: row.it.fileName,
+        fileName: row.fileName,
         expectedBytes: partial ? partial.expectedBytes : row.it.sizeBytes,
+        alternateUrls: row.it.alternateUrls,
+        sourcePackage: row.cat.name ?? "Packages",
       });
     }
     return jobs;
-  }, [installedSet, packagesWithStatus, partialByPath]);
+  }, [installedSet, catalogRowsWithStatus, partialByPath]);
+
+  const selectedJobBytesApprox = useMemo(
+    () => selectedJobs.reduce((s, j) => s + Math.max(0, j.expectedBytes), 0),
+    [selectedJobs],
+  );
+
+  /** Hub tab-only download: block when manifest-backed jobs exceed disk, not the full catalog GB sum. */
+  const overManifestJobBudget =
+    selectedJobBytesApprox > 0 && availableBytes > 0 && selectedJobBytesApprox > availableBytes;
+
+  useEffect(() => {
+    if (!deferPrimaryDownloadButton) return;
+    useDownloadQueueStore.getState().syncPackagePlan(selectedJobs, selectedCatalogBytesApprox);
+  }, [deferPrimaryDownloadButton, selectedJobs, selectedCatalogBytesApprox]);
 
   const startedRef = useRef(false);
 
   useEffect(() => {
+    // Hub mode: this component is a planner; the queue dashboard is the single place for live download status.
+    if (deferPrimaryDownloadButton) {
+      return () => {};
+    }
     let unProgress: (() => void) | undefined;
     let unError: (() => void) | undefined;
     let unComplete: (() => void) | undefined;
@@ -348,7 +494,7 @@ export function DynamicLibraryInstaller() {
       if (unComplete) unComplete();
       if (unQueue) unQueue();
     };
-  }, [refreshPreflight]);
+  }, [deferPrimaryDownloadButton, refreshPreflight]);
 
   const startDownload = async () => {
     setActiveError(null);
@@ -359,7 +505,9 @@ export function DynamicLibraryInstaller() {
     startedRef.current = true;
     try {
       await invoke("deployment_start_downloads", { jobs: selectedJobs, destSubdir: null });
-      setStage("downloading");
+      if (!deferPrimaryDownloadButton) {
+        setStage("downloading");
+      }
     } catch (e) {
       startedRef.current = false;
       setActiveError({
@@ -367,11 +515,14 @@ export function DynamicLibraryInstaller() {
         message: e != null ? String(e) : "Could not start download.",
         recoverable: true,
       });
-      setStage("select");
+      if (!deferPrimaryDownloadButton) {
+        setStage("select");
+      }
     }
   };
 
   useEffect(() => {
+    if (deferPrimaryDownloadButton) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -388,7 +539,7 @@ export function DynamicLibraryInstaller() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [deferPrimaryDownloadButton]);
 
   const pauseDownload = async () => {
     try {
@@ -441,6 +592,9 @@ export function DynamicLibraryInstaller() {
                 <div className="mac-installer__title">Tactical Library Downloads</div>
                 <div className="mac-installer__subtitle">
                   Choose a preset, then customize tactical data packages. Installed items are locked.
+                  {deferPrimaryDownloadButton
+                    ? " Your toggles update the global cart automatically; switching hub tabs keeps this selection."
+                    : null}
                 </div>
               </div>
               <button type="button" className="mac-link" onClick={() => void refreshPreflight()}>
@@ -451,22 +605,22 @@ export function DynamicLibraryInstaller() {
             <SegmentedControl value={preset} onChange={applyPreset} />
 
             <div className="mac-list" role="list" aria-label="Packages">
-              {packagesWithStatus.map((row) => {
+              {catalogRowsWithStatus.map((row) => {
                 const disabled = row.installed || scan == null;
                 const enabled = row.installed ? false : row.enabled;
                 return (
                   <ToggleRow
-                    key={row.it.id}
-                    title={row.it.name}
-                    subtitle={row.it.description}
+                    key={row.cat.id}
+                    title={row.cat.name}
+                    subtitle={row.cat.description}
                     installed={row.installed}
                     enabled={enabled}
                     disabled={disabled}
                     onToggle={() => {
                       if (disabled) return;
-                      setEnabledById((prev) => ({ ...prev, [row.it.id]: !prev[row.it.id] }));
+                      setEnabledById((prev) => ({ ...prev, [row.cat.id]: !prev[row.cat.id] }));
                     }}
-                    rightLabel={fmtBytes(row.remainingBytes)}
+                    rightLabel={row.rightLabel}
                   />
                 );
               })}
@@ -477,7 +631,7 @@ export function DynamicLibraryInstaller() {
                 <div className="mac-meta">
                   <div className="mac-meta__row">
                     <span className="mac-meta__k">Selected</span>
-                    <span className="mac-meta__v">{fmtBytes(selectedRemainingBytes)}</span>
+                    <span className="mac-meta__v">{fmtCatalogGb(selectedCatalogGbSum)}</span>
                   </div>
                   <div className="mac-meta__row">
                     <span className="mac-meta__k">Available</span>
@@ -492,19 +646,32 @@ export function DynamicLibraryInstaller() {
                 {overBudget ? <div className="mac-warn">Not enough free space for the selected downloads.</div> : null}
               </div>
 
-              <button
-                type="button"
-                className="mac-primary"
-                disabled={scan == null || selectedJobs.length === 0 || overBudget}
-                onClick={() => void startDownload()}
-              >
-                Download
-              </button>
+              {deferPrimaryDownloadButton ? (
+                <div className="mac-installer__queue-actions">
+                  <button
+                    type="button"
+                    className="mac-secondary"
+                    disabled={scan == null || selectedJobs.length === 0 || overManifestJobBudget}
+                    onClick={() => void startDownload()}
+                  >
+                    Download this tab only
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="mac-primary"
+                  disabled={scan == null || selectedJobs.length === 0 || overBudget}
+                  onClick={() => void startDownload()}
+                >
+                  Download
+                </button>
+              )}
             </div>
           </motion.div>
         ) : null}
 
-        {stage === "downloading" ? (
+        {!deferPrimaryDownloadButton && stage === "downloading" ? (
           <motion.div
             key="downloading"
             className="mac-installer__panel"
@@ -555,7 +722,7 @@ export function DynamicLibraryInstaller() {
           </motion.div>
         ) : null}
 
-        {stage === "summary" ? (
+        {!deferPrimaryDownloadButton && stage === "summary" ? (
           <motion.div
             key="summary"
             className="mac-installer__panel"
