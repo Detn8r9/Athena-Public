@@ -1,0 +1,205 @@
+.map-provisioner {
+  margin-bottom: 1.25rem;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: linear-gradient(165deg, color-mix(in srgb, var(--surface-solid) 78%, transparent) 0%, var(--bg) 100%);
+  color: var(--text);
+}
+
+.map-provisioner__head {
+  margin-bottom: 12px;
+}
+
+.map-provisioner__title {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+.map-provisioner__lead {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.map-provisioner__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 14px;
+  align-items: stretch;
+}
+
+@media (max-width: 900px) {
+  .map-provisioner__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.map-provisioner__map-wrap {
+  min-height: 320px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.35);
+}
+
+.map-provisioner__map-host {
+  width: 100%;
+  height: 360px;
+}
+
+.map-provisioner__aside {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.map-provisioner__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.map-provisioner__label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.map-provisioner__label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.map-provisioner__input {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: var(--surface-solid);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.map-provisioner__input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+.map-provisioner__btn {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.map-provisioner__btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 22%, transparent);
+}
+
+.map-provisioner__btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.map-provisioner__range {
+  width: 100%;
+  accent-color: var(--tertiary);
+}
+
+.map-provisioner__hint {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.map-provisioner__err {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--tertiary);
+}
+
+.map-provisioner__ok {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.map-provisioner__layers {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: color-mix(in srgb, var(--bg) 64%, #000);
+}
+
+.map-provisioner__check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 0.84rem;
+  margin-top: 6px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.map-provisioner__check input {
+  margin-top: 3px;
+  accent-color: var(--primary);
+}
+
+.map-provisioner__stats {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--tertiary) 35%, transparent);
+  background: color-mix(in srgb, var(--tertiary) 8%, transparent);
+}
+
+.map-provisioner__stat-k {
+  display: block;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.map-provisioner__stat-v {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--tertiary);
+}
+
+.map-provisioner__queue-hint {
+  margin: 6px 0 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  max-width: 22rem;
+}
+
+.map-provisioner__mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78em;
+  color: var(--text-muted);
+}
+
+.maplibregl-ctrl-attrib {
+  font-size: 10px !important;
+  background: color-mix(in srgb, var(--bg) 85%, #000) !important;
+  color: var(--text-muted) !important;
+}
