@@ -405,6 +405,34 @@ pub(crate) fn try_process_file(
         indexer::skip_if_up_to_date(&ingest_path, &*guard, ctx_tuple, portable_src)
     };
     if skip.is_some() {
+        // Backfill RAG metadata in case this file was indexed before `rag_documents` tracking existed.
+        // If it also has no embeddings yet, try to rebuild embeddings from stored `indexed_files.text_content`
+        // (so the file becomes usable for semantic RAG without re-reading from disk).
+        if let Ok(guard) = db.lock() {
+            let db_ref = &*guard;
+            let emb_n = db_ref
+                .chunk_embedding_count_for_file_path(&path_str)
+                .unwrap_or(0);
+            if emb_n <= 0 {
+                if let Ok(Some((file_type, title, text))) =
+                    db_ref.indexed_file_rag_backfill_seed(&path_str)
+                {
+                    let t = text.trim();
+                    if !t.is_empty() {
+                        let _ = vector_index::index_document(db_ref, &path_str, &title, None, t);
+                        let _ = db_ref.upsert_rag_document_for_file_path(&path_str, &file_type);
+                    }
+                }
+            } else {
+                let _ = db_ref.upsert_rag_document_for_file_path(&path_str, "");
+            }
+        }
+        if let Err(e) = library_ingest::move_unsorted_to_archive(&ingest_path, app_data_dir) {
+            eprintln!(
+                "[athena] ingest: archive move skipped ({}): {e}",
+                ingest_path.display()
+            );
+        }
         return;
     }
 
@@ -463,11 +491,20 @@ pub(crate) fn try_process_file(
                             tracing::error!(error = %e, "Fatal Ingestion Error: vector index");
                         }
                     }
+                    // Ensure this file appears in RAG documents list immediately.
+                    let _ = db_ref.upsert_rag_document_for_file_path(&path_str, &data.file_type);
                 } else {
                     tracing::info!("skipped embeddings: text empty after trim");
                 }
             } else {
                 tracing::info!("skipped embeddings: no text_content");
+            }
+
+            if let Err(e) = library_ingest::move_unsorted_to_archive(&ingest_path, app_data_dir) {
+                eprintln!(
+                    "[athena] ingest: archive move failed after success ({}): {e}",
+                    ingest_path.display()
+                );
             }
         }
         Ok(None) => {

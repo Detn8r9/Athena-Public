@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window. USB export uses Rust std::fs in the backend (not tauri-plugin-fs scopes); macOS writes to /Volumes/... depend on OS volume permissions and app packaging, not this capability list.",
   "windows": ["main"],
   "permissions": [
     "core:default",

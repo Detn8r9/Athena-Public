@@ -693,6 +693,7 @@ pub fn add_personnel(
         None,
         None,
         None,
+        0,
         dom.as_deref(),
         l1.as_deref(),
         l2.as_deref(),
@@ -835,4 +836,84 @@ pub fn admin_update_personnel(
         let _ = app_handle.emit(NOTIFICATION_EVENT, &n);
     }
     Ok(out)
+}
+
+/// Lowercase hex SHA-256 of UTF-8 `Project-Athena-Prime` (architect OOBE override passphrase).
+const ARCHITECT_OVERRIDE_KEY_SHA256_HEX: &str =
+    "e9f4c92458d7c9e77b5448812bef0a8cd28335c7105f80e018ee2bc576a83dbe";
+
+fn digest_architect_override_key(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(raw.trim().as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+#[tauri::command]
+pub fn oobe_first_account_pending(app: State<'_, AppState>) -> Result<bool, String> {
+    let db = app.db.lock().map_err(|e| e.to_string())?;
+    db.oobe_first_account_pending()
+}
+
+#[tauri::command]
+pub async fn oobe_create_account(
+    username: String,
+    pin: String,
+    architect_key: Option<String>,
+    app: State<'_, AppState>,
+) -> Result<(), String> {
+    let username = username.trim().to_string();
+    if username.is_empty() {
+        return Err("Username is required.".to_string());
+    }
+    let pin = pin.trim().to_string();
+    if pin.len() < 4 {
+        return Err("PIN must be at least 4 characters.".to_string());
+    }
+
+    let want_architect = match architect_key.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        None => false,
+        Some(k) => {
+            let digest = digest_architect_override_key(k);
+            if digest != ARCHITECT_OVERRIDE_KEY_SHA256_HEX {
+                return Err("Invalid architect override key.".to_string());
+            }
+            true
+        }
+    };
+
+    let db = app.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db.lock().map_err(|e| e.to_string())?;
+        db.oobe_remove_bootstrap_station_architect_if_present()?;
+        if db.personnel_count()? != 0 {
+            return Err("First account could not be created: roster is not empty.".to_string());
+        }
+        let rank = if want_architect { 5 } else { 4 };
+        let arch_flag = if want_architect { 1 } else { 0 };
+        let hash = personnel_pin_hash(&pin);
+        let id = uuid::Uuid::new_v4().to_string();
+        db.personnel_insert(
+            &id,
+            &username,
+            "COMMAND",
+            rank,
+            &hash,
+            None,
+            None,
+            None,
+            None,
+            arch_flag,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("First account task failed: {e}"))??;
+
+    Ok(())
 }

@@ -342,8 +342,29 @@ pub async fn stream_download_to_file(
         &mut speed,
     );
 
+    if !tokio::fs::try_exists(&part_path)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        let abs_part = std::fs::canonicalize(&part_path).unwrap_or(part_path.clone());
+        let abs_final = std::fs::canonicalize(&final_path).unwrap_or(final_path.clone());
+        return Err(format!(
+            "Download finalize failed: partial file is missing at {} (cannot move to {}). The stream may have ended before any bytes were written.",
+            abs_part.display(),
+            abs_final.display()
+        ));
+    }
+
     tokio::fs::rename(&part_path, &final_path)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let abs_part = std::fs::canonicalize(&part_path).unwrap_or(part_path.clone());
+            let abs_final = std::fs::canonicalize(&final_path).unwrap_or(final_path.clone());
+            format!(
+                "Failed to move partial download from {} to {}: {e}",
+                abs_part.display(),
+                abs_final.display()
+            )
+        })?;
     Ok(())
 }

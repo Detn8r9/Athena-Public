@@ -9,6 +9,7 @@ export type AppView =
   | "calendar"
   | "academy"
   | "archive"
+  | "data_acquisition"
   | "personnel"
   | "org_chart";
 
@@ -25,6 +26,7 @@ export const APP_VIEWS: readonly AppView[] = [
   "calendar",
   "academy",
   "archive",
+  "data_acquisition",
   "personnel",
   "org_chart",
 ];
@@ -46,6 +48,7 @@ export const APP_VIEW_LABELS: Record<AppView, string> = {
   calendar: "Calendar",
   academy: "Academy",
   archive: "The Archive",
+  data_acquisition: "Data acquisition",
   personnel: "Personnel",
   org_chart: "Org chart",
 };

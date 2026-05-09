@@ -236,7 +236,7 @@ fn pick_worker_round_robin(candidates: &[u32]) -> Option<u32> {
 pub fn build_capabilities_packet() -> Result<LanPacket, String> {
     let specs = ollama::get_system_specs();
     let models = if is_ollama_running() {
-        ollama::get_available_models().unwrap_or_default()
+        ollama::get_available_models(None).unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -470,7 +470,7 @@ pub fn execute_worker_ai_job_blocking(offer: &LanPacket) -> LanPacket {
             error: Some("ollama not running".to_string()),
         };
     }
-    let models = ollama::get_available_models().unwrap_or_default();
+    let models = ollama::get_available_models(None).unwrap_or_default();
     if !models.iter().any(|m| m.name == *model) {
         return LanPacket::AiJobResult {
             job_id: job_id.clone(),
@@ -503,7 +503,7 @@ pub fn execute_worker_ai_job_blocking(offer: &LanPacket) -> LanPacket {
         temperature: *temperature,
         num_ctx: *num_ctx,
     };
-    match ollama::chat(model, msgs, Some(opts)) {
+    match ollama::chat(None, model, msgs, Some(opts)) {
         Ok(text) => LanPacket::AiJobResult {
             job_id: job_id.clone(),
             chunk_index: *chunk_index,
@@ -606,6 +606,7 @@ pub async fn run_cluster_stream(
             let _ = app_emit.emit(STREAM_DONE_EVENT, ());
         };
         ollama::chat_stream(
+            None,
             &model_s,
             synth_messages,
             &mut on_chunk,

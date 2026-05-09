@@ -45,6 +45,8 @@ mod kiwix;
 mod kiwix_serve;
 #[path = "domains/ingestion/kiwix_tools.rs"]
 mod kiwix_tools;
+#[path = "domains/system/os.rs"]
+mod os;
 #[path = "domains/mesh/lan_cluster.rs"]
 mod lan_cluster;
 #[path = "domains/mesh/lan_identity.rs"]
@@ -168,6 +170,8 @@ mod storage;
 mod deployment;
 #[path = "domains/ingestion/library_ingest.rs"]
 mod library_ingest;
+#[path = "domains/ingestion/media_harvest.rs"]
+mod media_harvest;
 #[path = "domains/deployment/deployment_manifest_cache.rs"]
 mod deployment_manifest_cache;
 #[path = "domains/deployment/deployment_queue_state.rs"]
@@ -197,6 +201,8 @@ mod rag_chunk_worker;
 mod watcher;
 #[path = "domains/ingestion/zim_download.rs"]
 mod zim_download;
+#[path = "domains/ingestion/background_ingestion.rs"]
+mod background_ingestion;
 
 /// Full product name (locked in). The UI and assistant persona may still use the short name **Athena**.
 pub const ATHENA_FULL_NAME: &str =
@@ -259,6 +265,8 @@ pub struct AppState {
     pub managed_local_llm_http_port: Arc<Mutex<Option<u16>>>,
     /// Global power-save mode flag (battery < 20%); used to gate background jobs like P2P replication.
     pub power_save_mode: Arc<AtomicBool>,
+    /// Background ingestion queue (download-complete + manual file drops).
+    pub ingestion_queue: background_ingestion::IngestionQueue,
 }
 
 
@@ -298,8 +306,125 @@ fn list_sorted_subdirs(dir: &std::path::Path) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveredLocalGgufModel {
+    file_name: String,
+    absolute_path: String,
+    size_bytes: u64,
+}
+
+fn scan_gguf_under_root(root: &std::path::Path, max_depth: usize) -> Result<Vec<DiscoveredLocalGgufModel>, String> {
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<DiscoveredLocalGgufModel> = Vec::new();
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .max_depth(max_depth)
+        .into_iter()
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue, // permission errors etc; skip noisy roots
+        };
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() || name.starts_with('.') {
+            continue;
+        }
+        if !name.to_ascii_lowercase().ends_with(".gguf") {
+            continue;
+        }
+        let len = match p.metadata() {
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        };
+        out.push(DiscoveredLocalGgufModel {
+            file_name: name,
+            absolute_path: p.to_string_lossy().to_string(),
+            size_bytes: len,
+        });
+        if out.len() >= 4000 {
+            break;
+        }
+    }
+    out.sort_by(|a, b| a.size_bytes.cmp(&b.size_bytes).then_with(|| a.file_name.cmp(&b.file_name)));
+    out.dedup_by(|a, b| a.absolute_path == b.absolute_path);
+    Ok(out)
+}
+
+#[tauri::command]
+fn scan_local_device_for_models(app: tauri::AppHandle) -> Result<Vec<DiscoveredLocalGgufModel>, String> {
+    let mut roots: Vec<(std::path::PathBuf, usize)> = Vec::new();
+
+    // Downloads (user-facing catch-all).
+    if let Ok(d) = app.path().download_dir() {
+        roots.push((d, 3));
+    }
+
+    // Home-derived roots.
+    let home = app.path().home_dir().ok();
+    if let Some(ref h) = home {
+        // Ollama (mac/linux/windows via dot folder when present).
+        roots.push((h.join(".ollama").join("models"), 6));
+
+        #[cfg(target_os = "macos")]
+        {
+            roots.push((h.join("Library").join("Application Support").join("LM Studio").join("models"), 7));
+            roots.push((h.join("Library").join("Application Support").join("nomic.ai").join("GPT4All"), 7));
+            roots.push((h.join("Library").join("Application Support").join("gpt4all"), 7));
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            roots.push((h.join(".local").join("share").join("LM Studio").join("models"), 7));
+            roots.push((h.join(".local").join("share").join("nomic.ai").join("GPT4All"), 7));
+            roots.push((h.join(".local").join("share").join("gpt4all"), 7));
+            roots.push((h.join(".cache").join("lm-studio").join("models"), 7));
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            // Some installs put LM Studio / GPT4All under LocalAppData.
+            if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                let l = std::path::PathBuf::from(local);
+                roots.push((l.join("LM Studio").join("models"), 7));
+                roots.push((l.join("nomic.ai").join("GPT4All"), 7));
+                roots.push((l.join("gpt4all"), 7));
+            }
+        }
+    }
+
+    // Scan and merge.
+    let mut all: Vec<DiscoveredLocalGgufModel> = Vec::new();
+    for (root, depth) in roots {
+        let mut batch = scan_gguf_under_root(&root, depth)?;
+        all.append(&mut batch);
+        if all.len() >= 5000 {
+            break;
+        }
+    }
+    all.sort_by(|a, b| a.size_bytes.cmp(&b.size_bytes).then_with(|| a.file_name.cmp(&b.file_name)));
+    all.dedup_by(|a, b| a.absolute_path == b.absolute_path);
+    Ok(all)
+}
+
 #[tauri::command]
 fn scan_chat_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    list_sorted_gguf_files(&state.model_paths.chat_models)
+}
+
+/// Filenames of validated `.gguf` files present under `models/chat` (resolved app data path).
+#[tauri::command]
+fn get_downloaded_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     list_sorted_gguf_files(&state.model_paths.chat_models)
 }
 
@@ -1407,6 +1532,24 @@ fn get_watch_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn open_path_in_file_manager(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let t = path.trim();
+    if t.is_empty() {
+        return Err("Path is empty.".to_string());
+    }
+    // For directories that don't exist yet, create them (useful for freshly set watch folders).
+    let p = std::path::PathBuf::from(t);
+    if !p.exists() {
+        std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    }
+    app.opener()
+        .open_path(p.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 #[allow(clippy::type_complexity)]
 fn get_theme_config(
     app: tauri::AppHandle,
@@ -1479,7 +1622,27 @@ fn is_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 pub(crate) fn kiwix_downloads_dir(app_data_dir: &std::path::Path) -> std::path::PathBuf {
-    app_data_dir.join("kiwix_downloads")
+    // Unified downloads root: ZIMs live under the managed packages downloads.
+    app_data_dir.join("downloads").join("packages")
+}
+
+pub(crate) fn downloads_root(app_data_dir: &std::path::Path) -> std::path::PathBuf {
+    app_data_dir.join("downloads")
+}
+
+pub(crate) fn ensure_download_dirs(app_data_dir: &std::path::Path) -> Result<(), String> {
+    let root = downloads_root(app_data_dir);
+    let dirs = [
+        root.join("packages"),
+        root.join("academy"),
+        root.join("maps"),
+        root.join("models"),
+        root.join("documents"),
+    ];
+    for d in dirs {
+        std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 pub(crate) fn compute_watcher_folders(
@@ -1487,6 +1650,7 @@ pub(crate) fn compute_watcher_folders(
     app_data_dir: &std::path::Path,
     config: &AppConfig,
 ) -> Result<Vec<String>, String> {
+    ensure_download_dirs(app_data_dir)?;
     let kiwix_dir = kiwix_downloads_dir(app_data_dir);
     std::fs::create_dir_all(&kiwix_dir).map_err(|e| e.to_string())?;
     let kiwix_str = kiwix_dir.to_string_lossy().to_string();
@@ -1828,6 +1992,7 @@ async fn export_athena_to_usb(
     format_first: bool,
     device_path: Option<String>,
     expedition_budget_bytes: Option<u64>,
+    selected_external_chat_model_path: Option<String>,
 ) -> Result<(), String> {
     let db = Arc::clone(&state.db);
     let app_handle = app.clone();
@@ -1841,6 +2006,7 @@ async fn export_athena_to_usb(
             format_first,
             device_path,
             expedition_budget_bytes,
+            selected_external_chat_model_path,
         )
     })
     .await
@@ -1860,6 +2026,18 @@ async fn aegis_export_preflight(
     })
     .await
     .map_err(|e| format!("Preflight task failed: {e}"))?
+}
+
+/// Non-blocking: returns immediately; results arrive on `athena:aegis-preflight-progress`.
+#[tauri::command]
+fn start_aegis_export_preflight(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    destination_path: Option<String>,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    portable::start_aegis_export_preflight_background(&app, db, destination_path);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1938,8 +2116,10 @@ fn get_battery_state() -> Result<system::BatteryState, String> {
 }
 
 #[tauri::command]
-fn get_ollama_available_models() -> Result<Vec<ModelInfo>, String> {
-    get_available_models()
+fn get_ollama_available_models(app: tauri::AppHandle) -> Result<Vec<ModelInfo>, String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let config = load_config(&app_data_dir);
+    get_available_models(Some(&config))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -2070,9 +2250,11 @@ fn try_launch_ollama(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_recommended_model() -> Result<Option<String>, String> {
+fn get_recommended_model(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let specs = get_specs();
-    let models = get_available_models()?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let config = load_config(&app_data_dir);
+    let models = get_available_models(Some(&config))?;
     let model = select_model_for_tier(&models, &specs.recommended_tier);
     Ok(model)
 }
@@ -2114,6 +2296,7 @@ struct UserAndInferenceSettings {
     calendar_quiet_hours_start: u8,
     calendar_quiet_hours_end: u8,
     inference_backend: Option<String>,
+    hive_mind_seed_url: Option<String>,
     explicit_ollama_model: Option<String>,
     openai_compatible_base_url: Option<String>,
     openai_compatible_model: Option<String>,
@@ -2146,6 +2329,7 @@ fn get_user_and_inference_settings(
         calendar_quiet_hours_start: c.calendar_quiet_hours_start.unwrap_or(22).min(23),
         calendar_quiet_hours_end: c.calendar_quiet_hours_end.unwrap_or(7).min(23),
         inference_backend: c.inference_backend.clone(),
+        hive_mind_seed_url: c.hive_mind_seed_url.clone(),
         explicit_ollama_model: c.explicit_ollama_model.clone(),
         openai_compatible_base_url: c.openai_compatible_base_url.clone(),
         openai_compatible_model: c.openai_compatible_model.clone(),
@@ -2267,6 +2451,51 @@ fn set_explicit_ollama_model(app: tauri::AppHandle, value: Option<String>) -> Re
     });
     save_config(&app_data_dir, &config)?;
     Ok(())
+}
+
+#[tauri::command]
+fn set_hive_mind_seed_url(app: tauri::AppHandle, value: Option<String>) -> Result<(), String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut config = load_config(&app_data_dir);
+    config.hive_mind_seed_url = value.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    save_config(&app_data_dir, &config)?;
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HiveMindRouteStatus {
+    mode: String,
+    base_url: String,
+}
+
+#[tauri::command]
+fn get_hive_mind_route_status(app: tauri::AppHandle) -> Result<HiveMindRouteStatus, String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let config = load_config(&app_data_dir);
+    if inference::is_openai_compatible_backend(&config) {
+        return Ok(HiveMindRouteStatus {
+            mode: "openai_compatible".to_string(),
+            base_url: String::new(),
+        });
+    }
+    let base = ollama::effective_ollama_base_url(Some(&config));
+    let mode = if ollama::ollama_base_is_local_node(&base) {
+        "local"
+    } else {
+        "hive"
+    };
+    Ok(HiveMindRouteStatus {
+        mode: mode.to_string(),
+        base_url: base,
+    })
 }
 
 #[tauri::command]
@@ -3098,7 +3327,7 @@ fn get_memory_estimate(app: tauri::AppHandle) -> Result<MemoryEstimate, String> 
     let config = load_config(&app_data_dir);
     let memory_messages = config.memory_messages.unwrap_or(DEFAULT_MEMORY_MESSAGES);
 
-    let models = get_available_models().map_err(|e| e.to_string())?;
+    let models = get_available_models(Some(&config)).map_err(|e| e.to_string())?;
     let tier: String = config
         .model_override
         .clone()
@@ -3795,7 +4024,12 @@ fn build_semantic_context(chunks: &[ChunkEmbedding], max_chars: usize) -> String
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(&c.file_path);
-        let block = format!("\n--- From: {} ---\n{}\n", name, body);
+        let ts = c
+            .timestamp_start
+            .filter(|t| t.is_finite() && *t >= 0.0)
+            .map(|t| format!(" [~{:.1}s]", t))
+            .unwrap_or_default();
+        let block = format!("\n--- From: {}{} ---\n{}\n", name, ts, body);
         if total + block.len() > max_chars {
             break;
         }
@@ -3917,11 +4151,17 @@ fn format_hybrid_library_context(hits: &[HybridSearchHit]) -> String {
             .page_number
             .map(|p| format!(" (page {p})"))
             .unwrap_or_default();
+        let ts = h
+            .timestamp_start
+            .filter(|t| t.is_finite() && *t >= 0.0)
+            .map(|t| format!(" [~{:.1}s]", t))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "--- Source {}: {}{} ---\n{}\n\n",
+            "--- Source {}: {}{}{} ---\n{}\n\n",
             i + 1,
             title,
             page,
+            ts,
             h.expanded_text
         ));
     }
@@ -4136,13 +4376,39 @@ fn build_retrieval_from_saved_messages(
 }
 
 fn build_retrieval_from_combined_text(combined: &str, message: &str) -> (String, String) {
+    fn keywords(s: &str) -> std::collections::HashSet<String> {
+        s.split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+            .filter(|w| w.len() >= 4)
+            .map(|w| w.to_ascii_lowercase())
+            .collect()
+    }
+
+    fn should_include_prior_context(combined: &str, message: &str) -> bool {
+        // If the user is making a short follow-up or using referential language, keep context for disambiguation.
+        let m = message.to_ascii_lowercase();
+        let referential = [
+            " it ", " that ", " this ", " those ", " these ", " they ", " them ", " he ", " she ", " above ",
+            " earlier ", " previous ", " same ", " again ", "as before",
+        ]
+        .iter()
+        .any(|tok| m.contains(tok));
+        let msg_kw = keywords(message);
+        if referential || msg_kw.len() < 3 || message.trim().len() < 28 {
+            return true;
+        }
+        let ctx_kw = keywords(combined);
+        let overlap = msg_kw.iter().filter(|w| ctx_kw.contains(*w)).count();
+        // Topic shift: if overlap is low, don't drag in stale keywords/titles.
+        overlap >= 2
+    }
+
     let words: Vec<&str> = combined
         .split_whitespace()
         .filter(|w| w.len() >= 3 && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '\''))
         .take(80)
         .collect();
     let context = words.join(" ");
-    if context.is_empty() {
+    if context.is_empty() || !should_include_prior_context(&context, message) {
         (message.to_string(), String::new())
     } else {
         let retrieval_query = format!("{} {}", context, message);
@@ -5070,6 +5336,7 @@ fn send_message_stream(
     user_lon: Option<f64>,
     chat_id: Option<String>,
     model_options: Option<ModelOptions>,
+    model: Option<String>,
 ) -> Result<(), String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
@@ -5090,6 +5357,7 @@ fn send_message_stream(
     let state = app.state::<AppState>();
     let db_arc = Arc::clone(&state.db);
     let model_opts_for_stream = model_options;
+    let stream_model_override = model.clone();
     let app_emit = app.clone();
     let history_clone = history;
     let app_data_dir_clone = app_data_dir.clone();
@@ -5124,6 +5392,7 @@ fn send_message_stream(
                 &mut on_chunk,
                 on_done,
                 model_opts_for_stream,
+                stream_model_override.as_deref(),
                 None,
             ) {
                 let _ = app_emit.emit(STREAM_ERROR_EVENT, e);
@@ -5354,11 +5623,16 @@ fn send_message_stream(
                 let context_section = format!("{}{}", mentioned_section, keyword_semantic_section);
 
                 const MAX_SOURCES_EMIT: usize = 12;
-                let stream_citations = merge_mentioned_and_library_citations(
+                let mut stream_citations = merge_mentioned_and_library_citations(
                     &mentioned,
                     library_citations,
                     MAX_SOURCES_EMIT,
                 );
+                // If retrieval produced no usable context (e.g. all semantic matches fell below min similarity),
+                // do not emit any sources to the frontend.
+                if context_section.trim().is_empty() {
+                    stream_citations.clear();
+                }
 
                 let library_rule = if context_section.trim().is_empty() {
                     "When the user asks about something that might be in their Library (e.g. their house, notes), say you don't have that information and suggest they add or place a relevant document in their Library folder, then try again."
@@ -5385,7 +5659,11 @@ fn send_message_stream(
             let personality_section = build_personality_section(&config);
             let user_profile_section = build_user_profile_section(&config);
             let system_content = format!(
-                "You are Athena, the assistant for {}. You are a local offline survival and repair assistant. You help with practical skills, first aid, repair, and survival knowledge. Answer concisely and clearly.\n\nCritical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
+                "You are ATHENA, a local AI assistant for {}. You have access to a local knowledge base. \
+1. If the provided context is directly relevant to the user's question, use it to answer. \
+2. If the context is irrelevant or absent, answer using your general knowledge, but mention that you are not using a local source for that specific info. \
+If you are not using local sources, do NOT thank, cite, or credit the provided context.\n\n\
+Critical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
                 ATHENA_FULL_NAME,
                 library_rule,
                 conversation_context_prompt,
@@ -5431,7 +5709,11 @@ fn send_message_stream(
         let on_done = || {
             let _ = app_emit.emit(STREAM_DONE_EVENT, ());
         };
-        let cluster_model = inference::resolve_model_name(&config, &models);
+        let cluster_model = inference::resolve_model_name_with_request_override(
+            &config,
+            &models,
+            stream_model_override.as_deref(),
+        );
         if let Ok(ref m) = cluster_model {
             if crate::lan_cluster::should_attempt_cluster(&config, &models, &messages, m) {
                 let app_c = app_emit.clone();
@@ -5464,6 +5746,7 @@ fn send_message_stream(
             &mut on_chunk,
             on_done,
             model_opts_for_stream,
+            stream_model_override.as_deref(),
             None,
         ) {
             let _ = app_emit.emit(STREAM_ERROR_EVENT, e);
@@ -5569,6 +5852,17 @@ pub fn run() {
             ocr::init_ocr_environment(app.handle());
             let app_data_dir = crate::portable::resolved_app_data_dir(&app.handle())?;
             std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+            // One-time migration into unified `downloads/*` structure (best-effort, non-fatal).
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = tauri::async_runtime::block_on(async {
+                        os::migrate_existing_downloads(h).await.map(|_| ())
+                    }) {
+                        eprintln!("[athena] downloads migration skipped/failed: {e}");
+                    }
+                });
+            }
             let deployment_queue_state = std::sync::Arc::new(
                 deployment_queue_state::DeploymentQueueStateManager::open_clearing_stale_session(
                     &app_data_dir,
@@ -5695,6 +5989,7 @@ pub fn run() {
                 console_stream_cancel: Arc::new(AtomicBool::new(false)),
                 managed_local_llm_http_port: model_manager::managed_llm_port_holder(),
                 power_save_mode: Arc::clone(&power_save_mode),
+                ingestion_queue: background_ingestion::IngestionQueue::default(),
             });
             let _ = watcher_tx.send(WatchCommand::SetFolders(folders));
 
@@ -5762,8 +6057,22 @@ pub fn run() {
             let (ollama_child, use_legacy_ollama_launch) = match spawned_sidecar {
                 None => (None, true),
                 Some(child) => {
-                    let http_ok =
-                        tauri::async_runtime::block_on(ollama::ollama_http_ready_after_sidecar(5, 500));
+                    // Avoid `tauri::async_runtime::block_on` during setup (can panic when called from a Tokio worker).
+                    // A simple TCP connect readiness gate is enough here; the legacy launcher thread below remains a fallback.
+                    let http_ok = {
+                        use std::net::{SocketAddr, TcpStream};
+                        use std::time::Duration;
+                        let addr: SocketAddr = "127.0.0.1:11434".parse().unwrap();
+                        let mut ok = false;
+                        for _ in 0..5 {
+                            if TcpStream::connect_timeout(&addr, Duration::from_millis(350)).is_ok() {
+                                ok = true;
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(500));
+                        }
+                        ok
+                    };
                     if http_ok {
                         (Some(child), false)
                     } else {
@@ -5874,6 +6183,8 @@ pub fn run() {
             diagnostics::export_diagnostics_json,
             diagnostics::get_app_data_dir_path,
             auth::authenticate_pin,
+            auth::oobe_first_account_pending,
+            auth::oobe_create_account,
             auth::authenticate_guest,
             auth::logout,
             auth::set_my_personnel_display_name,
@@ -5910,6 +6221,8 @@ pub fn run() {
             remote_queue::get_queue_status,
             remote_queue::enqueue_request,
             scan_chat_models,
+            get_downloaded_models,
+            scan_local_device_for_models,
             start_managed_local_llm_server,
             get_managed_local_llm_http_base_url,
             mesh_p2p_list_peers,
@@ -5920,6 +6233,9 @@ pub fn run() {
             scan_reranker_models,
             get_watch_folder,
             set_watch_folder,
+            open_path_in_file_manager,
+            os::reveal_downloads_folder,
+            os::migrate_existing_downloads,
             list_archive_watch_roots,
             add_archive_watch_root,
             remove_archive_watch_root,
@@ -5959,6 +6275,8 @@ pub fn run() {
             set_calendar_quiet_hours,
             set_inference_backend,
             set_explicit_ollama_model,
+            set_hive_mind_seed_url,
+            get_hive_mind_route_status,
             set_active_embedding_model,
             set_active_reranker_model,
             set_openai_compatible_base_url,
@@ -6007,6 +6325,7 @@ pub fn run() {
             deployment::deployment_pause_downloads,
             deployment::deployment_is_running,
             deployment::deployment_get_queue_snapshot,
+            deployment::deployment_probe_remote_sizes,
             deployment::deployment_open_athena_data_folder,
             pmtiles_region_extract::extract_pmtiles_region,
             satellite_region_download::start_satellite_region_download,
@@ -6103,6 +6422,7 @@ pub fn run() {
             commands::chat_console::abort_chat_console_stream,
             export_athena_to_usb,
             aegis_export_preflight,
+            start_aegis_export_preflight,
             usb::get_available_usbs,
             commands::library_source::open_library_source,
             send_mesh_message,
@@ -6145,6 +6465,9 @@ pub fn run() {
             rag_indexer::search_rag_chunks,
             rag_indexer::download_knowledge_package,
             rag_indexer::list_rag_documents,
+            media_harvest::harvest_media_url,
+            media_harvest::harvest_local_documents,
+            media_harvest::resolve_media_harvest_dir,
             radio_manager::get_available_ports,
             radio_manager::connect_to_radio,
             radio_manager::send_radio_message,

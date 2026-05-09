@@ -172,7 +172,7 @@ fn fts_keywords_to_match_query(keywords: &[String]) -> Option<String> {
 /// Default lock-screen login when creating the architect row from scratch (case-insensitive).
 /// The `athena_architect` badge is assigned by migration to whoever holds the bootstrapped architect
 /// PIN, or to this login name if no PIN match exists; renaming the login does not revoke the badge.
-pub const PERSONNEL_ARCHITECT_LOGIN: &str = "StationArchitect";
+pub const PERSONNEL_ARCHITECT_LOGIN: &str = "demo-operator";
 
 /// SHA-256 hex digest of trimmed UTF-8 PIN bytes (interim; prefer Argon2 for production hardening).
 pub fn personnel_pin_hash(pin: &str) -> String {
@@ -339,6 +339,9 @@ pub struct ChunkEmbedding {
     pub chunk_index: i64,
     pub chunk_text: String,
     pub vector: Vec<f32>,
+    /// Seconds from start of source media (e.g. VTT cue), for temporal RAG citations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_start: Option<f64>,
 }
 
 /// One expanded context block for hybrid retrieval + reranking (Phase 3).
@@ -348,6 +351,8 @@ pub struct HybridSearchHit {
     pub display_title: Option<String>,
     pub page_number: Option<i64>,
     pub file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_start: Option<f64>,
 }
 
 /// Reranked child chunks (with parent context) passed to the LLM for library RAG (`hybrid_search`).
@@ -364,6 +369,7 @@ struct HybridChunkRow {
     file_path: String,
     page_start: Option<i64>,
     display_title: Option<String>,
+    timestamp_start: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -821,6 +827,10 @@ fn with_sql_connection_busy_retries<T>(
 }
 
 impl Database {
+    /// Minimum cosine similarity required for semantic chunk retrieval.
+    /// Below this, the best match is often unrelated “nearest neighbor” noise.
+    const RAG_MIN_SIMILARITY_SCORE: f32 = 0.65;
+
     pub fn new(db_path: &Path) -> Result<Self, String> {
         ensure_sqlite_vec_auto_extension();
         if let Some(parent) = db_path.parent() {
@@ -848,6 +858,8 @@ impl Database {
         db.init_schema()?;
         db.migrate_rag_phase1_schema()?;
         db.migrate_chunk_embeddings_needs_embedding()?;
+        db.migrate_chunk_embeddings_timestamp_start()?;
+        db.migrate_rag_documents_source_package()?;
         db.migrate_indexed_files_relative_path()?;
         db.migrate_library_chunks_fts()?;
         db.migrate_chunk_embeddings_vec384()?;
@@ -890,6 +902,8 @@ impl Database {
         db.init_schema()?;
         db.migrate_rag_phase1_schema()?;
         db.migrate_chunk_embeddings_needs_embedding()?;
+        db.migrate_chunk_embeddings_timestamp_start()?;
+        db.migrate_rag_documents_source_package()?;
         db.migrate_indexed_files_relative_path()?;
         db.migrate_library_chunks_fts()?;
         db.migrate_chunk_embeddings_vec384()?;
@@ -1018,7 +1032,8 @@ impl Database {
                 filename TEXT NOT NULL,
                 file_type TEXT NOT NULL,
                 total_chunks INTEGER NOT NULL,
-                ingested_at DATETIME NOT NULL
+                ingested_at DATETIME NOT NULL,
+                source_package TEXT NOT NULL DEFAULT 'Downloads'
             );
             CREATE INDEX IF NOT EXISTS idx_rag_documents_ingested_at ON rag_documents(ingested_at DESC);
             CREATE TABLE IF NOT EXISTS rag_chunks (
@@ -1215,6 +1230,7 @@ impl Database {
         let pragma = match table {
             "indexed_files" => "PRAGMA table_info(indexed_files)",
             "chunk_embeddings" => "PRAGMA table_info(chunk_embeddings)",
+            "rag_documents" => "PRAGMA table_info(rag_documents)",
             _ => {
                 return Err(format!("unknown table for migration: {}", table));
             }
@@ -1301,6 +1317,37 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_needs_embedding ON chunk_embeddings(needs_embedding) WHERE needs_embedding != 0",
             [],
         );
+        Ok(())
+    }
+
+    /// Optional start time (seconds) for transcript / media-aligned chunks (temporal RAG).
+    fn migrate_chunk_embeddings_timestamp_start(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        if !Self::column_exists(&conn, "chunk_embeddings", "timestamp_start")? {
+            conn.execute(
+                "ALTER TABLE chunk_embeddings ADD COLUMN timestamp_start REAL",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn migrate_rag_documents_source_package(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // Some startup paths run migrations before the RAG tables have been created (older DBs or
+        // maintenance/repair flows). In that case, skip gracefully and let the normal schema/migrations
+        // create `rag_documents` first.
+        if !Self::table_exists(&conn, "rag_documents")? {
+            return Ok(());
+        }
+        if !Self::column_exists(&conn, "rag_documents", "source_package")? {
+            conn.execute(
+                "ALTER TABLE rag_documents ADD COLUMN source_package TEXT NOT NULL DEFAULT 'Downloads'",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
@@ -2057,6 +2104,8 @@ END;
     fn migrate_personnel_architect_badge(&self) -> Result<(), String> {
         const META_KEY: &str = "personnel_architect_pin_seeded_v1";
         const ARCH_PIN_ONCE: &str = "000000";
+        const LEGACY_BOOTSTRAP_LOGIN: &str = "StationArchitect";
+        const BOOTSTRAP_DISPLAY_NAME: &str = "the ATHENA developer";
 
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute_batch(
@@ -2105,17 +2154,17 @@ END;
             let n = conn
                 .execute(
                     "UPDATE personnel SET rank_level = 5, clearance_level = 5, pin_hash = ?1, athena_architect = 1, division = 'COMMAND',
-                     display_name = CASE WHEN display_name IS NULL OR trim(display_name) = '' THEN 'Station Architect' ELSE display_name END
+                     display_name = CASE WHEN display_name IS NULL OR trim(display_name) = '' THEN ?2 ELSE display_name END
                      WHERE id = (SELECT id FROM personnel WHERE pin_hash = ?1 ORDER BY created_at ASC LIMIT 1)",
-                    params![hash, hash],
+                    params![hash, BOOTSTRAP_DISPLAY_NAME],
                 )
                 .map_err(|e| e.to_string())?;
             let n = if n == 0 {
                 conn.execute(
                     "UPDATE personnel SET rank_level = 5, clearance_level = 5, pin_hash = ?1, athena_architect = 1, division = 'COMMAND',
-                     display_name = CASE WHEN display_name IS NULL OR trim(display_name) = '' THEN 'Station Architect' ELSE display_name END
+                     display_name = CASE WHEN display_name IS NULL OR trim(display_name) = '' THEN ?3 ELSE display_name END
                      WHERE lower(name) = lower(?2)",
-                    params![hash, PERSONNEL_ARCHITECT_LOGIN],
+                    params![hash, PERSONNEL_ARCHITECT_LOGIN, BOOTSTRAP_DISPLAY_NAME],
                 )
                 .map_err(|e| e.to_string())?
             } else {
@@ -2125,8 +2174,8 @@ END;
                 let id = uuid::Uuid::new_v4().to_string();
                 conn.execute(
                     "INSERT INTO personnel (id, name, division, rank_level, clearance_level, pin_hash, created_at, display_name, operational_status, directorate, tier, job_title, athena_architect)
-                     VALUES (?1, ?2, 'COMMAND', 5, 5, ?3, ?4, 'Station Architect', 'active', NULL, NULL, NULL, 1)",
-                    params![id, PERSONNEL_ARCHITECT_LOGIN, hash, now_ms],
+                     VALUES (?1, ?2, 'COMMAND', 5, 5, ?3, ?4, ?5, 'active', NULL, NULL, NULL, 1)",
+                    params![id, PERSONNEL_ARCHITECT_LOGIN, hash, now_ms, BOOTSTRAP_DISPLAY_NAME],
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -2153,6 +2202,22 @@ END;
                 );
             }
         }
+
+        // Older builds used `StationArchitect`; rename to the configured bootstrap login when PIN matches.
+        let _ = conn.execute(
+            "UPDATE personnel SET name = ?1,
+                 display_name = CASE
+                   WHEN display_name IS NULL OR trim(display_name) = '' THEN ?2
+                   WHEN lower(trim(display_name)) = lower('Station Architect') THEN ?2
+                   ELSE display_name END
+             WHERE lower(trim(name)) = lower(?3) AND pin_hash = ?4",
+            params![
+                PERSONNEL_ARCHITECT_LOGIN,
+                BOOTSTRAP_DISPLAY_NAME,
+                LEGACY_BOOTSTRAP_LOGIN,
+                hash,
+            ],
+        );
 
         Ok(())
     }
@@ -2605,6 +2670,7 @@ END;
         directorate: Option<&str>,
         tier: Option<&str>,
         job_title: Option<&str>,
+        athena_architect: i32,
         domain: Option<&str>,
         role_l1: Option<&str>,
         role_l2: Option<&str>,
@@ -2650,7 +2716,7 @@ END;
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
         conn.execute(
-            "INSERT INTO personnel (id, name, division, rank_level, clearance_level, pin_hash, created_at, display_name, operational_status, directorate, tier, job_title, athena_architect, domain, role_l1, role_l2, role_l3, role_l4) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO personnel (id, name, division, rank_level, clearance_level, pin_hash, created_at, display_name, operational_status, directorate, tier, job_title, athena_architect, domain, role_l1, role_l2, role_l3, role_l4) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 id,
                 name.trim(),
@@ -2663,6 +2729,7 @@ END;
                 dir,
                 t,
                 jt,
+                athena_architect as i64,
                 dom,
                 rl1,
                 rl2,
@@ -2671,6 +2738,57 @@ END;
             ],
         )
         .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn personnel_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let c: i64 = conn
+            .query_row("SELECT COUNT(*) FROM personnel", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok(c)
+    }
+
+    /// True when the roster is empty or still only the single bootstrap architect row ([`PERSONNEL_ARCHITECT_LOGIN`]).
+    pub fn oobe_first_account_pending(&self) -> Result<bool, String> {
+        let c = self.personnel_count()?;
+        if c == 0 {
+            return Ok(true);
+        }
+        if c != 1 {
+            return Ok(false);
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let name: String = conn
+            .query_row("SELECT name FROM personnel LIMIT 1", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok(name.trim().eq_ignore_ascii_case(PERSONNEL_ARCHITECT_LOGIN))
+    }
+
+    /// Deletes the lone bootstrap architect row so OOBE can insert the real first operator.
+    pub fn oobe_remove_bootstrap_station_architect_if_present(&self) -> Result<(), String> {
+        let c = self.personnel_count()?;
+        if c == 0 {
+            return Ok(());
+        }
+        if c != 1 {
+            return Err(format!(
+                "First account setup requires an empty roster or only the default {} row.",
+                PERSONNEL_ARCHITECT_LOGIN
+            ));
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let name: String = conn
+            .query_row("SELECT name FROM personnel LIMIT 1", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if !name.trim().eq_ignore_ascii_case(PERSONNEL_ARCHITECT_LOGIN) {
+            return Err(format!(
+                "First account setup is only available while the roster is empty or only the default {} bootstrap row exists.",
+                PERSONNEL_ARCHITECT_LOGIN
+            ));
+        }
+        conn.execute("DELETE FROM personnel", [])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -4025,6 +4143,34 @@ END;
         Ok(None)
     }
 
+    /// Minimal indexed file fields needed to backfill embeddings / RAG rows without re-reading the file.
+    pub fn indexed_file_rag_backfill_seed(
+        &self,
+        path_or_relative_path: &str,
+    ) -> Result<Option<(String, String, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT file_type, COALESCE(display_title, name, path) AS title, COALESCE(text_content, '') AS text
+                 FROM indexed_files
+                 WHERE path = ?1 OR relative_path = ?1
+                 LIMIT 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let row = stmt.query_row(params![path_or_relative_path], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        });
+        match row {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// Count of embedding rows for a library file (used to detect missing vector coverage).
     pub fn chunk_embedding_count_for_file_path(&self, file_path: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -4036,6 +4182,79 @@ END;
             )
             .unwrap_or(0);
         Ok(n)
+    }
+
+    /// Upsert a `rag_documents` summary row for a file already represented in `chunk_embeddings`.
+    /// This makes new/updated watched-folder files immediately visible to the RAG UI and eligible for retrieval.
+    pub fn upsert_rag_document_for_file_path(
+        &self,
+        file_path: &str,
+        file_type: &str,
+    ) -> Result<(), String> {
+        let fp = file_path.trim();
+        if fp.is_empty() {
+            return Ok(());
+        }
+        let filename = std::path::Path::new(fp)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(fp)
+            .to_string();
+        let total_chunks: i64 = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.query_row(
+                "SELECT COUNT(*) FROM chunk_embeddings WHERE file_path = ?1 AND IFNULL(chunk_layer, '') != 'parent'",
+                params![fp],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+        };
+        if total_chunks <= 0 {
+            return Ok(());
+        }
+        let file_type = if file_type.trim().is_empty() {
+            std::path::Path::new(fp)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("file")
+        } else {
+            file_type.trim()
+        };
+        let ingested_at = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO rag_documents (id, filename, file_type, total_chunks, ingested_at, source_package)
+             VALUES (?1, ?2, ?3, ?4, ?5, COALESCE((SELECT source_package FROM rag_documents WHERE id = ?1), 'Downloads'))
+             ON CONFLICT(id) DO UPDATE SET
+               filename = excluded.filename,
+               file_type = excluded.file_type,
+               total_chunks = excluded.total_chunks,
+               ingested_at = excluded.ingested_at",
+            params![fp, filename, file_type, total_chunks, ingested_at],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Update (or backfill) the `rag_documents.source_package` label for a file.
+    /// Called by the background ingestion worker after embedding completion is queued.
+    pub fn upsert_rag_document_source_package(
+        &self,
+        file_path: &str,
+        source_package: &str,
+    ) -> Result<(), String> {
+        let fp = file_path.trim();
+        let src = source_package.trim();
+        if fp.is_empty() || src.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE rag_documents SET source_package = ?2 WHERE id = ?1",
+            params![fp, src],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5499,6 +5718,7 @@ LIMIT ?2
         vector: &[f32],
         needs_embedding: bool,
         sync_to_vec_index: bool,
+        timestamp_start: Option<f64>,
     ) -> Result<i64, String> {
         if vector.len() != embeddings::EMBEDDING_DIM {
             return Err(format!(
@@ -5513,8 +5733,8 @@ LIMIT ?2
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
             "
-            INSERT INTO chunk_embeddings (file_path, chunk_index, chunk_layer, parent_id, page_start, page_end, chunk_text, retrieval_text, vector, needs_embedding, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            INSERT INTO chunk_embeddings (file_path, chunk_index, chunk_layer, parent_id, page_start, page_end, chunk_text, retrieval_text, vector, needs_embedding, created_at, timestamp_start)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ON CONFLICT(file_path, chunk_index) DO UPDATE SET
                 chunk_layer = excluded.chunk_layer,
                 parent_id = excluded.parent_id,
@@ -5524,7 +5744,8 @@ LIMIT ?2
                 retrieval_text = excluded.retrieval_text,
                 vector = excluded.vector,
                 needs_embedding = excluded.needs_embedding,
-                created_at = excluded.created_at
+                created_at = excluded.created_at,
+                timestamp_start = excluded.timestamp_start
             ",
             params![
                 file_path,
@@ -5537,7 +5758,8 @@ LIMIT ?2
                 retrieval_text,
                 blob.clone(),
                 needs_emb,
-                now
+                now,
+                timestamp_start
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -5580,6 +5802,7 @@ LIMIT ?2
         vector: &[f32],
         needs_embedding: bool,
         sync_to_vec_index: bool,
+        timestamp_start: Option<f64>,
     ) -> Result<i64, String> {
         if vector.len() != embeddings::EMBEDDING_DIM {
             return Err(format!(
@@ -5593,8 +5816,8 @@ LIMIT ?2
         let blob = bytemuck::cast_slice::<f32, u8>(vector).to_vec();
         tx.execute(
             "
-            INSERT INTO chunk_embeddings (file_path, chunk_index, chunk_layer, parent_id, page_start, page_end, chunk_text, retrieval_text, vector, needs_embedding, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            INSERT INTO chunk_embeddings (file_path, chunk_index, chunk_layer, parent_id, page_start, page_end, chunk_text, retrieval_text, vector, needs_embedding, created_at, timestamp_start)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ON CONFLICT(file_path, chunk_index) DO UPDATE SET
                 chunk_layer = excluded.chunk_layer,
                 parent_id = excluded.parent_id,
@@ -5604,7 +5827,8 @@ LIMIT ?2
                 retrieval_text = excluded.retrieval_text,
                 vector = excluded.vector,
                 needs_embedding = excluded.needs_embedding,
-                created_at = excluded.created_at
+                created_at = excluded.created_at,
+                timestamp_start = excluded.timestamp_start
             ",
             params![
                 file_path,
@@ -5617,7 +5841,8 @@ LIMIT ?2
                 retrieval_text,
                 blob.clone(),
                 needs_emb,
-                now
+                now,
+                timestamp_start
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -5653,6 +5878,7 @@ LIMIT ?2
             Vec<f32>,
             bool,
             bool,
+            Option<f64>,
         )>,
     ) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -5678,6 +5904,7 @@ LIMIT ?2
                     vector,
                     needs_embedding,
                     sync_to_vec_index,
+                    timestamp_start,
                 )) = iter.next()
                 else {
                     break;
@@ -5700,6 +5927,7 @@ LIMIT ?2
                     &vector,
                     needs_embedding,
                     sync_to_vec_index,
+                    timestamp_start,
                 )?;
                 if chunk_layer == Some("parent") {
                     last_parent_rowid = Some(tx.last_insert_rowid());
@@ -5730,6 +5958,7 @@ LIMIT ?2
             vector,
             false,
             true,
+            None,
         )?;
         Ok(())
     }
@@ -5805,7 +6034,7 @@ LIMIT ?2
                         .collect::<Vec<_>>()
                         .join(",");
                     let sql = format!(
-                        "SELECT id, file_path, chunk_index, chunk_text, vector FROM chunk_embeddings WHERE id IN ({placeholders}) AND IFNULL(chunk_layer, '') != 'parent'"
+                        "SELECT id, file_path, chunk_index, chunk_text, timestamp_start, vector FROM chunk_embeddings WHERE id IN ({placeholders}) AND IFNULL(chunk_layer, '') != 'parent'"
                     );
                     let mut stmt2 = conn.prepare(&sql).map_err(|e| e.to_string())?;
                     let params: Vec<&dyn rusqlite::ToSql> =
@@ -5819,19 +6048,25 @@ LIMIT ?2
                         let file_path: String = row.get(1).map_err(|e| e.to_string())?;
                         let chunk_index: i64 = row.get(2).map_err(|e| e.to_string())?;
                         let chunk_text: String = row.get(3).map_err(|e| e.to_string())?;
-                        let blob: Vec<u8> = row.get(4).map_err(|e| e.to_string())?;
+                        let timestamp_start: Option<f64> = row.get(4).map_err(|e| e.to_string())?;
+                        let blob: Vec<u8> = row.get(5).map_err(|e| e.to_string())?;
                         let expected_len = embeddings::EMBEDDING_DIM * std::mem::size_of::<f32>();
                         let vector: Vec<f32> = if blob.len() != expected_len {
                             vec![0.0; embeddings::EMBEDDING_DIM]
                         } else {
                             bytemuck::cast_slice::<u8, f32>(&blob).to_vec()
                         };
+                        let score = embeddings::cosine_similarity(query_vec, &vector);
+                        if score < Self::RAG_MIN_SIMILARITY_SCORE {
+                            continue;
+                        }
                         out.push(ChunkEmbedding {
                             id,
                             file_path,
                             chunk_index,
                             chunk_text,
                             vector,
+                            timestamp_start,
                         });
                     }
                     let order: std::collections::HashMap<i64, usize> =
@@ -5855,7 +6090,7 @@ LIMIT ?2
 
         let mut stmt = conn
             .prepare(
-                "SELECT id, file_path, chunk_index, chunk_text, vector FROM chunk_embeddings WHERE IFNULL(chunk_layer, '') != 'parent' ORDER BY id LIMIT ?1",
+                "SELECT id, file_path, chunk_index, chunk_text, timestamp_start, vector FROM chunk_embeddings WHERE IFNULL(chunk_layer, '') != 'parent' ORDER BY id LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -5864,7 +6099,8 @@ LIMIT ?2
                 let file_path: String = row.get(1)?;
                 let chunk_index: i64 = row.get(2)?;
                 let chunk_text: String = row.get(3)?;
-                let blob: Vec<u8> = row.get(4)?;
+                let timestamp_start: Option<f64> = row.get(4)?;
+                let blob: Vec<u8> = row.get(5)?;
                 let expected_len = embeddings::EMBEDDING_DIM * std::mem::size_of::<f32>();
                 let vector: Vec<f32> = if blob.len() != expected_len {
                     vec![0.0; embeddings::EMBEDDING_DIM]
@@ -5877,6 +6113,7 @@ LIMIT ?2
                     chunk_index,
                     chunk_text,
                     vector,
+                    timestamp_start,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -5887,6 +6124,7 @@ LIMIT ?2
         let mut with_score: Vec<(f32, ChunkEmbedding)> = all
             .into_iter()
             .map(|c| (embeddings::cosine_similarity(query_vec, &c.vector), c))
+            .filter(|(score, _)| *score >= Self::RAG_MIN_SIMILARITY_SCORE)
             .collect();
         with_score.sort_by(|a, b| {
             b.0.partial_cmp(&a.0)
@@ -5958,7 +6196,7 @@ LIMIT ?2
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT c.id, TRIM(COALESCE(c.retrieval_text, c.chunk_text, '')), c.chunk_text, c.parent_id, c.file_path, c.page_start, c.page_end, f.display_title \
+            "SELECT c.id, TRIM(COALESCE(c.retrieval_text, c.chunk_text, '')), c.chunk_text, c.parent_id, c.file_path, c.page_start, c.page_end, f.display_title, c.timestamp_start \
              FROM chunk_embeddings c \
              LEFT JOIN indexed_files f ON f.path = c.file_path \
              WHERE c.id IN ({placeholders})"
@@ -5979,6 +6217,7 @@ LIMIT ?2
             let page_start: Option<i64> = row.get(5).map_err(|e| e.to_string())?;
             let _page_end: Option<i64> = row.get(6).map_err(|e| e.to_string())?;
             let display_title: Option<String> = row.get(7).map_err(|e| e.to_string())?;
+            let timestamp_start: Option<f64> = row.get(8).map_err(|e| e.to_string())?;
             map.insert(
                 id,
                 HybridChunkRow {
@@ -5988,6 +6227,7 @@ LIMIT ?2
                     file_path,
                     page_start,
                     display_title,
+                    timestamp_start,
                 },
             );
         }
@@ -6219,11 +6459,13 @@ LIMIT ?2
             if !seen_expanded.insert(preview_key) {
                 continue;
             }
+            let ts = row.timestamp_start;
             hits.push(HybridSearchHit {
                 expanded_text,
                 display_title: row.display_title.clone(),
                 page_number: row.page_start,
                 file_path: row.file_path.clone(),
+                timestamp_start: ts,
             });
         }
         for (i, h) in hits.iter().enumerate() {
@@ -8979,7 +9221,10 @@ mod tests {
         query[0] = 1.0;
 
         let mut orthogonal = vec![0.0f32; EMBEDDING_DIM];
-        orthogonal[1] = 1.0;
+        // Must clear the RAG min similarity threshold so we get a full top-k set.
+        // Keep it distinct from `query` so the exact match row remains the global best.
+        orthogonal[0] = 0.70;
+        orthogonal[1] = 0.71414286;
 
         for i in 1..=50_000 {
             let file_path = format!("stress/{i}.txt");
@@ -9039,6 +9284,7 @@ mod tests {
                 &v,
                 true,
                 false,
+                None,
             )
             .expect("insert")
         };

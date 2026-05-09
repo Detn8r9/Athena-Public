@@ -78,6 +78,7 @@ fn chat_stream_errors_when_body_stalls_after_first_chunk() {
 
     let mut aggregated = String::new();
     let result = chat_stream(
+        None,
         "test-model",
         vec![ChatMessage {
             role: "user".to_string(),

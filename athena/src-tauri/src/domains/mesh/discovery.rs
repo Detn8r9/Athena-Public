@@ -120,7 +120,8 @@ pub fn spawn_mesh_discovery(app: AppHandle, rest_port: u16) {
             }
         };
 
-        let hostname = "athena";
+        // mdns_sd requires a unicast DNS-SD target hostname ending in `.local.` (not bare `athena`).
+        let hostname = "athena.local.";
         let instance = format!("athena-p2p-{node_id}");
         let mut props = std::collections::HashMap::<String, String>::new();
         props.insert("node_id".to_string(), node_id.to_string());

@@ -112,6 +112,14 @@ impl DeploymentQueueStateManager {
             initial.queue_active = false;
             initial.cancel_requested = false;
             tauri::async_runtime::block_on(async { save_queue_state(&path, &initial).await })?;
+        } else if !initial.jobs.is_empty() {
+            // Idle snapshots should not retain completed/cancelled job rows — they inflate hub totals ("ghost GiB").
+            eprintln!(
+                "[athena] deployment queue: clearing {} stale job row(s) from idle snapshot",
+                initial.jobs.len()
+            );
+            initial.jobs.clear();
+            tauri::async_runtime::block_on(async { save_queue_state(&path, &initial).await })?;
         }
         Ok(Self::new_with_state(path, initial))
     }
@@ -179,10 +187,9 @@ impl DeploymentQueueStateManager {
         save_queue_state(&self.path, &snap).await
     }
 
-    /// Sync wrapper around [`flush`] for non-async callers.
-    pub fn flush_blocking(&self) -> Result<(), String> {
-        tauri::async_runtime::block_on(self.flush())
-    }
+    // NOTE: No `flush_blocking()` here. Blocking on the async runtime from runtime threads
+    // can panic ("Cannot start a runtime from within a runtime"). Prefer scheduling a flush
+    // via `update_and_persist` / `end_session`, or call `flush().await` from async contexts.
 
     #[allow(dead_code)]
     pub fn replace_and_persist(&self, state: DeploymentQueuePersistence) -> Result<(), String> {
@@ -228,6 +235,7 @@ impl DeploymentQueueStateManager {
         self.update_and_persist(|p| {
             p.queue_active = false;
             p.cancel_requested = false;
+            p.jobs.clear();
         })
     }
 
@@ -321,7 +329,7 @@ mod tests {
                 });
             })
             .unwrap();
-            m.flush_blocking().unwrap();
+            tauri::async_runtime::block_on(async { m.flush().await }).unwrap();
         }
         let m2 = DeploymentQueueStateManager::open(root).unwrap();
         let snap = m2.snapshot().unwrap();

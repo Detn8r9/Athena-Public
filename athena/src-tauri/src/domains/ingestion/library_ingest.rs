@@ -1,4 +1,4 @@
-//! Host watch-folder → `Unsorted` mirror copy and zip/tar extraction under `library/<category>/<bundle>/`.
+//! Host watch-folder → managed staging mirror copy and zip/tar extraction under `library/<category>/<bundle>/`.
 //! All extracted paths are validated to stay under the destination root (zip-slip safe).
 
 use std::fs::{self, File};
@@ -15,7 +15,9 @@ use zip::ZipArchive;
 /// Progress for long-running archive unpack (UI listens on this channel).
 pub const LIBRARY_ARCHIVE_EXTRACTION_PROGRESS_EVENT: &str = "athena:library-archive-extraction-progress";
 
-const UNSORTED_REL: &str = "Unsorted";
+// Unified managed downloads layout: keep external-file staging under downloads/documents.
+const UNSORTED_REL: &str = "downloads/documents/staging";
+const ARCHIVE_REL: &str = "downloads/documents/archive";
 const EMIT_ENTRY_INTERVAL: usize = 32;
 
 #[derive(Clone, serde::Serialize)]
@@ -34,6 +36,36 @@ pub struct ArchiveExtractionProgressPayload {
 #[inline]
 pub fn unsorted_dir(athena_root: &Path) -> PathBuf {
     athena_root.join(UNSORTED_REL)
+}
+
+#[inline]
+pub fn archive_dir(athena_root: &Path) -> PathBuf {
+    athena_root.join(ARCHIVE_REL)
+}
+
+/// If `path` is inside `Unsorted/`, move it into sibling `archive/` on success/up-to-date.
+/// Returns the new archived path when moved.
+pub fn move_unsorted_to_archive(path: &Path, athena_root: &Path) -> Result<Option<PathBuf>, String> {
+    let unsorted = unsorted_dir(athena_root);
+    let p = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf());
+    let unsorted_can = unsorted
+        .canonicalize()
+        .unwrap_or_else(|_| unsorted.clone());
+    if !p.starts_with(&unsorted_can) {
+        return Ok(None);
+    }
+
+    let archive = archive_dir(athena_root);
+    fs::create_dir_all(&archive).map_err(|e| e.to_string())?;
+    let fname = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "source has no file name".to_string())?;
+    let dest = dedupe_destination_path(&archive, fname);
+    fs::rename(path, &dest).map_err(|e| format!("archive move {} -> {}: {e}", path.display(), dest.display()))?;
+    Ok(Some(dest))
 }
 
 /// True for `.zip`, `.tar`, `.tgz`, or `.tar.gz` (case-insensitive).
@@ -153,6 +185,8 @@ fn copy_watch_file_to_unsorted_if_external_blocking(
     }
     let unsorted = unsorted_dir(athena_root);
     fs::create_dir_all(&unsorted).map_err(|e| e.to_string())?;
+    let archive = archive_dir(athena_root);
+    let _ = fs::create_dir_all(&archive);
     let fname = src
         .file_name()
         .and_then(|n| n.to_str())
@@ -267,6 +301,72 @@ pub async fn extract_archive_with_progress_async(
     let app2 = app.clone();
     tokio::task::spawn_blocking(move || {
         extract_archive_blocking_body(&app2, &archive_path, &athena_root, &category)
+    })
+    .await
+    .map_err(|e| format!("library archive extract join: {e}"))?
+}
+
+/// Extract an archive into a sibling folder next to the archive file:
+/// `<archive_dir>/<bundle-stem>/...`
+///
+/// This is used for downloaded package archives so we can delete the original `.zip/.tar*`
+/// immediately after a successful extraction to save space.
+pub async fn extract_archive_in_place_with_progress_async(
+    app: tauri::AppHandle,
+    archive_path: PathBuf,
+) -> Result<PathBuf, String> {
+    let sem = library_archive_extract_sem();
+    let _permit = sem
+        .acquire_owned()
+        .await
+        .map_err(|_| "library archive extract semaphore closed".to_string())?;
+    let app2 = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let lossy = archive_path.to_string_lossy().to_ascii_lowercase();
+        let label = archive_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("archive")
+            .to_string();
+        let ap = archive_path.to_string_lossy().to_string();
+        let parent = archive_path
+            .parent()
+            .ok_or_else(|| "Archive has no parent directory".to_string())?;
+        let bundle = archive_bundle_stem(&archive_path);
+        let dest_root = parent.join(bundle);
+        fs::create_dir_all(&dest_root).map_err(|e| e.to_string())?;
+
+        let inner = || -> Result<PathBuf, String> {
+            if lossy.ends_with(".zip") {
+                extract_zip(&app2, &archive_path, &dest_root, &label, "in_place")
+            } else if lossy.ends_with(".tar.gz") || lossy.ends_with(".tgz") {
+                extract_tar_gz(&app2, &archive_path, &dest_root, &label, "in_place")
+            } else if lossy.ends_with(".tar") {
+                extract_tar_plain(&app2, &archive_path, &dest_root, &label, "in_place")
+            } else {
+                Err(format!("unsupported archive type: {}", archive_path.display()))
+            }
+        };
+
+        match inner() {
+            Ok(p) => Ok(p),
+            Err(e) => {
+                emit_progress(
+                    &app2,
+                    ArchiveExtractionProgressPayload {
+                        archive_path: ap,
+                        archive_label: label,
+                        category: "in_place".into(),
+                        phase: "error".into(),
+                        entries_processed: 0,
+                        entries_total: None,
+                        bytes_written: 0,
+                        message: Some(e.clone()),
+                    },
+                );
+                Err(e)
+            }
+        }
     })
     .await
     .map_err(|e| format!("library archive extract join: {e}"))?

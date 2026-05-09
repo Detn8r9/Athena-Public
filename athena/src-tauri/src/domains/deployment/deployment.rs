@@ -27,21 +27,16 @@ pub const DEPLOYMENT_QUEUE_COMPLETE_EVENT: &str = "deployment_queue_complete";
 
 const PROGRESS_EMIT_MIN_INTERVAL: Duration = Duration::from_millis(250);
 
-fn spawn_post_download_library_extract(app: AppHandle, athena_root: PathBuf, final_path: PathBuf) {
+fn spawn_post_download_library_extract(app: AppHandle, _athena_root: PathBuf, final_path: PathBuf) {
     if !library_ingest::is_library_archive(&final_path) {
         return;
     }
 
     tauri::async_runtime::spawn(async move {
-        match library_ingest::extract_archive_with_progress_async(
-            app.clone(),
-            final_path.clone(),
-            athena_root,
-            "archives".into(),
-        )
-        .await
-        {
+        // Downloaded archives: extract next to the archive file, then delete the archive to save space.
+        match library_ingest::extract_archive_in_place_with_progress_async(app.clone(), final_path.clone()).await {
             Ok(_) => {
+                let _ = tokio::fs::remove_file(&final_path).await;
                 let _ = app.emit(watcher::ARCHIVE_FS_CHANGED_EVENT, serde_json::json!({}));
             }
             Err(e) => {
@@ -50,7 +45,7 @@ fn spawn_post_download_library_extract(app: AppHandle, athena_root: PathBuf, fin
                     final_path.display()
                 );
             }
-        }
+        };
     });
 }
 
@@ -91,13 +86,36 @@ fn dest_dir_from_subdir(
     dest_subdir: Option<String>,
 ) -> Result<PathBuf, String> {
     let Some(s) = dest_subdir else {
-        return Ok(athena.to_path_buf());
+        // Default: all Data Acquisition HTTP downloads land in managed downloads/packages.
+        return Ok(athena.join("downloads").join("packages"));
     };
     let t = s.trim();
     if t.is_empty() {
-        return Ok(athena.to_path_buf());
+        return Ok(athena.join("downloads").join("packages"));
     }
     safe_join(athena, t)
+}
+
+fn categorize_download_dest(dest_root: &Path, job_file_name: &str) -> Result<PathBuf, String> {
+    let rel = job_file_name.trim().replace('\\', "/");
+    let p = Path::new(&rel);
+    let fname = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid file name.".to_string())?;
+    let lower = rel.to_ascii_lowercase();
+    let sub = if lower.starts_with("models/") || lower.starts_with("models\\") {
+        "models"
+    } else if lower.starts_with("library/maps/") || lower.starts_with("library\\maps\\") || lower.contains("/maps/") {
+        "maps"
+    } else if lower.starts_with("academy/") || lower.starts_with("academy\\") {
+        "academy"
+    } else if lower.starts_with("library/") || lower.contains("/library/") {
+        "packages"
+    } else {
+        "documents"
+    };
+    Ok(dest_root.join(sub).join(fname))
 }
 
 fn mount_point_for_path(p: &Path) -> Result<String, String> {
@@ -282,6 +300,30 @@ pub struct DownloadJob {
     pub url: String,
     pub file_name: String,
     pub expected_bytes: u64,
+    /// Optional extra URLs to try (same file on mirrors). Used when the primary URL is stale or blocked.
+    #[serde(default)]
+    pub alternate_urls: Vec<String>,
+    /// Optional library source package label for downstream ingestion + cataloging (e.g., "iFixit", "Wikipedia").
+    #[serde(default)]
+    pub source_package: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSizeProbeRow {
+    pub file_name: String,
+    pub bytes: u64,
+    /// `"network"` when a preflight succeeded; `"manifest"` when all URLs failed and the manifest size is used.
+    pub source: String,
+    pub resolved_url: Option<String>,
+    pub tried_urls: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PreflightResult {
+    effective_bytes: u64,
+    /// Final URL after redirects; use this for the streaming GET.
+    final_url: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -424,6 +466,7 @@ fn emit_progress(
     );
 }
 
+#[derive(Debug)]
 enum QueueError {
     Paused,
     Recoverable(String),
@@ -468,16 +511,67 @@ fn header_last_modified(resp: &reqwest::Response) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// HEAD (or GET `Range: bytes=0-0` if HEAD is not allowed) for `Content-Length`, weak validators, and `Accept-Ranges`.
+/// Total resource size from `Content-Range: bytes 0-0/12345` (used when `Content-Length` is only the chunk size).
+fn header_content_range_total(resp: &reqwest::Response) -> Option<u64> {
+    let val = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())?;
+    let slash = val.rfind('/')?;
+    val[slash + 1..].trim().parse::<u64>().ok()
+}
+
+fn kiwix_mirror_candidate(url: &str) -> Option<String> {
+    const PRIMARY: &str = "https://download.kiwix.org";
+    let u = url.trim();
+    if !u.to_ascii_lowercase().starts_with(PRIMARY) {
+        return None;
+    }
+    Some(u.replacen(PRIMARY, "https://mirror.download.kiwix.org", 1))
+}
+
+fn job_candidate_urls(job: &DownloadJob) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |s: String| {
+        let t = s.trim().to_string();
+        if t.is_empty() {
+            return;
+        }
+        if out.iter().any(|x| x == &t) {
+            return;
+        }
+        out.push(t);
+    };
+
+    push(job.url.clone());
+    for a in &job.alternate_urls {
+        push(a.clone());
+    }
+    if let Some(m) = kiwix_mirror_candidate(&job.url) {
+        push(m);
+    }
+    out
+}
+
+fn preflight_status_needs_range_probe(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+        || status == reqwest::StatusCode::NOT_FOUND
+        || status == reqwest::StatusCode::FORBIDDEN
+        || status == reqwest::StatusCode::NOT_IMPLEMENTED
+}
+
+/// HEAD (or GET `Range: bytes=0-0` when HEAD is missing / blocked) for size, weak validators, and `Accept-Ranges`.
 async fn deployment_network_preflight(
     client: &reqwest::Client,
     url: &str,
     manifest_expected: u64,
     partial_on_disk: u64,
     athena_root: &Path,
-) -> Result<(u64, bool), QueueError> {
+) -> Result<PreflightResult, QueueError> {
     let mut resp = client.head(url).send().await.map_err(map_send_error)?;
-    if resp.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+    let mut status = resp.status();
+
+    if preflight_status_needs_range_probe(status) {
         drop(resp);
         resp = client
             .get(url)
@@ -485,9 +579,9 @@ async fn deployment_network_preflight(
             .send()
             .await
             .map_err(map_send_error)?;
+        status = resp.status();
     }
 
-    let status = resp.status();
     if status.is_client_error() || status.is_server_error() {
         return Err(QueueError::Fatal(format!(
             "Preflight HTTP {} for {}",
@@ -503,13 +597,33 @@ async fn deployment_network_preflight(
 
     let accept_ranges = header_accept_ranges_bytes(&resp);
     let content_length = header_content_length(&resp);
+    let range_total = if status == reqwest::StatusCode::PARTIAL_CONTENT {
+        header_content_range_total(&resp)
+    } else {
+        None
+    };
     let etag = header_etag(&resp);
     let last_modified = header_last_modified(&resp);
+    let final_url = resp.url().as_str().to_string();
     let _drain = resp.bytes().await.map_err(map_send_error)?;
 
-    let url_key = deployment_manifest_cache::normalize_url_key(url);
-    let effective_bytes = if let Some(cl) = content_length {
-        if cl > 0 && cl != manifest_expected {
+    let url_key = deployment_manifest_cache::normalize_url_key(&final_url);
+    let effective_bytes = if let Some(rt) = range_total.filter(|&n| n > 0) {
+        if rt != manifest_expected {
+            deployment_manifest_cache::persist_head_size_if_changed(
+                athena_root,
+                &url_key,
+                manifest_expected,
+                rt,
+                etag.clone(),
+                last_modified.clone(),
+            )
+            .await
+            .map_err(QueueError::Fatal)?;
+        }
+        rt
+    } else if let Some(cl) = content_length.filter(|&n| n > 0) {
+        if cl != manifest_expected {
             deployment_manifest_cache::persist_head_size_if_changed(
                 athena_root,
                 &url_key,
@@ -521,11 +635,7 @@ async fn deployment_network_preflight(
             .await
             .map_err(QueueError::Fatal)?;
         }
-        if cl > 0 {
-            cl
-        } else {
-            manifest_expected
-        }
+        cl
     } else {
         manifest_expected
     };
@@ -537,7 +647,40 @@ async fn deployment_network_preflight(
         )));
     }
 
-    Ok((effective_bytes, accept_ranges))
+    Ok(PreflightResult {
+        effective_bytes,
+        final_url,
+    })
+}
+
+async fn preflight_first_working_url(
+    client: &reqwest::Client,
+    job: &DownloadJob,
+    partial_on_disk: u64,
+    athena_root: &Path,
+) -> Result<PreflightResult, QueueError> {
+    let candidates = job_candidate_urls(job);
+    if candidates.is_empty() {
+        return Err(QueueError::Fatal("No download URLs to try.".to_string()));
+    }
+    let mut last: Option<QueueError> = None;
+    for u in &candidates {
+        match deployment_network_preflight(
+            client,
+            u,
+            job.expected_bytes,
+            partial_on_disk,
+            athena_root,
+        )
+        .await
+        {
+            Ok(p) => return Ok(p),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        QueueError::Fatal("Preflight failed for all candidate URLs.".to_string())
+    }))
 }
 
 async fn download_one_job(
@@ -555,7 +698,8 @@ async fn download_one_job(
         return Err(QueueError::Fatal("Empty file_name".to_string()));
     }
 
-    let final_path = safe_join(dest_dir, &job.file_name)
+    // Unified downloads root: dest_dir is `AthenaData/downloads`. Route each job into its category.
+    let final_path = categorize_download_dest(dest_dir, &job.file_name)
         .map_err(QueueError::Fatal)?;
     if let Some(p) = final_path.parent() {
         tokio::fs::create_dir_all(p)
@@ -576,17 +720,13 @@ async fn download_one_job(
             .map_err(|e| QueueError::Fatal(e.to_string()))?;
     }
 
-    let (effective_bytes, _ranges_ok) = deployment_network_preflight(
-        client,
-        &job.url,
-        job.expected_bytes,
-        on_disk,
-        athena_root,
-    )
-    .await?;
+    let pf = preflight_first_working_url(client, job, on_disk, athena_root).await?;
+    let effective_bytes = pf.effective_bytes;
+    let resolved_url = pf.final_url;
 
     let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
         j.total_bytes = Some(effective_bytes);
+        j.source_url = resolved_url.clone();
     });
 
     if on_disk > effective_bytes {
@@ -627,7 +767,7 @@ async fn download_one_job(
             return Err(QueueError::Paused);
         }
 
-        let mut request = client.get(&job.url);
+        let mut request = client.get(&resolved_url);
         if resume_from > 0 {
             request = request.header(
                 reqwest::header::RANGE,
@@ -791,6 +931,8 @@ async fn run_deployment_queue(
     athena_root: PathBuf,
     dest_dir: PathBuf,
     jobs: Vec<DownloadJob>,
+    ingestion_queue: crate::background_ingestion::IngestionQueue,
+    db: Arc<Mutex<crate::db::Database>>,
 ) {
     struct EndClear {
         mgr: Arc<DeploymentQueueStateManager>,
@@ -799,8 +941,9 @@ async fn run_deployment_queue(
         fn drop(&mut self) {
             release_power_assertion();
             let _ = self.mgr.end_session();
-            // Persist queue end state without relying on debounce (best-effort).
-            let _ = self.mgr.flush_blocking();
+            // `end_session()` already schedules an immediate persist via the background worker.
+            // Avoid `flush_blocking()` here: this Drop runs on a Tokio runtime thread and
+            // `block_on` will panic ("runtime within a runtime").
         }
     }
     let _clear = EndClear {
@@ -841,7 +984,17 @@ async fn run_deployment_queue(
         )
         .await;
         match r {
-            Ok(()) => continue,
+            Ok(()) => {
+                // Trigger background ingestion as soon as the file is complete.
+                let final_path = safe_join(&dest_dir, &job.file_name).unwrap_or_else(|_| dest_dir.join(&job.file_name));
+                ingestion_queue.enqueue_completed_download(
+                    &app,
+                    &db,
+                    final_path,
+                    job.source_package.clone(),
+                );
+                continue;
+            }
             Err(QueueError::Paused) => {
                 let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
                     j.state = "paused".into();
@@ -902,6 +1055,7 @@ async fn run_deployment_queue(
 pub async fn deployment_start_downloads(
     app: tauri::AppHandle,
     queue: tauri::State<'_, Arc<DeploymentQueueStateManager>>,
+    state: tauri::State<'_, crate::AppState>,
     jobs: Vec<DownloadJob>,
     dest_subdir: Option<String>,
 ) -> Result<(), String> {
@@ -939,7 +1093,14 @@ pub async fn deployment_start_downloads(
     }
 
     let athena = athena_data_dir(&app)?;
-    let dest_dir = dest_dir_from_subdir(&athena, dest_subdir)?;
+    // Unified managed downloads root.
+    let dest_dir = athena.join("downloads");
+    // Optional override still supported for advanced callers.
+    let dest_dir = if dest_subdir.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+        dest_dir
+    } else {
+        dest_dir_from_subdir(&athena, dest_subdir)?
+    };
     if let Err(e) = tokio::fs::create_dir_all(&dest_dir).await {
         let _ = queue.end_session();
         release_power_assertion();
@@ -949,8 +1110,10 @@ pub async fn deployment_start_downloads(
     let mgr = Arc::clone(&queue);
     let app2 = app.clone();
     let athena2 = athena.clone();
+    let ingestion_queue = state.ingestion_queue.clone();
+    let db = Arc::clone(&state.db);
     tauri::async_runtime::spawn(async move {
-        run_deployment_queue(app2, mgr, athena2, dest_dir, jobs).await
+        run_deployment_queue(app2, mgr, athena2, dest_dir, jobs, ingestion_queue, db).await
     });
 
     Ok(())
@@ -980,6 +1143,100 @@ pub fn deployment_get_queue_snapshot(
     queue: tauri::State<'_, Arc<DeploymentQueueStateManager>>,
 ) -> Result<crate::deployment_queue_state::DeploymentQueuePersistence, String> {
     queue.snapshot()
+}
+
+/// Lightweight remote size discovery for UI ETA (HEAD / tiny ranged GET). Falls back to manifest bytes on failure.
+#[tauri::command]
+pub async fn deployment_probe_remote_sizes(
+    app: tauri::AppHandle,
+    jobs: Vec<DownloadJob>,
+) -> Result<Vec<RemoteSizeProbeRow>, String> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let client = build_http_client()?;
+    let athena_root = athena_data_dir(&app)?;
+    let mut rows: Vec<RemoteSizeProbeRow> = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        if job.file_name.trim().is_empty() {
+            continue;
+        }
+        eprintln!(
+            "[probe_remote_sizes] job file_name={} expected_bytes={} url={}",
+            job.file_name.trim(),
+            job.expected_bytes,
+            job.url.trim()
+        );
+        if job.url.trim().to_ascii_lowercase().starts_with("magnet:") {
+            rows.push(RemoteSizeProbeRow {
+                file_name: job.file_name.clone(),
+                bytes: job.expected_bytes,
+                source: "manifest".into(),
+                resolved_url: None,
+                tried_urls: vec![job.url.clone()],
+            });
+            continue;
+        }
+        let candidates = job_candidate_urls(&job);
+        if !job.alternate_urls.is_empty() {
+            eprintln!(
+                "[probe_remote_sizes] job has {} alternate_urls",
+                job.alternate_urls.len()
+            );
+        }
+        let mut tried: Vec<String> = Vec::new();
+        let mut resolved: Option<String> = None;
+        let mut ok_bytes: Option<u64> = None;
+        for u in &candidates {
+            tried.push(u.clone());
+            eprintln!("[probe_remote_sizes] try {}", u);
+            match deployment_network_preflight(
+                &client,
+                u,
+                job.expected_bytes,
+                0,
+                &athena_root,
+            )
+            .await
+            {
+                Ok(p) => {
+                    eprintln!(
+                        "[probe_remote_sizes] ok final_url={} bytes={}",
+                        p.final_url, p.effective_bytes
+                    );
+                    resolved = Some(p.final_url);
+                    ok_bytes = Some(p.effective_bytes);
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("[probe_remote_sizes] fail {} err={:?}", u, e);
+                    continue;
+                }
+            }
+        }
+        if let Some(bytes) = ok_bytes {
+            rows.push(RemoteSizeProbeRow {
+                file_name: job.file_name.clone(),
+                bytes,
+                source: "network".into(),
+                resolved_url: resolved,
+                tried_urls: tried,
+            });
+        } else {
+            eprintln!(
+                "[probe_remote_sizes] no usable url; falling back to manifest bytes for {}",
+                job.file_name.trim()
+            );
+            rows.push(RemoteSizeProbeRow {
+                file_name: job.file_name.clone(),
+                bytes: job.expected_bytes,
+                source: "manifest".into(),
+                resolved_url: None,
+                tried_urls: tried,
+            });
+        }
+    }
+    Ok(rows)
 }
 
 #[tauri::command]

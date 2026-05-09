@@ -7,13 +7,106 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::config::{load_config, save_config};
+use crate::config::{load_config, save_config, AppConfig};
 
 /// Default Ollama base URL (override with `ATHENA_OLLAMA_BASE_URL` for integration tests).
-const OLLAMA_HOST_DEFAULT: &str = "http://127.0.0.1:11434";
+pub const OLLAMA_HOST_DEFAULT: &str = "http://127.0.0.1:11434";
+
+/// Strict timeout for Hive Mind `/api/tags` health checks before routing chat traffic.
+const OLLAMA_HIVE_HEALTH_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn ollama_base_url() -> String {
     std::env::var("ATHENA_OLLAMA_BASE_URL").unwrap_or_else(|_| OLLAMA_HOST_DEFAULT.to_string())
+}
+
+fn blocking_client_hive_health() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(OLLAMA_HIVE_HEALTH_TIMEOUT)
+        .timeout(OLLAMA_HIVE_HEALTH_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// Returns `true` when `GET {base}/api/tags` completes with HTTP success within [`OLLAMA_HIVE_HEALTH_TIMEOUT`].
+pub fn ollama_hive_tags_reachable(base: &str) -> bool {
+    let base = base.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return false;
+    }
+    let Ok(client) = blocking_client_hive_health() else {
+        return false;
+    };
+    let url = format!("{base}/api/tags");
+    client
+        .get(url)
+        .send()
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// Normalize user input in Settings (`hive_mind_seed_url`) to an Ollama HTTP origin (adds `http://` and `:11434` when omitted).
+fn normalize_user_ollama_base(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let with_scheme = if t.contains("://") {
+        t.to_string()
+    } else {
+        format!("http://{t}")
+    };
+    let lower = with_scheme.to_lowercase();
+    let mut out = with_scheme.trim_end_matches('/').to_string();
+    for prefix in ["http://", "https://"] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let host_part = rest.split('/').next().unwrap_or(rest);
+            // If there is no `:` in the host:port segment, assume default Ollama port 11434.
+            if !host_part.contains(':') {
+                let insert_at = prefix.len() + host_part.len();
+                out.insert_str(insert_at, ":11434");
+            }
+            break;
+        }
+    }
+    Some(out)
+}
+
+fn hive_seed_ollama_base(config: &AppConfig) -> Option<String> {
+    config
+        .hive_mind_seed_url
+        .as_deref()
+        .and_then(normalize_user_ollama_base)
+}
+
+/// Resolved Ollama HTTP base for chat and `/api/tags` model listing.
+///
+/// - Honors `ATHENA_OLLAMA_BASE_URL` when set (integration tests / overrides).
+/// - When `config` is `Some`, probes `hive_mind_seed_url` with a 1s `/api/tags` check; on success uses it.
+/// - Otherwise uses the local sidecar at [`OLLAMA_HOST_DEFAULT`]. Hive probe failures are silent (no user error).
+pub fn effective_ollama_base_url(config: Option<&AppConfig>) -> String {
+    if let Ok(v) = std::env::var("ATHENA_OLLAMA_BASE_URL") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    match config {
+        None => OLLAMA_HOST_DEFAULT.to_string(),
+        Some(cfg) => {
+            if let Some(ref hive) = hive_seed_ollama_base(cfg) {
+                if ollama_hive_tags_reachable(hive) {
+                    return hive.clone();
+                }
+            }
+            OLLAMA_HOST_DEFAULT.to_string()
+        }
+    }
+}
+
+/// True when the resolved base is the default local Ollama sidecar (used for header route labeling).
+pub fn ollama_base_is_local_node(base: &str) -> bool {
+    let u = base.trim().trim_end_matches('/').to_lowercase();
+    u == "http://127.0.0.1:11434" || u == "http://localhost:11434"
 }
 
 /// Upper bound for a single non-streaming `/api/chat` call (initial response).
@@ -205,8 +298,9 @@ fn tier_for_size(size: u32) -> &'static str {
     }
 }
 
-pub fn get_available_models() -> Result<Vec<ModelInfo>, String> {
-    let url = format!("{}/api/tags", ollama_base_url());
+pub fn get_available_models(config: Option<&AppConfig>) -> Result<Vec<ModelInfo>, String> {
+    let base = effective_ollama_base_url(config);
+    let url = format!("{}/api/tags", base.trim_end_matches('/'));
     let client = blocking_client_probe()?;
     let resp = client.get(&url).send().map_err(|e| e.to_string())?;
     let body: TagsResponse = resp.json().map_err(|e| e.to_string())?;
@@ -238,6 +332,7 @@ pub fn is_ollama_running() -> bool {
 /// Polls the configured Ollama HTTP endpoint after the bundled sidecar starts.
 /// Performs up to `max_attempts` GET requests to `/` with `delay_ms` between retries (no delay before the first try).
 /// Returns `true` when any request completes (including non-2xx responses that still mean the server accepted TCP/HTTP).
+#[allow(dead_code)]
 pub async fn ollama_http_ready_after_sidecar(max_attempts: u32, delay_ms: u64) -> bool {
     let root_url = format!("{}/", ollama_base_url().trim_end_matches('/'));
     let Ok(client) = reqwest::Client::builder()
@@ -362,7 +457,7 @@ pub fn maybe_ensure_default_ollama_model(app_data_dir: &Path) {
     if !is_ollama_running() {
         return;
     }
-    let Ok(models) = get_available_models() else {
+    let Ok(models) = get_available_models(None) else {
         return;
     };
     if !models.is_empty() {
@@ -383,7 +478,7 @@ pub fn maybe_ensure_default_ollama_model(app_data_dir: &Path) {
         return;
     }
     let _ = resp.bytes();
-    let Ok(after) = get_available_models() else {
+    let Ok(after) = get_available_models(None) else {
         return;
     };
     if after.is_empty() {
@@ -404,12 +499,14 @@ pub fn maybe_ensure_default_ollama_model(app_data_dir: &Path) {
 
 
 pub fn chat(
+    config: Option<&AppConfig>,
     model: &str,
     messages: Vec<ChatMessage>,
     options: Option<ModelOptions>,
 ) -> Result<String, String> {
+    let base = effective_ollama_base_url(config);
     let client = blocking_client_chat()?;
-    let url = format!("{}/api/chat", ollama_base_url());
+    let url = format!("{}/api/chat", base.trim_end_matches('/'));
     let body = OllamaChatRequest {
         model: model.to_string(),
         messages,
@@ -433,6 +530,7 @@ async fn ollama_stream_read_lines(
     options: Option<ModelOptions>,
     tx: SyncSender<Result<Option<String>, String>>,
     cancel: Option<Arc<AtomicBool>>,
+    ollama_base: String,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(60))
@@ -446,8 +544,9 @@ async fn ollama_stream_read_lines(
         options,
     };
 
+    let chat_url = format!("{}/api/chat", ollama_base.trim_end_matches('/'));
     let response = client
-        .post(format!("{}/api/chat", ollama_base_url()))
+        .post(chat_url)
         .json(&body)
         .send()
         .await
@@ -560,6 +659,7 @@ async fn ollama_stream_read_lines(
 }
 
 pub fn chat_stream<F, G>(
+    config: Option<&AppConfig>,
     model: &str,
     messages: Vec<ChatMessage>,
     on_chunk: &mut F,
@@ -571,6 +671,7 @@ where
     F: FnMut(&str),
     G: FnOnce(),
 {
+    let ollama_base = effective_ollama_base_url(config);
     let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Option<String>, String>>(64);
     let model = model.to_string();
     let cancel_c = cancel.clone();
@@ -591,6 +692,7 @@ where
             options,
             tx.clone(),
             cancel_c,
+            ollama_base,
         ));
         if let Err(e) = result {
             let _ = tx.send(Err(e));

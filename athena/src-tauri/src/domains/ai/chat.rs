@@ -108,12 +108,17 @@ pub fn start_chat_console_stream(app: tauri::AppHandle, message: String) -> Resu
                 "{}\n\nKeyword_and_hybrid_library_context:\n{}",
                 rag_text, hybrid_block
             );
-            let cites: Vec<crate::StreamLibrarySource> = match db.hybrid_search(&q_bg) {
-                Ok(hits) if !hits.is_empty() => hits
-                    .iter()
-                    .map(crate::hybrid_hit_to_stream_source)
-                    .collect(),
-                _ => Vec::new(),
+            // Only emit sources when the semantic RAG thresholding produced at least one usable chunk.
+            let cites: Vec<crate::StreamLibrarySource> = if rag_hits.is_empty() {
+                Vec::new()
+            } else {
+                match db.hybrid_search(&q_bg) {
+                    Ok(hits) if !hits.is_empty() => hits
+                        .iter()
+                        .map(crate::hybrid_hit_to_stream_source)
+                        .collect(),
+                    _ => Vec::new(),
+                }
             };
             Ok::<_, String>((rag_block, cites))
         })
@@ -138,11 +143,10 @@ pub fn start_chat_console_stream(app: tauri::AppHandle, message: String) -> Resu
         }
 
         let system_prompt = format!(
-            "You are Athena, the assistant for {}. You are an advanced offline knowledge base assistant. \
-Be highly analytical and direct. \
-Use the provided semantic RAG context as evidence. \
-If the context is insufficient or irrelevant, say so explicitly and answer using general knowledge without fabricating details. \
-When giving procedural advice, provide a short checklist and call out risks and unknowns.",
+            "You are ATHENA, a local AI assistant for {}. You have access to a local knowledge base. \
+1. If the provided context is directly relevant to the user's question, use it to answer. \
+2. If the context is irrelevant or absent, answer using your general knowledge, but mention that you are not using a local source for that specific info. \
+If you are not using local sources, do NOT thank, cite, or credit the provided context.",
             ATHENA_FULL_NAME
         );
 
@@ -196,6 +200,7 @@ When giving procedural advice, provide a short checklist and call out risks and 
                 messages,
                 &mut on_chunk,
                 on_done,
+                None,
                 None,
                 Some(cancel_for_inference),
             )

@@ -28,7 +28,11 @@ import { PhotoshopColorPicker } from "../ui/components/PhotoshopColorPicker";
 import { hexToRgbCsv } from "../shared/lib/colorUtils";
 import type { AppView } from "./appView";
 import { APP_VIEW_LABELS, APP_VIEWS, readStartupView, saveStartupView } from "./appView";
-import { UniversalHeader, type UniversalHeaderArchiveExtractionState } from "../ui/components/UniversalHeader";
+import {
+  UniversalHeader,
+  type UniversalHeaderArchiveExtractionState,
+  type UniversalHeaderSessionModelRouting,
+} from "../ui/components/UniversalHeader";
 import { useAuth } from "../domains/auth/AuthContext";
 import { LockScreen } from "../pages/lockscreen/LockScreen";
 import { LogisticsLogbookHub } from "../pages/logistics/LogisticsLogbookHub";
@@ -43,13 +47,36 @@ import { RankAvatar } from "../ui/components/RankAvatar";
 import { RANK_DESCRIPTIONS, formatRomanRank } from "../shared/lib/romanRanks";
 import { AiModelManager } from "../pages/ai/AiModelManager";
 import { AcademyModule } from "../pages/academy/AcademyModule";
-import { ArchiveHub, type ArchiveNetworkSubTabId, type ArchivePrimaryTabId } from "../domains/features/library-installer/ArchiveHub";
+import { ArchiveHub } from "../domains/features/library-installer/ArchiveHub";
+import { DataAcquisition, type DataAcquisitionTabId } from "../pages/data-acquisition/DataAcquisition";
 import { getLexicon, LexiconProvider, type LexiconThemeId } from "../shared/lexicon";
+import { OobeFirstAccount } from "../domains/auth/OobeFirstAccount";
 import { CommunicationsHub } from "../pages/comms/CommunicationsHub";
 import { RadioView } from "../domains/features/radio/RadioView";
 import { RadioSettingsView } from "../domains/features/radio/RadioSettingsView";
-import { ATHENA_ACRONYM_PARTS, ATHENA_FULL_NAME } from "../shared/branding";
 import { CommsHubIcon } from "../shared/CommsHubIcon";
+import { ColorsAndThemes } from "../pages/Settings/ColorsAndThemes";
+import { AIAndKnowledgeSystemModelRouting } from "../pages/Settings/AIAndKnowledge";
+import {
+  MODEL_ROUTING_AUTO,
+  SESSION_MODEL_FOLLOW_SETTINGS,
+  ensureInferenceModelForRequest,
+  resolveInferenceModelForView,
+} from "../domains/models/modelCatalog";
+import {
+  Activity,
+  Brain,
+  Calendar as CalendarIcon,
+  CircleHelp,
+  Compass,
+  KeyRound,
+  Monitor,
+  Palette,
+  RadioTower,
+  Route,
+  Usb,
+  Volume2,
+} from "lucide-react";
 
 type UserAndInferenceSettings = {
   user_display_name: string | null;
@@ -62,6 +89,7 @@ type UserAndInferenceSettings = {
   calendar_quiet_hours_start: number;
   calendar_quiet_hours_end: number;
   inference_backend: string | null;
+  hive_mind_seed_url: string | null;
   explicit_ollama_model: string | null;
   openai_compatible_base_url: string | null;
   openai_compatible_model: string | null;
@@ -70,6 +98,11 @@ type UserAndInferenceSettings = {
   active_reranker_model_folder: string;
   ai_inference_sleep: boolean;
 };
+
+interface HiveMindRouteStatus {
+  mode: string;
+  baseUrl: string;
+}
 
 registerPmtilesMaplibreProtocolOnce();
 
@@ -144,6 +177,34 @@ interface BatteryState {
   percentage: number | null;
   is_charging: boolean | null;
   time_to_empty_minutes?: number | null;
+}
+
+const ATHENA_MODEL_ROUTING_STORAGE_KEY = "athena-multi-agent-routing-v1";
+
+function readStoredModelRoutingPrefs(): {
+  globalSystemModel: string;
+  chatAnalysisModel: string;
+  tacticalMapModel: string;
+} {
+  const fallback = {
+    globalSystemModel: MODEL_ROUTING_AUTO,
+    chatAnalysisModel: MODEL_ROUTING_AUTO,
+    tacticalMapModel: MODEL_ROUTING_AUTO,
+  };
+  try {
+    const raw = localStorage.getItem(ATHENA_MODEL_ROUTING_STORAGE_KEY);
+    if (!raw) return fallback;
+    const j = JSON.parse(raw) as Partial<typeof fallback>;
+    const pick = (v: unknown) =>
+      typeof v === "string" && v.trim().length > 0 ? v.trim() : MODEL_ROUTING_AUTO;
+    return {
+      globalSystemModel: pick(j.globalSystemModel),
+      chatAnalysisModel: pick(j.chatAnalysisModel),
+      tacticalMapModel: pick(j.tacticalMapModel),
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 const MODEL_TIERS = ["auto", "small", "medium", "large", "xlarge"] as const;
@@ -601,6 +662,7 @@ const THEMES = [
   "violet",
   "silver",
   "green",
+  "night-vision",
   "amber",
   "rose",
   "teal",
@@ -621,12 +683,49 @@ const THEMES = [
 type Theme = (typeof THEMES)[number];
 type ThemeOrCustom = Theme | "custom";
 
+type MasterThemeProfile = "tactical" | "fallout" | "night-vision";
+
+const MASTER_THEME_DEFAULT_PALETTE: Record<MasterThemeProfile, Theme> = {
+  tactical: "blue",
+  fallout: "lime",
+  "night-vision": "night-vision",
+};
+
+const MASTER_THEME_ALLOWED_PALETTES: Record<MasterThemeProfile, Theme[]> = {
+  tactical: [
+    "blue",
+    "cyan",
+    "violet",
+    "silver",
+    "green",
+    "amber",
+    "rose",
+    "teal",
+    "indigo",
+    "slate",
+    "crimson",
+    "orange",
+    "lime",
+    "emerald",
+    "red",
+    "yellow",
+    "magenta",
+    "purple",
+    "pink",
+    "brown",
+    "navy",
+  ],
+  fallout: ["lime", "amber", "silver", "green"],
+  "night-vision": ["night-vision"],
+};
+
 const PRESET_COLORS: Record<Theme, { bg: string; primary: string; text: string }> = {
   blue: { bg: "#0c1222", primary: "#38bdf8", text: "#e8ecf4" },
   cyan: { bg: "#0a1628", primary: "#22d3ee", text: "#e8ecf4" },
   violet: { bg: "#140c1c", primary: "#a78bfa", text: "#e8ecf4" },
   silver: { bg: "#0f0f12", primary: "#cbd5e1", text: "#e8ecf4" },
   green: { bg: "#0a1612", primary: "#34d399", text: "#e8ecf4" },
+  "night-vision": { bg: "#000000", primary: "#ff3333", text: "#ffcccc" },
   amber: { bg: "#1a1508", primary: "#fbbf24", text: "#e8ecf4" },
   rose: { bg: "#1a0c12", primary: "#fb7185", text: "#e8ecf4" },
   teal: { bg: "#0a1a1c", primary: "#2dd4bf", text: "#e8ecf4" },
@@ -694,6 +793,7 @@ const THEME_LABELS: Record<Theme, string> = {
   violet: "Violet",
   silver: "Silver",
   green: "Green",
+  "night-vision": "Night Vision (Red)",
   amber: "Amber",
   rose: "Rose",
   teal: "Teal",
@@ -762,6 +862,7 @@ function App() {
       void u.then((fn) => fn());
     };
   }, []);
+
   const [meLoginErr, setMeLoginErr] = useState<string | null>(null);
   const [meLoginSaving, setMeLoginSaving] = useState(false);
   const [mePinErr, setMePinErr] = useState<string | null>(null);
@@ -771,12 +872,36 @@ function App() {
   const [pinConfirm, setPinConfirm] = useState("");
   const [pinBusy, setPinBusy] = useState(false);
   const [theme, setTheme] = useState<ThemeOrCustom>(() => loadTheme());
+  const [masterThemeProfile, setMasterThemeProfile] = useState<MasterThemeProfile>("tactical");
   const [oobeRequired, setOobeRequired] = useState(false);
   const [oobeHint, setOobeHint] = useState<string | null>(null);
   const [oobeCurrentRoot, setOobeCurrentRoot] = useState<string | null>(null);
   const [oobeSelectedRoot, setOobeSelectedRoot] = useState<string | null>(null);
   const [oobeSaving, setOobeSaving] = useState(false);
   const [oobeSaved, setOobeSaved] = useState(false);
+  const [oobeFirstAccountPending, setOobeFirstAccountPending] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (user) {
+      setOobeFirstAccountPending(false);
+      return;
+    }
+    if (oobeRequired) {
+      return;
+    }
+    let cancelled = false;
+    void invoke<boolean>("oobe_first_account_pending")
+      .then((v) => {
+        if (!cancelled) setOobeFirstAccountPending(Boolean(v));
+      })
+      .catch(() => {
+        if (!cancelled) setOobeFirstAccountPending(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, oobeRequired]);
+
   const [customBg, setCustomBg] = useState<string>(() => loadCustomColors().bg);
   const [customPrimary, setCustomPrimary] = useState<string>(() => loadCustomColors().primary);
   const [customText, setCustomText] = useState<string>(() => loadCustomColors().text);
@@ -788,8 +913,7 @@ function App() {
   const [streamStallMessage, setStreamStallMessage] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [archivePrimaryTab, setArchivePrimaryTab] = useState<ArchivePrimaryTabId>("local");
-  const [archiveNetworkSubTab, setArchiveNetworkSubTab] = useState<ArchiveNetworkSubTabId>("packages");
+  const [dataAcquisitionTab, setDataAcquisitionTab] = useState<DataAcquisitionTabId>("packages");
   const [meshOpen, setMeshOpen] = useState(false);
   const [meshMessages, setMeshMessages] = useState<MeshRadioMessage[]>([]);
   const [profilePersonnelId, setProfilePersonnelId] = useState<string | null>(null);
@@ -836,10 +960,18 @@ function App() {
   const [openaiApiKeyLocal, setOpenaiApiKeyLocal] = useState("");
   const [aiInferenceReady, setAiInferenceReady] = useState(false);
   const [aiInferenceSleep, setAiInferenceSleep] = useState(false);
+  const [hiveMindSeedUrl, setHiveMindSeedUrl] = useState("");
+  const [ollamaHiveRoute, setOllamaHiveRoute] = useState<"hive" | "local" | null>(null);
+  const [modelRoutingInit] = useState(() => readStoredModelRoutingPrefs());
+  const [globalSystemModel, setGlobalSystemModel] = useState(modelRoutingInit.globalSystemModel);
+  const [chatAnalysisModel, setChatAnalysisModel] = useState(modelRoutingInit.chatAnalysisModel);
+  const [tacticalMapModel, setTacticalMapModel] = useState(modelRoutingInit.tacticalMapModel);
+  /** Header hot-swap: basename `.gguf` or null to follow Settings routing for the active view. */
+  const [activeSessionOverride, setActiveSessionOverride] = useState<string | null>(null);
   const [availableChatModels, setAvailableChatModels] = useState<string[]>([]);
   const [availableEmbeddingModels, setAvailableEmbeddingModels] = useState<string[]>([]);
   const [availableRerankerModels, setAvailableRerankerModels] = useState<string[]>([]);
-  const [modelScannerPathsLoading, setModelScannerPathsLoading] = useState(false);
+  const [modelScannerPathsLoading, setModelScannerPathsLoading] = useState(true);
   const [selectedChatModelPath, setSelectedChatModelPath] = useState("");
   const [selectedEmbeddingModelId, setSelectedEmbeddingModelId] = useState("");
   const [selectedRerankerModelId, setSelectedRerankerModelId] = useState("");
@@ -899,8 +1031,9 @@ function App() {
   const [usbExportStatus, setUsbExportStatus] = useState<string | null>(null);
   const [usbScorchedEarth, setUsbScorchedEarth] = useState(false);
   const [usbExportModalOpen, setUsbExportModalOpen] = useState(false);
-  const [usbExportModalKind, setUsbExportModalKind] = useState<ExportTier>("outpost");
-  const [usbExportProgress] = useState<AegisExportProgress | null>(null);
+  const [usbExportModalKind, setUsbExportModalKind] = useState<ExportTier>("fastNode");
+  const [usbExportProgress, setUsbExportProgress] = useState<AegisExportProgress | null>(null);
+  const [usbExportErrorDetail, setUsbExportErrorDetail] = useState<string | null>(null);
   const [usbExportIoHistories] = useState<AegisIoHistories>({ read: [], write: [] });
   type SettingsPanel =
     | "menu"
@@ -915,11 +1048,13 @@ function App() {
     | "calendar"
     | "dateTime"
     | "appearance"
+    | "colorsThemes"
     | "themes"
     | "troubleshooting"
     | "usbExport"
     | "developer";
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>("menu");
+  const settingsPanelOnOpenRef = useRef<SettingsPanel | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement>(null);
   const menuScrollPosRef = useRef(0);
   const [meshRadioConnected, setMeshRadioConnected] = useState<boolean | null>(null);
@@ -948,43 +1083,68 @@ function App() {
     destinationPath: string;
     devicePath: string | null;
     formatFirst: boolean;
+    expeditionBudgetBytes?: number | null;
+    selectedExternalChatModelPath?: string | null;
   }) {
     if (usbExportBusy) return;
     const exportType = usbExportModalKind;
+    const backendExportType = exportType === "fastNode" ? "outpost" : "citadel";
     setUsbExportBusy(true);
+    setUsbExportProgress({ phase: "Preparing…", fraction: 0 });
+    setUsbExportErrorDetail(null);
     setUsbExportStatus(
       usbScorchedEarth
-        ? exportType === "outpost"
-          ? "Copying Outpost tier, then verifying…"
-          : exportType === "bastion"
-            ? "Copying Bastion tier, then verifying…"
-            : exportType === "citadel"
-              ? "Copying Citadel tier, then verifying…"
-              : "Copying Expedition tier, then verifying…"
-        : exportType === "outpost"
-          ? "Copying Outpost tier…"
-          : exportType === "bastion"
-            ? "Copying Bastion tier…"
-            : exportType === "citadel"
-              ? "Copying Citadel tier…"
-              : "Copying Expedition tier…",
+        ? exportType === "fastNode"
+          ? "Copying Fast Node tier, then verifying…"
+          : "Copying Sister Server tier, then verifying…"
+        : exportType === "fastNode"
+          ? "Copying Fast Node tier…"
+          : "Copying Sister Server tier…",
     );
+    let unlistenProgress: (() => void) | undefined;
+    let unlistenExportError: (() => void) | undefined;
     try {
+      unlistenProgress = await listen<{
+        phase: string;
+        fraction: number;
+        totalBytesCopied: number;
+        readBytesPerSec: number;
+        writeBytesPerSec: number;
+      }>("athena:aegis-export-progress", (ev) => {
+        const p = ev.payload;
+        setUsbExportProgress({
+          phase: p.phase,
+          fraction: p.fraction,
+          totalBytesCopied: p.totalBytesCopied,
+          readBps: p.readBytesPerSec ?? 0,
+          writeBps: p.writeBytesPerSec ?? 0,
+        });
+      });
+      unlistenExportError = await listen<{ message: string }>("athena:aegis-export-error", (ev) => {
+        setUsbExportErrorDetail(ev.payload.message);
+      });
       await invoke("export_athena_to_usb", {
         destinationPath: args.destinationPath,
-        exportType,
+        exportType: backendExportType,
         wipeAfter: usbScorchedEarth,
         formatFirst: args.formatFirst,
         devicePath: args.devicePath,
+        expeditionBudgetBytes: args.expeditionBudgetBytes ?? null,
+        selectedExternalChatModelPath: args.selectedExternalChatModelPath ?? null,
       });
+      setUsbExportErrorDetail(null);
       setUsbExportStatus(usbScorchedEarth ? "Finished. Local data was erased." : "Finished.");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      setUsbExportErrorDetail(msg);
       setUsbExportStatus(`Error: ${msg}`);
+      setUsbExportProgress(null);
       void invoke("append_error_log", { message: `USB export: ${msg}` }).catch(() => {});
     } finally {
+      unlistenProgress?.();
+      unlistenExportError?.();
       setUsbExportBusy(false);
-      window.setTimeout(() => setUsbExportStatus(null), 6000);
+      window.setTimeout(() => setUsbExportStatus(null), 8000);
     }
   }
   const [settingsTitleClickCount, setSettingsTitleClickCount] = useState(0);
@@ -1451,8 +1611,15 @@ function App() {
       return;
     }
     if (THEMES.includes(value)) {
-      setTheme(value);
-      saveTheme(value);
+      const allowed = MASTER_THEME_ALLOWED_PALETTES[masterThemeProfile] ?? [];
+      const nextPalette: Theme = allowed.includes(value) ? value : MASTER_THEME_DEFAULT_PALETTE[masterThemeProfile];
+      setTheme(nextPalette);
+      saveTheme(nextPalette);
+      const c = PRESET_COLORS[nextPalette];
+      setCustomBg(c.bg);
+      setCustomPrimary(c.primary);
+      setCustomText(c.text);
+      saveCustomColors(c);
     }
   }
 
@@ -1479,6 +1646,7 @@ function App() {
     setSelectedCustomThemeId(null);
     const persona: PersonalityId = (id === "fallout" || id === "fieldguide" || id === "default" ? id : "default") as PersonalityId;
     setActivePersonalityId(persona);
+    setMasterThemeProfile(id === "fallout" ? "fallout" : "tactical");
     if (id === "fieldguide") {
       setTheme("amber");
       saveTheme("amber");
@@ -1496,8 +1664,7 @@ function App() {
       setCustomText(c.text);
       saveCustomColors(c);
     } else {
-      const palette: Theme =
-        theme !== "custom" && THEMES.includes(theme as Theme) ? (theme as Theme) : "blue";
+      const palette: Theme = MASTER_THEME_DEFAULT_PALETTE.fallout;
       setTheme(palette);
       saveTheme(palette);
       const c = PRESET_COLORS[palette];
@@ -1513,6 +1680,38 @@ function App() {
     }).catch((e) => logError(String(e)));
   }
 
+  function applyNightVisionPreset() {
+    // Night vision is a palette (data-theme) + default personality; keep experience id as "default".
+    setMasterThemeProfile("night-vision");
+    setActiveThemeId("default");
+    setSelectedCustomThemeId(null);
+    setActivePersonalityId("default");
+    setTheme("night-vision" as ThemeOrCustom);
+    saveTheme("night-vision" as ThemeOrCustom);
+    const c = PRESET_COLORS["night-vision" as Theme];
+    setCustomBg(c.bg);
+    setCustomPrimary(c.primary);
+    setCustomText(c.text);
+    saveCustomColors(c);
+    invoke("set_theme_config", {
+      themeId: "default",
+      personalityId: "default",
+      customThemes,
+    }).catch((e) => logError(String(e)));
+  }
+
+  function applyMasterThemeProfile(next: MasterThemeProfile) {
+    if (next === "fallout") {
+      applyThemePreset("fallout");
+      return;
+    }
+    if (next === "night-vision") {
+      applyNightVisionPreset();
+      return;
+    }
+    applyThemePreset("default");
+  }
+
   function applyCustomTheme(id: string) {
     const themeDef = customThemes.find((t) => t.id === id);
     if (!themeDef) return;
@@ -1523,6 +1722,7 @@ function App() {
         ? (themeDef.personality_id as PersonalityId)
         : "default");
     setActivePersonalityId(persona);
+    setMasterThemeProfile(persona === "fallout" ? "fallout" : "tactical");
     const baseColors = resolveBaseColors(themeDef.base);
     const bg = themeDef.bg_color ?? baseColors.bg;
     const primary = themeDef.primary_color ?? baseColors.primary;
@@ -2041,6 +2241,7 @@ function App() {
         const safeId = id === "jarvis" || id === "lastofus" ? "default" : id;
         setActiveThemeId(safeId);
         setActivePersonalityId(persona);
+        setMasterThemeProfile(safeId === "fallout" ? "fallout" : "tactical");
         const backendCustoms = customs || [];
         setCustomThemes(backendCustoms);
         const activeCustom = backendCustoms.find((t) => t.id === safeId);
@@ -2127,6 +2328,7 @@ function App() {
         Number.isFinite(uis.calendar_quiet_hours_end) ? Math.max(0, Math.min(23, uis.calendar_quiet_hours_end)) : 7,
       );
       setInferenceBackendMode(uis.inference_backend === "openai_compatible" ? "openai_compatible" : "ollama");
+      setHiveMindSeedUrl(uis.hive_mind_seed_url ?? "");
       setOpenaiBaseUrl(uis.openai_compatible_base_url?.trim() || "http://127.0.0.1:1234/v1");
       setOpenaiModelId(uis.openai_compatible_model ?? "");
       setActiveEngineModel(uis.explicit_ollama_model ?? "");
@@ -2190,11 +2392,60 @@ function App() {
     }
   }
 
+  const refreshOllamaHiveRoute = useCallback(async () => {
+    if (!user || inferenceBackendMode !== "ollama") {
+      setOllamaHiveRoute(null);
+      return;
+    }
+    try {
+      const s = await invoke<HiveMindRouteStatus>("get_hive_mind_route_status");
+      if (s.mode === "openai_compatible") {
+        setOllamaHiveRoute(null);
+      } else {
+        setOllamaHiveRoute(s.mode === "hive" ? "hive" : "local");
+      }
+    } catch {
+      setOllamaHiveRoute("local");
+    }
+  }, [user, inferenceBackendMode]);
+
+  useEffect(() => {
+    if (!user) {
+      setOllamaHiveRoute(null);
+      return;
+    }
+    void refreshOllamaHiveRoute();
+    const id = window.setInterval(() => {
+      void refreshOllamaHiveRoute();
+    }, 12000);
+    return () => clearInterval(id);
+  }, [user, refreshOllamaHiveRoute]);
+
+  const updateModelRoutingPreference = useCallback(
+    (patch: { globalSystemModel?: string; chatAnalysisModel?: string; tacticalMapModel?: string }) => {
+      if (patch.globalSystemModel != null) setGlobalSystemModel(patch.globalSystemModel);
+      if (patch.chatAnalysisModel != null) setChatAnalysisModel(patch.chatAnalysisModel);
+      if (patch.tacticalMapModel != null) setTacticalMapModel(patch.tacticalMapModel);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        ATHENA_MODEL_ROUTING_STORAGE_KEY,
+        JSON.stringify({ globalSystemModel, chatAnalysisModel, tacticalMapModel }),
+      );
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, [globalSystemModel, chatAnalysisModel, tacticalMapModel]);
+
   const refreshLocalModelPathLists = useCallback(async () => {
     setModelScannerPathsLoading(true);
     try {
       const [c, e, r] = await Promise.all([
-        invoke<string[]>("scan_chat_models"),
+        invoke<string[]>("get_downloaded_models"),
         invoke<string[]>("scan_embedding_models"),
         invoke<string[]>("scan_reranker_models"),
       ]);
@@ -2516,38 +2767,6 @@ function App() {
       setLibraryError(e != null ? String(e) : "Could not estimate tiles");
     } finally {
       setTileEstimateBusy(false);
-    }
-  }
-
-  async function handleStartRasterTileDownload(source: "osm" | "opentopo") {
-    const q = (tileGeocodeQuery.trim() || userLocationAddress.trim()).trim();
-    if (!q) {
-      setLibraryError("Set a location under Location settings, or enter a place name below.");
-      return;
-    }
-    setLibraryError(null);
-    try {
-      const geo = await invoke<[number, number]>("geocode_place_query", { query: q });
-      const [lat, lon] = geo;
-      const packId = await invoke<string>("start_tile_pack_download", {
-        source,
-        centerLat: lat,
-        centerLon: lon,
-        radiusMiles: tileRadiusMiles,
-        zoomMin: Math.min(tileZoomMin, tileZoomMax),
-        zoomMax: Math.max(tileZoomMin, tileZoomMax),
-        name: `${source === "opentopo" ? "Terrain" : "Street"} ~${tileRadiusMiles}mi`,
-      });
-      setDownloadJobs((prev) => ({
-        ...prev,
-        [`tiles:${packId}`]: {
-          downloaded: 0,
-          total: null,
-          label: source === "opentopo" ? "Offline terrain tiles" : "Offline street tiles",
-        },
-      }));
-    } catch (e) {
-      setLibraryError(e != null ? String(e) : "Tile download failed");
     }
   }
 
@@ -2896,7 +3115,9 @@ function App() {
     if (settingsOpen) {
       menuScrollPosRef.current = 0;
       setLibraryError(null);
-      setSettingsPanel("menu");
+      const target = settingsPanelOnOpenRef.current ?? "menu";
+      settingsPanelOnOpenRef.current = null;
+      setSettingsPanel(target);
       setSettingsTitleClickCount(0);
       loadModelSettings();
       invoke<string>("get_error_log").then(setErrorLog).catch(() => setErrorLog(""));
@@ -3100,6 +3321,31 @@ function App() {
       availableChatModels.length === 0 ? "" : availableChatModels.includes(cur) ? cur : availableChatModels[0],
     );
   }, [availableChatModels]);
+
+  /** After disk scan, drop routing prefs that reference deleted GGUF files. */
+  useEffect(() => {
+    if (modelScannerPathsLoading) return;
+    const ok = (v: string) => v === MODEL_ROUTING_AUTO || availableChatModels.includes(v);
+    if (!ok(globalSystemModel)) setGlobalSystemModel(MODEL_ROUTING_AUTO);
+    if (!ok(chatAnalysisModel)) setChatAnalysisModel(MODEL_ROUTING_AUTO);
+    if (!ok(tacticalMapModel)) setTacticalMapModel(MODEL_ROUTING_AUTO);
+    if (activeSessionOverride != null && !ok(activeSessionOverride)) setActiveSessionOverride(null);
+  }, [
+    modelScannerPathsLoading,
+    availableChatModels,
+    globalSystemModel,
+    chatAnalysisModel,
+    tacticalMapModel,
+    activeSessionOverride,
+  ]);
+
+  const effectiveRoutingSessionOverride = useMemo(
+    () =>
+      activeSessionOverride != null && availableChatModels.includes(activeSessionOverride)
+        ? activeSessionOverride
+        : null,
+    [activeSessionOverride, availableChatModels],
+  );
 
   useEffect(() => {
     setSelectedEmbeddingModelId((cur) =>
@@ -3428,7 +3674,7 @@ function App() {
   }, [currentView]);
 
   useEffect(() => {
-    if (currentView !== "archive" || archivePrimaryTab !== "network" || archiveNetworkSubTab !== "maps") return;
+    if (currentView !== "data_acquisition" || dataAcquisitionTab !== "maps" || !featureMapEnabled) return;
     invoke<MapCatalogEntry[]>("get_map_catalog")
       .then(setMapCatalog)
       .catch(() => setMapCatalog([]));
@@ -3438,7 +3684,7 @@ function App() {
     void invoke<MapCatalogEntry | null>("get_smallest_kiwix_map_suggestion")
       .then((s) => setMapsSuggestion(s ?? null))
       .catch(() => setMapsSuggestion(null));
-  }, [currentView, archivePrimaryTab, archiveNetworkSubTab, featureMapEnabled, userLocationAddress]);
+  }, [currentView, dataAcquisitionTab, featureMapEnabled, userLocationAddress]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4302,6 +4548,7 @@ ${tag}` : tag;
       userLon,
       chatId: chatIdToUse,
       modelOptions: { temperature: aiTemperature, num_ctx: aiNumCtx },
+      model: chatInferenceModel,
     }).catch((e) => {
       const errMsg = e != null ? String(e) : "Send failed";
       logError(errMsg);
@@ -4440,6 +4687,7 @@ ${tag}` : tag;
         userLon,
         chatId: null,
         modelOptions: { temperature: aiTemperature, num_ctx: aiNumCtx },
+        model: mapInferenceModel,
       });
     } catch (e) {
       const errMsg = e != null ? String(e) : "Send failed";
@@ -4602,6 +4850,66 @@ ${tag}` : tag;
     }
   }, [clockNow, timeFormat]);
 
+  const headerSessionModelRouting = useMemo((): UniversalHeaderSessionModelRouting | null => {
+    const scope: "map" | "chat" | "global" =
+      currentView === "map" ? "map" : currentView === "chat" ? "chat" : "global";
+    const routed = scope === "map" ? tacticalMapModel : scope === "chat" ? chatAnalysisModel : globalSystemModel;
+    const activeLabel =
+      effectiveRoutingSessionOverride != null
+        ? effectiveRoutingSessionOverride
+        : routed === MODEL_ROUTING_AUTO
+          ? "Auto"
+          : routed;
+    const scopeLabel = scope === "map" ? "Map model" : scope === "chat" ? "Chat model" : "Global model";
+    return {
+      scopeLabel,
+      activeLabel,
+      value: effectiveRoutingSessionOverride ?? SESSION_MODEL_FOLLOW_SETTINGS,
+      basenames: availableChatModels,
+      onChange: (v: string) => {
+        if (v === SESSION_MODEL_FOLLOW_SETTINGS) setActiveSessionOverride(null);
+        else setActiveSessionOverride(v);
+      },
+    };
+  }, [
+    currentView,
+    tacticalMapModel,
+    chatAnalysisModel,
+    globalSystemModel,
+    effectiveRoutingSessionOverride,
+    availableChatModels,
+  ]);
+
+  const chatInferenceModel = useMemo(
+    () =>
+      ensureInferenceModelForRequest(
+        resolveInferenceModelForView({
+          view: "chat",
+          globalSystemModel,
+          chatAnalysisModel,
+          tacticalMapModel,
+          activeSessionOverride: effectiveRoutingSessionOverride,
+        }),
+        globalSystemModel,
+      ),
+    [globalSystemModel, chatAnalysisModel, tacticalMapModel, effectiveRoutingSessionOverride],
+  );
+
+  const mapInferenceModel = useMemo(
+    () =>
+      ensureInferenceModelForRequest(
+        resolveInferenceModelForView({
+          view: "map",
+          globalSystemModel,
+          chatAnalysisModel,
+          tacticalMapModel,
+          activeSessionOverride: effectiveRoutingSessionOverride,
+        }),
+        globalSystemModel,
+      ),
+    [globalSystemModel, chatAnalysisModel, tacticalMapModel, effectiveRoutingSessionOverride],
+  );
+
   const appStyle: (React.CSSProperties & Record<string, string>) =
     displayTheme === "custom"
       ? ({
@@ -4761,6 +5069,29 @@ ${tag}` : tag;
     );
   }
 
+  if (oobeFirstAccountPending === true && !user && !oobeRequired) {
+    return (
+      <LexiconProvider themeId={lexiconThemeId}>
+        <OobeFirstAccount
+          lexiconThemeId={String(displayTheme)}
+          onCompleted={() => setOobeFirstAccountPending(false)}
+        />
+      </LexiconProvider>
+    );
+  }
+
+  if (oobeFirstAccountPending === null && !user && !oobeRequired) {
+    return (
+      <LexiconProvider themeId={lexiconThemeId}>
+        <div className="app" data-theme={displayTheme} style={{ padding: 24 }}>
+          <p className="text-muted" style={{ margin: "2rem auto", maxWidth: "28rem", textAlign: "center" }}>
+            Checking first-run enrollment…
+          </p>
+        </div>
+      </LexiconProvider>
+    );
+  }
+
   return (
     <LexiconProvider themeId={lexiconThemeId}>
     <div
@@ -4788,10 +5119,12 @@ ${tag}` : tag;
           featureMapEnabled={featureMapEnabled}
           onOpenArchive={() => {
             setCurrentView("archive");
-            setArchivePrimaryTab("local");
-            setArchiveNetworkSubTab("packages");
           }}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenAiModelSettings={() => {
+            settingsPanelOnOpenRef.current = "ai";
+            setSettingsOpen(true);
+          }}
           onOpenHelp={() => setHelpOpen(true)}
           onOpenCalendar={() => setCurrentView("calendar")}
           calendarDateTimeLabel={headerClockLabel}
@@ -4804,6 +5137,8 @@ ${tag}` : tag;
           onLogout={logout}
           aiInferenceSleep={aiInferenceSleep}
           onToggleAiInferenceSleep={toggleAiInferenceSleep}
+          sessionModelRouting={headerSessionModelRouting}
+          ollamaHiveRoute={ollamaHiveRoute}
         />
         {meshSosGlobalBanner}
         {(triageMenuOpen || activeTriageId) &&
@@ -4894,13 +5229,17 @@ ${tag}` : tag;
                 onOpenTriage={() => setTriageMenuOpen(true)}
                 onNavigate={(destination: DashboardDestination) => {
                   if (destination === "library") {
-                    setCurrentView("archive");
-                    setArchivePrimaryTab("network");
-                    setArchiveNetworkSubTab("documents");
+                    setDataAcquisitionTab("documents");
+                    setCurrentView("data_acquisition");
                     return;
                   }
                   if (destination === "settings") {
                     setSettingsOpen(true);
+                    return;
+                  }
+                  if (destination === "data_acquisition") {
+                    setDataAcquisitionTab("packages");
+                    setCurrentView("data_acquisition");
                     return;
                   }
                   setCurrentView(destination);
@@ -5424,10 +5763,10 @@ ${tag}` : tag;
                   <span className="message-loading-dot" />
                 </span>
               )}
-              {msg.role === "assistant" && showSourcesInChat && msg.sources && msg.sources.length > 0 && (
+              {msg.role === "assistant" && showSourcesInChat && (msg.sources?.length ?? 0) > 0 && (
                 <div className="message-sources" aria-label="Sources from your library">
                   <span>Sources: </span>
-                  {msg.sources.map((c, idx) => (
+                  {msg.sources!.map((c, idx) => (
                     <React.Fragment key={`${c.filePath}-${c.pageNumber ?? "x"}-${idx}`}>
                       {idx > 0 ? " " : null}
                       {c.filePath ? (
@@ -5728,6 +6067,11 @@ ${tag}` : tag;
                 onTacticalLayerVisibilityChange={setTacticalMapLayerVisibility}
                 enabledMainMapRasterArchiveFileNames={enabledArchiveRasterFileNames}
                 onMainMapArchiveRasterLayersChange={handleMainMapArchiveRasterLayersChange}
+                onOpenDataAcquisition={() => {
+                  setDataAcquisitionTab("maps");
+                  setCurrentView("data_acquisition");
+                }}
+                resolvedInferenceModel={mapInferenceModel}
               />
             </ErrorBoundary>
           ) : null}
@@ -5756,43 +6100,44 @@ ${tag}` : tag;
             </div>
           ) : null}
           {currentView === "academy" ? <AcademyModule /> : null}
-          {currentView === "archive" ? (
-            <ArchiveHub
-              primaryTab={archivePrimaryTab}
-              onPrimaryTabChange={setArchivePrimaryTab}
-              networkSubTab={archiveNetworkSubTab}
-              onNetworkSubTabChange={setArchiveNetworkSubTab}
-              libraryError={libraryError}
-              mapsTabProps={{
-                mapCatalog,
-                downloadedMaps,
-                networkReachable,
-                mapsSuggestion,
-                mapDownloadJobs,
-                mapZimsOnDiskOnly,
-                mapLibraryFileCount: mapLibraryFiles.length,
-                stats,
-                formatBytes,
-                formatLibraryFileSizeBytes,
-                onDownloadMap: handleDownloadMap,
-                onOpenMapFileManager: () => {
-                  // Map archives now live under Map → Layers (gear).
-                  setCurrentView("map");
-                },
-                onOpenOfflineMapSettings: () => {
-                  setSettingsOpen(true);
-                  goToSettingsSubpanel("maps");
-                },
-                onOpenExternalUrl: (url) => void openUrl(url),
-                onRefreshNetworkReachable: () => {
-                  void invoke<boolean>("check_network_reachable")
-                    .then((r) => setNetworkReachable(r))
-                    .catch(() => setNetworkReachable(false));
-                },
-                onRemoveDownloadedMap: handleRemoveDownloadedMap,
-                onRemoveLibraryFile: handleRemoveLibraryFile,
-              }}
-            />
+          {currentView === "archive" ? <ArchiveHub libraryError={libraryError} /> : null}
+          {currentView === "data_acquisition" ? (
+            <div className="home-view-scroll" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <DataAcquisition
+                activeTab={dataAcquisitionTab}
+                onActiveTabChange={setDataAcquisitionTab}
+                libraryError={libraryError}
+                onOpenMesh={() => setCurrentView("mesh")}
+                mapsTabProps={{
+                  mapCatalog,
+                  downloadedMaps,
+                  networkReachable,
+                  mapsSuggestion,
+                  mapDownloadJobs,
+                  mapZimsOnDiskOnly,
+                  mapLibraryFileCount: mapLibraryFiles.length,
+                  stats,
+                  formatBytes,
+                  formatLibraryFileSizeBytes,
+                  onDownloadMap: handleDownloadMap,
+                  onOpenMapFileManager: () => {
+                    setCurrentView("map");
+                  },
+                  onOpenOfflineMapSettings: () => {
+                    setSettingsOpen(true);
+                    goToSettingsSubpanel("maps");
+                  },
+                  onOpenExternalUrl: (url) => void openUrl(url),
+                  onRefreshNetworkReachable: () => {
+                    void invoke<boolean>("check_network_reachable")
+                      .then((r) => setNetworkReachable(r))
+                      .catch(() => setNetworkReachable(false));
+                  },
+                  onRemoveDownloadedMap: handleRemoveDownloadedMap,
+                  onRemoveLibraryFile: handleRemoveLibraryFile,
+                }}
+              />
+            </div>
           ) : null}
           {currentView === "comms_hub" ? (
             <CommunicationsHub
@@ -6189,82 +6534,146 @@ ${tag}` : tag;
                     ›
                   </span>
                 </button>
-                <p className="settings-nav-intro text-muted">
-                  {lx.settingsNavIntroLead}
-                  {meshRadioConnected === true
-                    ? lx.settingsNavMeshConnectedNote
-                    : meshRadioConnected === false
-                      ? lx.settingsNavMeshDisconnectedNote
-                      : null}
-                </p>
                 <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">{lx.settingsNavGroupProfileCalendar}</span>
+                  <span className="settings-nav-group-label">System</span>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("general")}>
-                    <span className="settings-nav-label">{lx.settingsNavGeneral}</span>
-                    <span className="text-muted">{lx.settingsNavGeneralDesc}</span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("calendar")}>
-                    <span className="settings-nav-label">{lx.settingsNavCalendar}</span>
-                    <span className="text-muted">{lx.settingsNavCalendarDesc}</span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("dateTime")}>
-                    <span className="settings-nav-label">{lx.settingsNavDateTime}</span>
-                    <span className="text-muted">{lx.settingsNavDateTimeDesc}</span>
-                  </button>
-                </div>
-                <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">{lx.settingsNavGroupAiKnowledge}</span>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("ai")}>
-                    <span className="settings-nav-label">{lx.settingsNavAiModels}</span>
-                    <span className="text-muted">{lx.settingsNavAiModelsDesc}</span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("apiKeys")}>
-                    <span className="settings-nav-label">{lx.settingsNavApiKeys}</span>
-                    <span className="text-muted">{lx.settingsNavApiKeysDesc}</span>
-                  </button>
-                </div>
-                <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">{lx.settingsNavGroupRadioVoice}</span>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("location")}>
-                    <span className="settings-nav-label">{lx.settingsNavLocation}</span>
-                    <span className="text-muted">{lx.settingsNavLocationDesc}</span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("maps")}>
-                    <span className="settings-nav-label">{lx.settingsNavOfflineMaps}</span>
-                    <span className="text-muted">
-                      {lx.settingsNavOfflineMapsDesc}
-                      {featureMapEnabled ? (
-                        <span className="settings-build-note">{lx.settingsNavOfflineMapsNoteMapOn}</span>
-                      ) : (
-                        <span className="settings-build-note">{lx.settingsNavOfflineMapsNoteMapOff}</span>
-                      )}
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <Activity size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavGeneral}</span>
+                        <span className="text-muted">{lx.settingsNavGeneralDesc}</span>
+                      </span>
                     </span>
                   </button>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("dateTime")}>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <CalendarIcon size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">Date, Time &amp; Calendar</span>
+                        <span className="text-muted">
+                          {lx.settingsNavDateTimeDesc} · {lx.settingsNavCalendarDesc}
+                        </span>
+                      </span>
+                    </span>
+                  </button>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("calendar")}>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <CalendarIcon size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavCalendar}</span>
+                        <span className="text-muted">{lx.settingsNavCalendarDesc}</span>
+                      </span>
+                    </span>
+                  </button>
+                </div>
+                <div className="settings-nav-group">
+                  <span className="settings-nav-group-label">Tactical &amp; Hardware</span>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("mesh")}>
-                    <span className="settings-nav-label">{lx.settingsNavMesh}</span>
-                    <span className="text-muted">
-                      {meshRadioConnected === null
-                        ? lx.settingsNavMeshChecking
-                        : meshRadioConnected === false
-                          ? "USB radio optional — set signup phrase anytime"
-                          : lx.settingsNavMeshOk}
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <RadioTower size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavMesh}</span>
+                        <span className="text-muted">
+                          {meshRadioConnected === null
+                            ? lx.settingsNavMeshChecking
+                            : meshRadioConnected === false
+                              ? "USB radio optional — set signup phrase anytime"
+                              : lx.settingsNavMeshOk}
+                        </span>
+                      </span>
+                    </span>
+                  </button>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("location")}>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <Compass size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">Location &amp; GPS</span>
+                        <span className="text-muted">{lx.settingsNavLocationDesc}</span>
+                      </span>
+                    </span>
+                  </button>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("maps")}>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <Route size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavOfflineMaps}</span>
+                        <span className="text-muted">
+                          {lx.settingsNavOfflineMapsDesc}
+                          {featureMapEnabled ? (
+                            <span className="settings-build-note">{lx.settingsNavOfflineMapsNoteMapOn}</span>
+                          ) : (
+                            <span className="settings-build-note">{lx.settingsNavOfflineMapsNoteMapOff}</span>
+                          )}
+                        </span>
+                      </span>
+                    </span>
+                  </button>
+                </div>
+                <div className="settings-nav-group">
+                  <span className="settings-nav-group-label">Intelligence</span>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("ai")}>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <Brain size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavAiModels}</span>
+                        <span className="text-muted">{lx.settingsNavAiModelsDesc}</span>
+                      </span>
+                    </span>
+                  </button>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("apiKeys")}>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <KeyRound size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavApiKeys}</span>
+                        <span className="text-muted">{lx.settingsNavApiKeysDesc}</span>
+                      </span>
                     </span>
                   </button>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("voice")}>
-                    <span className="settings-nav-label">{lx.settingsNavVoice}</span>
-                    <span className="text-muted">
-                      {lx.settingsNavVoiceDesc}
-                      {VOICE_AND_MIC_FEATURES_HIDDEN ? (
-                        <span className="settings-build-note">{lx.settingsNavVoiceHiddenNote}</span>
-                      ) : null}
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <Volume2 size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavVoice}</span>
+                        <span className="text-muted">
+                          {lx.settingsNavVoiceDesc}
+                          {VOICE_AND_MIC_FEATURES_HIDDEN ? (
+                            <span className="settings-build-note">{lx.settingsNavVoiceHiddenNote}</span>
+                          ) : null}
+                        </span>
+                      </span>
                     </span>
                   </button>
                 </div>
                 <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">{lx.settingsNavGroupLookFeel}</span>
+                  <span className="settings-nav-group-label">Appearance</span>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("appearance")}>
-                    <span className="settings-nav-label">{lx.settingsNavWindowDisplay}</span>
-                    <span className="text-muted">{lx.settingsNavWindowDisplayDesc}</span>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <Monitor size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavWindowDisplay}</span>
+                        <span className="text-muted">{lx.settingsNavWindowDisplayDesc}</span>
+                      </span>
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -6272,22 +6681,43 @@ ${tag}` : tag;
                     onClick={() => {
                       setThemesSubView("main");
                       setStudioDraft(null);
-                      goToSettingsSubpanel("themes");
+                      goToSettingsSubpanel("colorsThemes");
                     }}
                   >
-                    <span className="settings-nav-label">{lx.settingsNavThemes}</span>
-                    <span className="text-muted">{lx.settingsNavThemesDesc}</span>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <Palette size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">Colors &amp; Themes</span>
+                        <span className="text-muted">Preset experiences and palette colors.</span>
+                      </span>
+                    </span>
                   </button>
                 </div>
                 <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">{lx.settingsNavGroupBackupHelp}</span>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("troubleshooting")}>
-                    <span className="settings-nav-label">{lx.settingsNavTroubleshooting}</span>
-                    <span className="text-muted">{lx.settingsNavTroubleshootingDesc}</span>
-                  </button>
+                  <span className="settings-nav-group-label">Data &amp; Diagnostics</span>
                   <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("usbExport")}>
-                    <span className="settings-nav-label">{lx.settingsNavUsbExport}</span>
-                    <span className="text-muted">{lx.settingsNavUsbExportDesc}</span>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <Usb size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavUsbExport}</span>
+                        <span className="text-muted">{lx.settingsNavUsbExportDesc}</span>
+                      </span>
+                    </span>
+                  </button>
+                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("troubleshooting")}>
+                    <span className="settings-nav-row">
+                      <span className="settings-nav-icon" aria-hidden>
+                        <CircleHelp size={18} />
+                      </span>
+                      <span className="settings-nav-text">
+                        <span className="settings-nav-label">{lx.settingsNavTroubleshooting}</span>
+                        <span className="text-muted">{lx.settingsNavTroubleshootingDesc}</span>
+                      </span>
+                    </span>
                   </button>
                 </div>
               </nav>
@@ -6496,32 +6926,69 @@ ${tag}` : tag;
             )}
             {settingsPanel === "general" && (
               <>
+                <section className="library-section settings-general-about">
+                  <p className="settings-general-about__name text-muted">
+                    Autonomous Tactical Heuristic Emergency Network Archive
+                  </p>
+                  <p className="settings-general-about__version text-muted small">v1.0.0-tactical</p>
+                </section>
                 <section className="library-section">
-                  <h3>About ATHENA</h3>
-                  <p className="text-muted small" style={{ marginBottom: "0.5rem" }}>
-                    Full product name: <strong>{ATHENA_FULL_NAME}</strong>. In chat and most UI copy the assistant is called{" "}
-                    <strong>Athena</strong>.
-                  </p>
-                  <ul className="settings-tips-list text-muted">
-                    {ATHENA_ACRONYM_PARTS.map((row, i) => (
-                      <li key={`${row.word}-${i}`}>
-                        <strong>{row.letter}</strong> — <strong>{row.word}:</strong> {row.meaning}
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="text-muted small" style={{ marginTop: "0.65rem", marginBottom: 0 }}>
-                    <strong>Watch folder:</strong> set from the header <strong>Library</strong> sheet. Large <strong>The Archive</strong>{" "}
-                    downloads (Wikipedia ZIMs, US state Protomaps) need free disk space there. <strong>Settings → Location</strong> is only for
-                    AI place-aware answers and the Kiwix “install local data” helper—it does not change which state maps the Installer offers;
-                    change that under <strong>Home → The Archive</strong> (Change area).
-                  </p>
+                  <h3>System preferences</h3>
+                  <div className="glass-panel settings-general-prefs" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "1rem" }}>
+                    <div className="settings-general-pref-block">
+                      <label htmlFor="settings-startup-view" className="settings-general-pref-label">
+                        Default startup page
+                      </label>
+                      <p className="text-muted small" style={{ margin: "0.15rem 0 0.35rem" }}>
+                        Select the default screen on launch.
+                      </p>
+                      <div className="settings-startup-view-row">
+                        <label htmlFor="settings-startup-view" className="settings-startup-view-label">
+                          Open to
+                        </label>
+                        <select
+                          id="settings-startup-view"
+                          className="settings-startup-view-select"
+                          value={startupViewPreference}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            const next = APP_VIEWS.find((x) => x === v);
+                            if (!next) return;
+                            saveStartupView(next);
+                            setStartupViewPreference(next);
+                          }}
+                          aria-label="Default startup page"
+                        >
+                          {APP_VIEWS.map((v) => (
+                            <option key={v} value={v}>
+                              {APP_VIEW_LABELS[v]}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="settings-general-pref-block">
+                      <div className="feature-checkbox-wrap">
+                        <input
+                          id="settings-device-overlay"
+                          type="checkbox"
+                          className="feature-checkbox"
+                          checked={deviceOverlayEnabled}
+                          onChange={(e) => setDeviceOverlayEnabled(e.target.checked)}
+                          aria-label="Show device stats overlay"
+                        />
+                        <label htmlFor="settings-device-overlay" className="feature-checkbox-label">
+                          Device stats overlay
+                        </label>
+                      </div>
+                      <p className="text-muted small" style={{ margin: "0.35rem 0 0" }}>
+                        Display CPU/RAM/Network telemetry in the corner.
+                      </p>
+                    </div>
+                  </div>
                 </section>
                 <section className="library-section">
                   <h3>Age &amp; catalog access</h3>
-                  <p className="text-muted small">
-                    Birthdate stays on this device. It unlocks age-gated catalog options when applicable. Use{" "}
-                    <strong>Settings → Me</strong> to set the name Athena uses in chat.
-                  </p>
                   <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "0.65rem" }}>
                     <label htmlFor="user-birthdate" className="text-muted small">
                       Birthdate (YYYY-MM-DD)
@@ -6550,9 +7017,8 @@ ${tag}` : tag;
                           }}
                         />
                         <span className="text-muted small">
-                          Show <strong>unrestricted / NSFW</strong> model catalog entries (local runtimes only; you are
-                          responsible for compliance). Uncensored models run only on your machine—useful for detailed
-                          survival/medical/engineering topics when ordinary guardrails block necessary detail.
+                          Allow unrestricted model catalog access for detailed medical/survival/engineering topics. Local runtimes only.
+                          Operator assumes responsibility for compliance.
                         </span>
                       </label>
                     ) : (
@@ -6564,26 +7030,28 @@ ${tag}` : tag;
                 </section>
                 <section className="library-section">
                   <h3>Help &amp; shortcuts</h3>
-                  <p className="text-muted">
-                    Open the full <strong>Help</strong> guide from the <strong>?</strong> button in the header for every feature. Quick
-                    reminders:
+                  <p className="text-muted small" style={{ marginTop: 0 }}>
+                    Full guide: header <strong>?</strong> or <strong>Open Help</strong> below.
                   </p>
-                  <ul className="settings-tips-list text-muted">
-                    <li>
+                  <div className="settings-shortcuts-grid text-muted small">
+                    <div className="settings-shortcuts-cell">
                       <kbd className="settings-kbd">⌘</kbd>/<kbd className="settings-kbd">Ctrl</kbd>+<kbd className="settings-kbd">K</kbd> or{" "}
-                      <kbd className="settings-kbd">/</kbd> — focus the chat input
-                    </li>
-                    <li>
-                      <kbd className="settings-kbd">⌘</kbd>/<kbd className="settings-kbd">Ctrl</kbd>+<kbd className="settings-kbd">F</kbd> — find
-                      text in the current chat
-                    </li>
-                    <li>
-                      <code>/athena</code> — ask how the app works (uses the built-in project reference)
-                    </li>
-                    <li>
-                      <code>/rag-count</code> — show how many library documents and chunks are indexed
-                    </li>
-                  </ul>
+                      <kbd className="settings-kbd">/</kbd>
+                      <span className="settings-shortcuts-desc">Focus chat input</span>
+                    </div>
+                    <div className="settings-shortcuts-cell">
+                      <kbd className="settings-kbd">⌘</kbd>/<kbd className="settings-kbd">Ctrl</kbd>+<kbd className="settings-kbd">F</kbd>
+                      <span className="settings-shortcuts-desc">Find in current chat</span>
+                    </div>
+                    <div className="settings-shortcuts-cell">
+                      <code>/athena</code>
+                      <span className="settings-shortcuts-desc">How the app works (built-in reference)</span>
+                    </div>
+                    <div className="settings-shortcuts-cell">
+                      <code>/rag-count</code>
+                      <span className="settings-shortcuts-desc">Indexed library documents &amp; chunks</span>
+                    </div>
+                  </div>
                   <div className="settings-inline-actions">
                     <button
                       type="button"
@@ -6599,88 +7067,12 @@ ${tag}` : tag;
                       className="secondary"
                       onClick={() => {
                         setSettingsOpen(false);
-                        setCurrentView("archive");
-                        setArchivePrimaryTab("network");
-                        setArchiveNetworkSubTab("documents");
+                        setDataAcquisitionTab("documents");
+                        setCurrentView("data_acquisition");
                       }}
                     >
                       Open Library
                     </button>
-                  </div>
-                </section>
-                <section className="library-section">
-                  <h3>Device stats overlay</h3>
-                  <p className="text-muted small">
-                    Show a small CPU/RAM/network readout in the corner for debugging or curiosity. Does not affect answers.
-                  </p>
-                  <div className="feature-checkbox-wrap">
-                    <input
-                      id="settings-device-overlay"
-                      type="checkbox"
-                      className="feature-checkbox"
-                      checked={deviceOverlayEnabled}
-                      onChange={(e) => setDeviceOverlayEnabled(e.target.checked)}
-                      aria-label="Show device stats overlay"
-                    />
-                    <label htmlFor="settings-device-overlay" className="feature-checkbox-label">
-                      Show device stats overlay
-                    </label>
-                  </div>
-                </section>
-                <section className="library-section">
-                  <h3>Default startup page</h3>
-                  <p className="text-muted small">Choose which screen appears when you open Athena. The setting is saved on this device.</p>
-                  <div className="settings-startup-view-row">
-                    <label htmlFor="settings-startup-view" className="settings-startup-view-label">
-                      Open to
-                    </label>
-                    <select
-                      id="settings-startup-view"
-                      className="settings-startup-view-select"
-                      value={startupViewPreference}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        const next = APP_VIEWS.find((x) => x === v);
-                        if (!next) return;
-                        saveStartupView(next);
-                        setStartupViewPreference(next);
-                      }}
-                      aria-label="Default startup page"
-                    >
-                      {APP_VIEWS.map((v) => (
-                        <option key={v} value={v}>
-                          {APP_VIEW_LABELS[v]}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </section>
-                <section className="library-section">
-                  <h3>System maintenance</h3>
-                  <p className="text-muted small">
-                    Backup or restore the local Athena index database, or export radio serial logs as CSV. Paths are chosen with the system file dialog.
-                  </p>
-                  <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "0.65rem" }}>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
-                      <button type="button" onClick={() => void handleBackupDatabase()}>
-                        Backup database
-                      </button>
-                      <button type="button" className="secondary" onClick={() => void handleRestoreDatabase()}>
-                        Restore database
-                      </button>
-                      <button type="button" className="secondary" onClick={() => void handleExportCommsLogs()}>
-                        Export comms logs
-                      </button>
-                    </div>
-                    {maintenanceFeedback ? (
-                      <p
-                        className={maintenanceFeedback.kind === "err" ? "error" : "text-muted small"}
-                        role={maintenanceFeedback.kind === "err" ? "alert" : "status"}
-                        style={{ margin: 0 }}
-                      >
-                        {maintenanceFeedback.text}
-                      </p>
-                    ) : null}
                   </div>
                 </section>
               </>
@@ -6794,6 +7186,13 @@ ${tag}` : tag;
             )}
             {settingsPanel === "ai" && (
               <>
+                <AIAndKnowledgeSystemModelRouting
+                  globalSystemModel={globalSystemModel}
+                  chatAnalysisModel={chatAnalysisModel}
+                  tacticalMapModel={tacticalMapModel}
+                  downloadedGgufFilenames={availableChatModels}
+                  onChangeModelRouting={updateModelRoutingPreference}
+                />
                 <section className="library-section">
                   <h3>Chat, embedding, and reranker folders</h3>
                   <p className="text-muted small">
@@ -7038,6 +7437,45 @@ ${tag}` : tag;
                     </p>
                   ) : (
                     <>
+                  <div
+                    className="glass-panel"
+                    style={{
+                      padding: "0.9rem",
+                      borderRadius: "12px",
+                      marginBottom: "0.75rem",
+                      display: "grid",
+                      gap: "0.5rem",
+                      maxWidth: "36rem",
+                    }}
+                  >
+                    <label className="text-muted small" htmlFor="hive-mind-seed-url">
+                      Hive Mind IP / URL (optional)
+                    </label>
+                    <p className="text-muted small" style={{ margin: 0 }}>
+                      If this host responds to Ollama within one second, chat uses it instead of the local sidecar (example{" "}
+                      <code>http://192.168.1.50:11434</code>). Otherwise ATHENA falls back to{" "}
+                      <code>http://127.0.0.1:11434</code> with no error dialog.
+                    </p>
+                    <input
+                      id="hive-mind-seed-url"
+                      className="theme-select"
+                      style={{ maxWidth: "100%" }}
+                      value={hiveMindSeedUrl}
+                      onChange={(e) => setHiveMindSeedUrl(e.target.value)}
+                      onBlur={() => {
+                        void invoke("set_hive_mind_seed_url", {
+                          value: hiveMindSeedUrl.trim() || null,
+                        })
+                          .then(() => {
+                            void loadModelSettings();
+                            void refreshOllamaHiveRoute();
+                          })
+                          .catch((e) => setLibraryError(String(e)));
+                      }}
+                      placeholder="http://192.168.1.50:11434"
+                      autoComplete="off"
+                    />
+                  </div>
                   <p className="model-status">
                     {ollamaAvailable ? "Ollama is running" : "Ollama is not running. Start Ollama and install a model (e.g. ollama run llama3.2:3b)."}
                     {ollamaSidecarManaged ? (
@@ -7521,14 +7959,7 @@ ${tag}` : tag;
                       ) ? (
                         <span className="text-muted"> — already downloaded</span>
                       ) : (
-                        <button
-                          type="button"
-                          className="settings-map-suggestion-dl"
-                          onClick={() => void handleDownloadMap(mapsSuggestion)}
-                          disabled={networkReachable === false}
-                        >
-                          Download
-                        </button>
+                        <span className="text-muted small"> — acquire via Data Acquisition → Maps</span>
                       )}
                     </div>
                   )}
@@ -7553,14 +7984,7 @@ ${tag}` : tag;
                           {acquired ? (
                             <span className="text-muted small">Downloaded</span>
                           ) : (
-                            <button
-                              type="button"
-                              className="secondary"
-                              onClick={() => void handleDownloadMap(entry)}
-                              disabled={networkReachable === false}
-                            >
-                              Download
-                            </button>
+                            <span className="text-muted small">Use Data Acquisition → Maps</span>
                           )}
                         </li>
                       );
@@ -7715,18 +8139,13 @@ ${tag}` : tag;
                       </button>
                       <button
                         type="button"
-                        onClick={() => void handleStartRasterTileDownload("osm")}
-                        disabled={networkReachable === false}
+                        onClick={() => {
+                          setSettingsOpen(false);
+                          setDataAcquisitionTab("maps");
+                          setCurrentView("data_acquisition");
+                        }}
                       >
-                        Download street (OSM) tiles
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => void handleStartRasterTileDownload("opentopo")}
-                        disabled={networkReachable === false}
-                      >
-                        Download terrain (OpenTopoMap)
+                        Open Data Acquisition (Maps)
                       </button>
                     </div>
                   </div>
@@ -8075,6 +8494,23 @@ ${tag}` : tag;
                   </p>
                 </div>
               </section>
+            )}
+
+            {settingsPanel === "colorsThemes" && (
+              <ColorsAndThemes
+                theme={theme}
+                customBg={customBg}
+                customPrimary={customPrimary}
+                customText={customText}
+                masterThemeProfile={masterThemeProfile}
+                paletteOptions={(MASTER_THEME_ALLOWED_PALETTES[masterThemeProfile] ?? []).map((id) => ({
+                  id,
+                  label: THEME_LABELS[id],
+                }))}
+                onChangeMasterThemeProfile={applyMasterThemeProfile}
+                handlePresetChange={handlePresetChange}
+                handleCustomColorChange={handleCustomColorChange}
+              />
             )}
             {settingsPanel === "themes" && themesSubView === "studio" && studioDraft && (
               <section className="library-section ui-colors-section theme-studio-section">
@@ -8444,33 +8880,22 @@ ${tag}` : tag;
                     className="secondary"
                     disabled={usbExportBusy}
                     onClick={() => {
-                      setUsbExportModalKind("outpost");
+                      setUsbExportModalKind("fastNode");
                       setUsbExportModalOpen(true);
                     }}
                   >
-                    Export essentials
+                    Export Fast Node
                   </button>
                   <button
                     type="button"
                     className="secondary"
                     disabled={usbExportBusy}
                     onClick={() => {
-                      setUsbExportModalKind("bastion");
+                      setUsbExportModalKind("sisterServer");
                       setUsbExportModalOpen(true);
                     }}
                   >
-                    Export recommended
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={usbExportBusy}
-                    onClick={() => {
-                      setUsbExportModalKind("citadel");
-                      setUsbExportModalOpen(true);
-                    }}
-                  >
-                    Export absolute
+                    Export Sister Server
                   </button>
                 </div>
                 {usbExportStatus && !usbExportModalOpen ? (
@@ -8509,6 +8934,34 @@ ${tag}` : tag;
                   </div>
                 </section>
                 <section className="library-section">
+                  <h3>Database &amp; comms export</h3>
+                  <p className="text-muted small">
+                    Backup or restore the local index database, or export radio serial logs as CSV. Paths use the system file dialog.
+                  </p>
+                  <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "0.65rem" }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+                      <button type="button" onClick={() => void handleBackupDatabase()}>
+                        Backup database
+                      </button>
+                      <button type="button" className="secondary" onClick={() => void handleRestoreDatabase()}>
+                        Restore database
+                      </button>
+                      <button type="button" className="secondary" onClick={() => void handleExportCommsLogs()}>
+                        Export comms logs
+                      </button>
+                    </div>
+                    {maintenanceFeedback ? (
+                      <p
+                        className={maintenanceFeedback.kind === "err" ? "error" : "text-muted small"}
+                        role={maintenanceFeedback.kind === "err" ? "alert" : "status"}
+                        style={{ margin: 0 }}
+                      >
+                        {maintenanceFeedback.text}
+                      </p>
+                    ) : null}
+                  </div>
+                </section>
+                <section className="library-section">
                   <h3>Diagnostics &amp; library</h3>
                   <p className="text-muted small">
                     For <strong>indexed documents</strong> and rebuilding search, use <strong>Library</strong> in the header. For{" "}
@@ -8520,9 +8973,8 @@ ${tag}` : tag;
                       className="secondary"
                       onClick={() => {
                         setSettingsOpen(false);
-                        setCurrentView("archive");
-                        setArchivePrimaryTab("network");
-                        setArchiveNetworkSubTab("documents");
+                        setDataAcquisitionTab("documents");
+                        setCurrentView("data_acquisition");
                       }}
                     >
                       Open Library
@@ -8714,7 +9166,11 @@ ${tag}` : tag;
       <ExportModal
         open={usbExportModalOpen}
         onClose={() => {
-          if (!usbExportBusy) setUsbExportModalOpen(false);
+          if (!usbExportBusy) {
+            setUsbExportModalOpen(false);
+            setUsbExportProgress(null);
+            setUsbExportErrorDetail(null);
+          }
         }}
         tier={usbExportModalKind}
         onTierChange={(t) => setUsbExportModalKind(t)}
@@ -8722,11 +9178,12 @@ ${tag}` : tag;
         onScorchedEarthChange={setUsbScorchedEarth}
         busy={usbExportBusy}
         exportProgress={usbExportProgress}
+        exportErrorDetail={usbExportErrorDetail}
         exportIoHistories={usbExportIoHistories}
         status={usbExportStatus}
-        onStartExport={({ destinationPath, devicePath, formatFirst, exportType }) => {
+        onStartExport={({ destinationPath, devicePath, formatFirst, exportType, expeditionBudgetBytes, selectedExternalChatModelPath }) => {
           setUsbExportModalKind(exportType);
-          void executeUsbExportFromModal({ destinationPath, devicePath, formatFirst });
+          void executeUsbExportFromModal({ destinationPath, devicePath, formatFirst, expeditionBudgetBytes, selectedExternalChatModelPath });
         }}
       />
 

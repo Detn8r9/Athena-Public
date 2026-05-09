@@ -291,7 +291,7 @@ pub fn update_poi(
 // --- Downloaded maps store ---
 
 pub fn map_downloads_dir(app_data_dir: &Path) -> std::path::PathBuf {
-    app_data_dir.join("map_downloads")
+    app_data_dir.join("downloads").join("maps")
 }
 
 fn downloaded_maps_path(app_data_dir: &Path) -> std::path::PathBuf {

@@ -1,11 +1,17 @@
 //! Portable mode: optional `portable.athena` beside the executable (strict AthenaData root), or
 //! legacy `data/` beside the app — validated for reachability and writability before use.
 
+use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use crossbeam_channel;
+use rayon::prelude::*;
 use rusqlite::{params, Connection};
 use tauri::Emitter;
 use tauri::Manager;
@@ -13,7 +19,7 @@ use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use walkdir::WalkDir;
 
-use crate::config::{effective_embedding_folder, effective_reranker_folder, load_config, AppConfig};
+use crate::config::{effective_embedding_folder, effective_reranker_folder, load_config, save_config, AppConfig};
 use crate::db::Database;
 use crate::map_manager_download;
 use crate::{compute_watcher_folders, kiwix_downloads_dir};
@@ -21,7 +27,7 @@ use crate::{compute_watcher_folders, kiwix_downloads_dir};
 /// Aegis Protocol manual export sizes (Roman field theme).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AegisManualTier {
-    /// Lean station: app + launchers + slim DB (no RAG tables, no offline map extract, no models).
+    /// Lean station: app + launchers + slim DB + a minimal vector basemap + one small local chat model.
     Outpost,
     /// Stronghold: models + full DB + example-region proximity terrain extract + library & maps excluding satellite rasters.
     Bastion,
@@ -65,6 +71,10 @@ pub struct AegisExportPreflight {
     pub slim_sqlite_bytes: u64,
     pub full_sqlite_bytes: u64,
     pub models_bytes: u64,
+    /// `.gguf` chat models under `models/chat` (downloaded local models for the in-app chat).
+    pub chat_models_all_bytes: u64,
+    /// Smallest `.gguf` in `models/chat` (used for Outpost "one small model" sizing).
+    pub chat_models_smallest_bytes: u64,
     pub example_region_extract_estimate_bytes: u64,
     pub example_region_reserved_bytes: u64,
     pub offline_maps_non_satellite_bytes: u64,
@@ -85,7 +95,110 @@ pub struct AegisExportPreflight {
     pub destination_fits_outpost: Option<bool>,
     pub destination_fits_bastion: Option<bool>,
     pub destination_fits_citadel: Option<bool>,
+    /// Same as `destination_fits_outpost` (Fast Node tier).
+    pub destination_fits_fast_node: Option<bool>,
+    /// Same as `destination_fits_citadel` (Sister Server tier).
+    pub destination_fits_sister_server: Option<bool>,
+    /// `"ready"` or `"calculating"` for UI while partial preflight streams.
+    pub fast_node_measure_status: String,
+    pub sister_server_measure_status: String,
     pub expedition_plan: Option<Vec<AegisExpeditionPlanStep>>,
+}
+
+/// Progress payload for `athena:aegis-preflight-progress` (non-blocking preflight).
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AegisPreflightProgressEvent {
+    pub done: bool,
+    pub error: Option<String>,
+    pub preflight: Option<AegisExportPreflight>,
+}
+
+fn chat_models_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("models").join("chat")
+}
+
+fn pick_smallest_chat_model(chat_dir: &Path) -> Result<Option<(PathBuf, u64)>, String> {
+    if !chat_dir.is_dir() {
+        return Ok(None);
+    }
+    let mut best: Option<(PathBuf, u64)> = None;
+    for entry in fs::read_dir(chat_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if name.starts_with('.') || !name.to_ascii_lowercase().ends_with(".gguf") {
+            continue;
+        }
+        let len = entry.metadata().map_err(|e| e.to_string())?.len();
+        match best {
+            None => best = Some((path, len)),
+            Some((_, best_len)) if len < best_len => best = Some((path, len)),
+            _ => {}
+        }
+    }
+    Ok(best)
+}
+
+fn copy_single_chat_model_to_usb(
+    src: &Path,
+    len: u64,
+    usb_data: &Path,
+    app: &tauri::AppHandle,
+    io: &mut ExportIoReporter,
+    frac: f32,
+) -> Result<(), String> {
+    let dst_dir = usb_data.join("models").join("chat");
+    fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
+    let name = src
+        .file_name()
+        .ok_or_else(|| "Chat model path missing filename.".to_string())?;
+    let dst = dst_dir.join(name);
+    eprintln!(
+        "[athena] usb export: copying smallest chat model {} -> {} ({} B)",
+        src.display(),
+        dst.display(),
+        len
+    );
+    fs::copy(src, &dst).map_err(|e| format!("Failed to copy chat model {} -> {}: {e}", src.display(), dst.display()))?;
+    io.note_file_bytes(app, "Copying chat model to USB…", frac, len);
+    Ok(())
+}
+
+fn copy_chat_models_dir_to_usb(
+    src: &Path,
+    usb_data: &Path,
+    app: &tauri::AppHandle,
+    io: &mut ExportIoReporter,
+    frac_lo: f32,
+    frac_hi: f32,
+) -> Result<(), String> {
+    if !src.is_dir() {
+        return Err(format!("Chat model folder not found: {}", src.display()));
+    }
+    let dst = usb_data.join("models").join("chat");
+    fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
+    let total = tree_file_bytes(src)?.max(1);
+    let mut done = 0u64;
+    copy_dir_recursive_impl(
+        src,
+        &dst,
+        Some(CopyProgress {
+            app,
+            io,
+            phase: "Copying chat models to USB…",
+            frac_lo,
+            frac_hi,
+            total,
+            done: &mut done,
+        }),
+        &never_skip_file,
+    )?;
+    Ok(())
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -98,6 +211,12 @@ struct AegisExportProgressPayload {
     write_bytes_per_sec: f64,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AegisExportErrorPayload {
+    message: String,
+}
+
 fn aegis_export_emit_full(
     app: &tauri::AppHandle,
     phase: impl Into<String>,
@@ -107,16 +226,29 @@ fn aegis_export_emit_full(
     write_bytes_per_sec: f64,
 ) {
     let fraction = fraction.clamp(0.0, 1.0);
-    let _ = app.emit(
-        "athena:aegis-export-progress",
-        AegisExportProgressPayload {
-            phase: phase.into(),
-            fraction,
-            total_bytes_copied,
-            read_bytes_per_sec,
-            write_bytes_per_sec,
+    let payload = AegisExportProgressPayload {
+        phase: phase.into(),
+        fraction,
+        total_bytes_copied,
+        read_bytes_per_sec,
+        write_bytes_per_sec,
+    };
+    if let Err(e) = app.emit("athena:aegis-export-progress", payload) {
+        eprintln!("[athena] usb export: emit athena:aegis-export-progress failed: {e}");
+    }
+}
+
+fn aegis_export_emit_error(app: &tauri::AppHandle, message: impl Into<String>) {
+    let message = message.into();
+    eprintln!("[athena] usb export error (emitting to UI): {message}");
+    if let Err(e) = app.emit(
+        "athena:aegis-export-error",
+        AegisExportErrorPayload {
+            message: message.clone(),
         },
-    );
+    ) {
+        eprintln!("[athena] usb export: emit athena:aegis-export-error failed: {e}");
+    }
 }
 
 /// Tracks USB export I/O and emits throttled progress + throughput for the UI.
@@ -528,13 +660,7 @@ fn dir_size_bytes(p: &Path) -> u64 {
     if p.is_file() {
         return std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     }
-    let mut total = 0u64;
-    if let Ok(rd) = std::fs::read_dir(p) {
-        for e in rd.flatten() {
-            total = total.saturating_add(dir_size_bytes(&e.path()));
-        }
-    }
-    total
+    preflight_dir_bytes_fast(p).map(|m| m.bytes).unwrap_or(0)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -613,7 +739,12 @@ fn tier2_copy_payload_priority_fill(
             dst.display()
         );
         if dst.exists() {
-            let _ = std::fs::remove_dir_all(&dst);
+            std::fs::remove_dir_all(&dst).map_err(|e| {
+                format!(
+                    "Failed to remove existing destination {} before payload pack copy: {e}",
+                    dst.display()
+                )
+            })?;
         }
         copy_dir_recursive_impl(
             &src,
@@ -982,96 +1113,127 @@ fn copy_dir_recursive_parallel_impl(
         return Ok(());
     }
 
-    // Ensure parent dirs exist (cheap, avoids per-worker create-dir contention).
+    // Ensure each parent directory exists once (huge map trees: avoid millions of redundant create_dir_all calls).
+    let mut parents: HashSet<PathBuf> = HashSet::new();
     for j in &jobs {
         if let Some(p) = j.dst.parent() {
-            let _ = fs::create_dir_all(p);
+            parents.insert(p.to_path_buf());
         }
     }
+    for p in parents {
+        fs::create_dir_all(&p).map_err(|e| {
+            format!(
+                "Failed to create parent directory {}: {}",
+                p.display(),
+                e
+            )
+        })?;
+    }
 
-    // Phase 2: worker pool
-    let (tx_job, rx_job) = mpsc::channel::<CopyJob>();
-    let (tx_prog, rx_prog) = mpsc::channel::<Result<u64, String>>();
-
+    let expected_copy_results = jobs.len() as u64;
     let n_workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
-        .clamp(2, 8);
+        .clamp(4, 8);
 
-    let rx_job = Arc::new(Mutex::new(rx_job));
-    for _ in 0..n_workers {
-        let rx = Arc::clone(&rx_job);
-        let tx = tx_prog.clone();
-        std::thread::spawn(move || {
-            loop {
-                let job = {
-                    let guard = rx.lock().ok();
-                    if guard.is_none() {
-                        break;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(n_workers)
+        .thread_name(|i| format!("athena-export-copy-{i}"))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let (tx_res, rx_res) = crossbeam_channel::unbounded::<Result<u64, String>>();
+    let tx_shared = Arc::new(tx_res);
+    let copy_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let copy_errors_recv = Arc::clone(&copy_errors);
+    let yield_counter = AtomicU64::new(0);
+
+    std::thread::scope(|sp| {
+        sp.spawn(|| {
+            let mut bytes_done: u64 = 0;
+            let mut files_done: u64 = 0;
+            let mut last_emit = Instant::now();
+            while let Ok(msg) = rx_res.recv() {
+                match msg {
+                    Ok(len) => {
+                        bytes_done = bytes_done.saturating_add(len);
+                        files_done = files_done.saturating_add(1);
                     }
-                    guard.unwrap().recv()
-                };
-                let Ok(job) = job else { break };
-                let res =
-                    fs::copy(&job.src, &job.dst)
-                        .map(|_| job.len)
-                        .map_err(|e| {
-                            format!(
-                                "copy {} -> {}: {}",
-                                job.src.display(),
-                                job.dst.display(),
-                                e
-                            )
-                        });
-                let _ = tx.send(res);
+                    Err(e) => {
+                        if let Ok(mut g) = copy_errors_recv.lock() {
+                            if g.len() < 200 {
+                                g.push(e);
+                            }
+                        }
+                        files_done = files_done.saturating_add(1);
+                    }
+                }
+                if let Some(p) = progress.as_mut() {
+                    *p.done = p.done.saturating_add(1);
+                    let now = Instant::now();
+                    let emit = files_done % 100 == 0
+                        || now.duration_since(last_emit) >= Duration::from_millis(500);
+                    if emit {
+                        last_emit = now;
+                        let frac = if p.total > 0 {
+                            p.frac_lo
+                                + (p.frac_hi - p.frac_lo)
+                                    * ((*p.done as f32) / (p.total as f32)).min(1.0)
+                        } else {
+                            p.frac_lo
+                        };
+                        p.io.note_poll_transfer(p.app, p.phase, frac, bytes_done, 0.5);
+                        bytes_done = 0;
+                    }
+                }
             }
         });
-    }
-    drop(tx_prog);
 
-    for j in jobs {
-        tx_job.send(j).map_err(|_| "copy queue closed".to_string())?;
-    }
-    drop(tx_job);
+        pool.install(|| {
+            let copy_err_send = Arc::clone(&copy_errors);
+            jobs.par_iter().for_each(|job| {
+                let res = fs::copy(&job.src, &job.dst)
+                    .map(|_| job.len)
+                    .map_err(|e| {
+                        format!(
+                            "copy {} -> {}: {}",
+                            job.src.display(),
+                            job.dst.display(),
+                            e
+                        )
+                    });
+                if tx_shared.send(res).is_err() {
+                    let msg = "Copy result channel closed before delivery.".to_string();
+                    if let Ok(mut g) = copy_err_send.lock() {
+                        if g.len() < 32 {
+                            g.push(msg);
+                        }
+                    }
+                }
+                let n = yield_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                if n % 256 == 0 {
+                    std::thread::yield_now();
+                }
+            });
+        });
+    });
 
-    // Phase 3: throttled UI updates + error collection
     let mut failures: Vec<String> = Vec::new();
-    let mut bytes_done: u64 = 0;
-    let mut files_done: u64 = 0;
-    let mut last_emit = Instant::now();
+    if let Ok(mut g) = copy_errors.lock() {
+        failures.append(&mut *g);
+    }
 
-    while let Ok(msg) = rx_prog.recv() {
-        match msg {
-            Ok(len) => {
-                bytes_done = bytes_done.saturating_add(len);
-                files_done = files_done.saturating_add(1);
-            }
-            Err(e) => {
-                failures.push(e);
-                files_done = files_done.saturating_add(1);
-            }
-        }
-
-        if let Some(p) = progress.as_mut() {
-            *p.done = p.done.saturating_add(1);
-            let now = Instant::now();
-            let emit = files_done % 100 == 0 || now.duration_since(last_emit) >= Duration::from_millis(500);
-            if emit {
-                last_emit = now;
-                let frac = if p.total > 0 {
-                    p.frac_lo + (p.frac_hi - p.frac_lo) * ((*p.done as f32) / (p.total as f32)).min(1.0)
-                } else {
-                    p.frac_lo
-                };
-                // Use the existing reporter’s throttled emit path (bytes based).
-                p.io.note_poll_transfer(p.app, p.phase, frac, bytes_done, 0.5);
-                bytes_done = 0;
-            }
-        }
+    let files_done = progress
+        .as_ref()
+        .map(|p| *p.done)
+        .unwrap_or(expected_copy_results);
+    if files_done < expected_copy_results {
+        failures.push(format!(
+            "Parallel copy incomplete: processed {files_done} of {expected_copy_results} file results."
+        ));
     }
 
     if !failures.is_empty() {
-        // Return a summary; export continues for other stages.
         let n = failures.len();
         let preview: String = failures.into_iter().take(6).collect::<Vec<_>>().join(" | ");
         return Err(format!("Copy finished with {n} error(s). First: {preview}"));
@@ -1081,6 +1243,29 @@ fn copy_dir_recursive_parallel_impl(
 
 fn never_skip_file(_: &Path) -> bool {
     false
+}
+
+/// Result of [`preflight_dir_bytes_fast`]: byte total plus whether a shallow sum replaced a slow/failed `du`.
+#[derive(Clone, Copy, Default, Debug)]
+struct PreflightMeasured {
+    bytes: u64,
+    partial: bool,
+}
+
+impl PreflightMeasured {
+    fn exact(bytes: u64) -> Self {
+        Self {
+            bytes,
+            partial: false,
+        }
+    }
+
+    fn saturating_add(self, other: Self) -> Self {
+        Self {
+            bytes: self.bytes.saturating_add(other.bytes),
+            partial: self.partial || other.partial,
+        }
+    }
 }
 
 fn tree_file_bytes(path: &Path) -> Result<u64, String> {
@@ -1099,6 +1284,110 @@ fn tree_file_bytes(path: &Path) -> Result<u64, String> {
         }
     }
     Ok(sum)
+}
+
+/// Shallow sizing: immediate children files only (no recursion). Used when `du` fails or times out.
+fn shallow_dir_top_level_bytes(path: &Path) -> Result<u64, String> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    if path.is_file() {
+        return Ok(fs::metadata(path).map_err(|e| e.to_string())?.len());
+    }
+    let mut sum = 0u64;
+    for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let md = entry.metadata().map_err(|e| e.to_string())?;
+        if md.is_file() {
+            sum = sum.saturating_add(md.len());
+        }
+    }
+    Ok(sum)
+}
+
+/// Run `du -sk` with a wall-clock cap; on timeout the child is killed and reaped so it cannot pin CPU in the background.
+#[cfg(unix)]
+fn du_sk_bytes_child_timeout(path: &Path, timeout: Duration) -> Result<u64, String> {
+    let mut child = Command::new("du")
+        .arg("-sk")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let start = Instant::now();
+    loop {
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("du timed out for {}", path.display()));
+        }
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) => {
+                if !status.success() {
+                    return Err(format!("du failed for {}", path.display()));
+                }
+                let mut stdout = Vec::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    let _ = pipe.read_to_end(&mut stdout);
+                }
+                let line = String::from_utf8_lossy(&stdout);
+                let tok = line
+                    .split_whitespace()
+                    .next()
+                    .ok_or_else(|| format!("du produced no output for {}", path.display()))?;
+                let kib: u64 = tok
+                    .parse()
+                    .map_err(|_| format!("du parse failed for {}: {tok}", path.display()))?;
+                return Ok(kib.saturating_mul(1024));
+            }
+            None => std::thread::sleep(Duration::from_millis(40)),
+        }
+    }
+}
+
+/// Preflight-only sizing: prefer `du -sk` (with timeout) over deep walks; shallow fallback on failure/timeout.
+fn preflight_dir_bytes_fast(path: &Path) -> Result<PreflightMeasured, String> {
+    if !path.exists() {
+        return Ok(PreflightMeasured::default());
+    }
+    if path.is_file() {
+        return Ok(PreflightMeasured::exact(
+            fs::metadata(path).map_err(|e| e.to_string())?.len(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        match du_sk_bytes_child_timeout(path, Duration::from_secs(2)) {
+            Ok(n) => Ok(PreflightMeasured::exact(n)),
+            Err(_) => Ok(PreflightMeasured {
+                bytes: shallow_dir_top_level_bytes(path)?,
+                partial: true,
+            }),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(PreflightMeasured {
+            bytes: shallow_dir_top_level_bytes(path)?,
+            partial: true,
+        })
+    }
+}
+
+fn application_bundle_root_for_preflight() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = fs::canonicalize(&exe).unwrap_or(exe);
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(bundle) = macos_app_bundle_walking_up(&exe) {
+            return Ok(bundle);
+        }
+    }
+    exe.parent()
+        .ok_or_else(|| "Could not resolve executable directory.".to_string())
+        .map(|p| p.to_path_buf())
 }
 
 fn close_db_for_disk_wipe(db: &std::sync::Arc<std::sync::Mutex<Database>>) -> Result<(), String> {
@@ -1371,14 +1660,14 @@ All intelligence, indexes, models, and application data for this portable instal
 }
 
 /// Copies `payload/<branch>` from app resources to `<dest_root>/<branch>` (e.g. Windows, Linux).
-/// Warn-only on missing resources so dev builds without a full payload still export.
+/// Missing resource paths are skipped; copy failures propagate so the UI is not left at 0%.
 fn copy_bundled_payload_branches_to_usb(
     app: &tauri::AppHandle,
     dest_root: &Path,
     io: &mut ExportIoReporter,
     frac_lo: f32,
     frac_hi: f32,
-) {
+) -> Result<(), String> {
     let branches = ["Windows", "Linux"];
     let mut pairs: Vec<(PathBuf, PathBuf, String)> = Vec::new();
     let mut total = 0u64;
@@ -1386,7 +1675,12 @@ fn copy_bundled_payload_branches_to_usb(
         let rel = format!("payload/{branch}");
         match app.path().resolve(&rel, tauri::path::BaseDirectory::Resource) {
             Ok(src) if src.is_dir() => {
-                total = total.saturating_add(tree_file_bytes(&src).unwrap_or(0));
+                total = total.saturating_add(tree_file_bytes(&src).map_err(|e| {
+                    format!(
+                        "Failed to measure bundled launcher tree {} ({rel}): {e}",
+                        src.display()
+                    )
+                })?);
                 pairs.push((src, dest_root.join(branch), rel));
             }
             Ok(_) => eprintln!(
@@ -1400,14 +1694,30 @@ fn copy_bundled_payload_branches_to_usb(
     let total = total.max(1);
     let mut done = 0u64;
     for (src, dst, rel) in pairs {
+        eprintln!(
+            "[athena] usb export: bundled branch copy read_from={} write_to={} rel={}",
+            src.display(),
+            dst.display(),
+            rel
+        );
         if dst.exists() {
-            let _ = if dst.is_dir() {
-                fs::remove_dir_all(&dst)
+            if dst.is_dir() {
+                fs::remove_dir_all(&dst).map_err(|e| {
+                    format!(
+                        "Failed to remove existing bundled launcher destination {}: {e}",
+                        dst.display()
+                    )
+                })?;
             } else {
-                fs::remove_file(&dst)
-            };
+                fs::remove_file(&dst).map_err(|e| {
+                    format!(
+                        "Failed to remove existing bundled launcher destination {}: {e}",
+                        dst.display()
+                    )
+                })?;
+            }
         }
-        match copy_dir_recursive_impl(
+        copy_dir_recursive_impl(
             &src,
             &dst,
             Some(CopyProgress {
@@ -1420,17 +1730,21 @@ fn copy_bundled_payload_branches_to_usb(
                 done: &mut done,
             }),
             &never_skip_file,
-        ) {
-            Ok(()) => eprintln!(
-                "[athena] usb export: copied bundled {} -> {}",
-                rel,
+        )
+        .map_err(|e| {
+            format!(
+                "Failed copying bundled {rel} from {} to {}: {e}",
+                src.display(),
                 dst.display()
-            ),
-            Err(e) => eprintln!(
-                "[athena] usb export: warning: could not copy {rel} to USB: {e}"
-            ),
-        }
+            )
+        })?;
+        eprintln!(
+            "[athena] usb export: copied bundled {} -> {}",
+            rel,
+            dst.display()
+        );
     }
+    Ok(())
 }
 
 /// Skip files inside `**/payload/<pack>/…` when `<pack>` is not `Windows` or `Linux`.
@@ -1604,7 +1918,7 @@ fn copy_macos_app_bundle_with_progress(
         let interval = last_instant.elapsed().as_secs_f64().max(0.001);
         last_instant = Instant::now();
 
-        let dst_now = tree_file_bytes(&out).unwrap_or(0);
+        let dst_now = tree_file_bytes(&out).unwrap_or(prev_dst);
         let new_b = dst_now.saturating_sub(prev_dst);
         prev_dst = dst_now;
 
@@ -1714,10 +2028,22 @@ fn copy_application_to_destination(
 ) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe = fs::canonicalize(&exe).unwrap_or(exe);
+    eprintln!(
+        "[athena] usb export: copy_application_to_destination exe={} exists={} dest_root={} strip_non_launcher_payload={}",
+        exe.display(),
+        exe.is_file(),
+        dest_root.display(),
+        strip_non_launcher_payload_packs
+    );
 
     #[cfg(target_os = "macos")]
     {
         if let Some(bundle) = macos_app_bundle_walking_up(&exe) {
+            eprintln!(
+                "[athena] usb export: macOS app bundle source={} is_dir={}",
+                bundle.display(),
+                bundle.is_dir()
+            );
             if strip_non_launcher_payload_packs {
                 return copy_macos_app_bundle_filtered(&bundle, dest_root, app, io);
             }
@@ -1729,6 +2055,11 @@ fn copy_application_to_destination(
     let install_dir = exe
         .parent()
         .ok_or_else(|| "Could not resolve executable directory.".to_string())?;
+    eprintln!(
+        "[athena] usb export: non-mac install_dir={} is_dir={}",
+        install_dir.display(),
+        install_dir.is_dir()
+    );
     if strip_non_launcher_payload_packs {
         return copy_non_macos_install_folder_filtered(install_dir, dest_root, app, io);
     }
@@ -1754,35 +2085,34 @@ fn skip_satellite_map_file(p: &Path) -> bool {
 }
 
 /// Bytes for the full application tree `copy_application_to_destination(..., false)` copies.
-fn estimate_application_bundle_bytes() -> Result<u64, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe = fs::canonicalize(&exe).unwrap_or(exe);
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(bundle) = macos_app_bundle_walking_up(&exe) {
-            return tree_file_bytes(&bundle);
-        }
-    }
-    let install_dir = exe
-        .parent()
-        .ok_or_else(|| "Could not resolve executable directory.".to_string())?;
-    tree_file_bytes(install_dir)
+fn estimate_application_bundle_bytes() -> Result<PreflightMeasured, String> {
+    let root = application_bundle_root_for_preflight()?;
+    preflight_dir_bytes_fast(&root)
 }
 
-/// Matches `copy_application_to_destination(..., true)` — omits non-launcher `payload/*` pack folders.
-fn estimate_application_bundle_bytes_outpost() -> Result<u64, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe = fs::canonicalize(&exe).unwrap_or(exe);
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(bundle) = macos_app_bundle_walking_up(&exe) {
-            return tree_file_bytes_respecting_outpost_skip(&bundle);
+/// Preflight-only: full install/bundle size via fast sizing minus bundled `payload/*` pack dirs.
+fn estimate_application_bundle_bytes_outpost(app: &tauri::AppHandle) -> Result<PreflightMeasured, String> {
+    let full = estimate_application_bundle_bytes()?;
+    let payload_root = match app.path().resolve("payload", tauri::path::BaseDirectory::Resource) {
+        Ok(p) if p.is_dir() => p,
+        _ => return Ok(full),
+    };
+    let mut skipped = PreflightMeasured::default();
+    for entry in fs::read_dir(&payload_root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.eq_ignore_ascii_case("Windows") || name.eq_ignore_ascii_case("Linux") {
+            continue;
+        }
+        if path.is_dir() {
+            skipped = skipped.saturating_add(preflight_dir_bytes_fast(&path)?);
         }
     }
-    let install_dir = exe
-        .parent()
-        .ok_or_else(|| "Could not resolve executable directory.".to_string())?;
-    tree_file_bytes_respecting_outpost_skip(install_dir)
+    Ok(PreflightMeasured {
+        bytes: full.bytes.saturating_sub(skipped.bytes),
+        partial: full.partial || skipped.partial,
+    })
 }
 
 #[inline]
@@ -1790,31 +2120,33 @@ fn expedition_remaining_bytes(budget_bytes: u64, io: &ExportIoReporter) -> u64 {
     budget_bytes.saturating_sub(io.total_session_bytes)
 }
 
-fn bundled_payload_launchers_bytes(app: &tauri::AppHandle) -> u64 {
-    let mut total = 0u64;
+fn bundled_payload_launchers_bytes(app: &tauri::AppHandle) -> PreflightMeasured {
+    let mut acc = PreflightMeasured::default();
     for branch in ["Windows", "Linux"] {
         let rel = format!("payload/{branch}");
         if let Ok(src) = app.path().resolve(&rel, tauri::path::BaseDirectory::Resource) {
             if src.is_dir() {
-                total = total.saturating_add(tree_file_bytes(&src).unwrap_or(0));
+                if let Ok(m) = preflight_dir_bytes_fast(&src) {
+                    acc = acc.saturating_add(m);
+                }
             }
         }
     }
-    total
+    acc
 }
 
-fn sum_payload_children_bytes_except_launchers(app: &tauri::AppHandle) -> Result<u64, String> {
+fn sum_payload_children_bytes_except_launchers(app: &tauri::AppHandle) -> Result<PreflightMeasured, String> {
     let payload_root = match app
         .path()
         .resolve("payload", tauri::path::BaseDirectory::Resource)
     {
         Ok(p) => p,
-        Err(_) => return Ok(0),
+        Err(_) => return Ok(PreflightMeasured::default()),
     };
     if !payload_root.is_dir() {
-        return Ok(0);
+        return Ok(PreflightMeasured::default());
     }
-    let mut sum = 0u64;
+    let mut sum = PreflightMeasured::default();
     for entry in std::fs::read_dir(&payload_root).map_err(|e| e.to_string())? {
         let e = entry.map_err(|e| e.to_string())?;
         let src = e.path();
@@ -1823,34 +2155,46 @@ fn sum_payload_children_bytes_except_launchers(app: &tauri::AppHandle) -> Result
             continue;
         }
         if src.is_dir() {
-            sum = sum.saturating_add(tree_file_bytes(&src)?);
+            sum = sum.saturating_add(preflight_dir_bytes_fast(&src)?);
         } else if src.is_file() {
-            sum = sum.saturating_add(fs::metadata(&src).map_err(|e| e.to_string())?.len());
+            sum = sum.saturating_add(PreflightMeasured::exact(
+                fs::metadata(&src).map_err(|e| e.to_string())?.len(),
+            ));
         }
     }
     Ok(sum)
 }
 
-fn bundled_payload_root_total_bytes(app: &tauri::AppHandle) -> Result<u64, String> {
+fn bundled_payload_root_total_bytes(app: &tauri::AppHandle) -> Result<PreflightMeasured, String> {
     let payload_root = match app
         .path()
         .resolve("payload", tauri::path::BaseDirectory::Resource)
     {
         Ok(p) => p,
-        Err(_) => return Ok(0),
+        Err(_) => return Ok(PreflightMeasured::default()),
     };
     if !payload_root.is_dir() {
-        return Ok(0);
+        return Ok(PreflightMeasured::default());
     }
-    tree_file_bytes(&payload_root)
+    preflight_dir_bytes_fast(&payload_root)
 }
 
-fn offline_maps_all_bytes(app_data_dir: &Path) -> Result<u64, String> {
-    let d = map_manager_download::offline_maps_directory(app_data_dir);
-    if !d.is_dir() {
-        return Ok(0);
+/// Fast offline-maps sizing for preflight: one `du` on the maps root plus a rough sat/non split.
+fn offline_maps_preflight_split(app_data_dir: &Path) -> Result<(u64, u64, u64, bool), String> {
+    let dir = map_manager_download::offline_maps_directory(app_data_dir);
+    if !dir.is_dir() {
+        return Ok((0, 0, 0, false));
     }
-    tree_file_bytes(&d)
+    let m = preflight_dir_bytes_fast(&dir)?;
+    let all = m.bytes;
+    let partial = m.partial;
+    let satellite = all.saturating_mul(45) / 100;
+    let non = all.saturating_sub(satellite);
+    Ok((non, satellite, all, partial))
+}
+
+fn offline_maps_non_satellite_bytes(app_data_dir: &Path) -> Result<u64, String> {
+    Ok(offline_maps_preflight_split(app_data_dir)?.0)
 }
 
 fn list_sorted_payload_pack_dirs(
@@ -1890,24 +2234,12 @@ fn list_sorted_payload_pack_dirs(
 }
 
 fn collect_satellite_map_file_sizes_sorted_asc(app_data_dir: &Path) -> Result<Vec<u64>, String> {
-    let dir = map_manager_download::offline_maps_directory(app_data_dir);
-    if !dir.is_dir() {
-        return Ok(Vec::new());
+    let sat = offline_maps_preflight_split(app_data_dir)?.1;
+    if sat == 0 {
+        Ok(Vec::new())
+    } else {
+        Ok(vec![sat])
     }
-    let mut sizes: Vec<u64> = Vec::new();
-    for entry in WalkDir::new(&dir)
-        .follow_links(false)
-        .into_iter()
-        .map(|e| e.map_err(|e| e.to_string()))
-    {
-        let entry = entry?;
-        let p = entry.path();
-        if p.is_file() && skip_satellite_map_file(p) {
-            sizes.push(p.metadata().map_err(|e| e.to_string())?.len());
-        }
-    }
-    sizes.sort_unstable();
-    Ok(sizes)
 }
 
 fn preflight_estimated_seconds(total_bytes: u64, mib_per_sec: f64) -> u64 {
@@ -2029,7 +2361,11 @@ fn simulate_expedition_plan(
     out
 }
 
-/// Accurate byte totals for manual tiers plus optional drive fit checks and an Expedition staging plan.
+/// Byte totals for manual tiers plus optional drive fit checks and an Expedition staging plan.
+///
+/// Always computes the full component set in one pass (no `preflight_tier` / export-scope branching).
+/// When a destination path is set, [`destination_fits_fast_node`] and [`destination_fits_sister_server`]
+/// are both derived from the same measured totals as the legacy outpost/citadel fit flags.
 pub fn aegis_export_preflight(
     app: &tauri::AppHandle,
     db: &Arc<Mutex<Database>>,
@@ -2049,60 +2385,108 @@ pub fn aegis_export_preflight(
         .join("models")
         .join("rerankers")
         .join(&rr_name);
+    let chat_dir = chat_models_dir(&app_data_dir);
 
-    let application_bytes = estimate_application_bundle_bytes()?;
-    let application_bundle_bytes_outpost = estimate_application_bundle_bytes_outpost()?;
-    let bundled_launchers_bytes = bundled_payload_launchers_bytes(app);
+    let launch_m = bundled_payload_launchers_bytes(app);
+    let bundled_launchers_bytes = launch_m.bytes;
     let slim_sqlite_bytes = compute_slim_db_export_bytes(db)?;
     let db_path = app_data_dir.join("athena_index.db");
+    let example_region_extract_estimate_bytes = EXAMPLE_REGION_USB_EXTRACT_ESTIMATE_BYTES;
+    let example_region_r = example_region_reserved_bytes();
+    let kiwix_str = kiwix_downloads_dir(&app_data_dir)
+        .to_string_lossy()
+        .to_string();
+
+    let app_full_m = estimate_application_bundle_bytes()?;
+    let application_bytes = app_full_m.bytes;
+    let app_out_m = estimate_application_bundle_bytes_outpost(app)?;
+    let application_bundle_bytes_outpost = app_out_m.bytes;
     let full_sqlite_bytes = if db_path.is_file() {
         fs::metadata(&db_path).map_err(|e| e.to_string())?.len()
     } else {
         0
     };
-    let models_bytes = if emb_src.is_dir() && rr_src.is_dir() {
-        tree_file_bytes(&emb_src)?.saturating_add(tree_file_bytes(&rr_src)?)
+    let models_m = if emb_src.is_dir() && rr_src.is_dir() {
+        preflight_dir_bytes_fast(&emb_src)?.saturating_add(preflight_dir_bytes_fast(&rr_src)?)
     } else {
-        0
+        PreflightMeasured::default()
     };
-
-    let example_region_extract_estimate_bytes = EXAMPLE_REGION_USB_EXTRACT_ESTIMATE_BYTES;
-    let example_region_r = example_region_reserved_bytes();
-
-    let offline_maps_non_satellite_bytes = offline_maps_non_satellite_bytes(&app_data_dir)?;
-    let offline_maps_satellite_bytes = offline_maps_satellite_only_bytes(&app_data_dir)?;
-    let offline_maps_all_bytes = offline_maps_all_bytes(&app_data_dir)?;
-    let bundled_payload_children_bytes = sum_payload_children_bytes_except_launchers(app)?;
-    let bundled_payload_root_total_bytes = bundled_payload_root_total_bytes(app)?;
-
-    let kiwix_str = kiwix_downloads_dir(&app_data_dir)
-        .to_string_lossy()
-        .to_string();
-    let library_non_satellite_bytes =
-        library_watch_folders_non_satellite_bytes(db, &app_data_dir, &cfg, &kiwix_str)?;
-    let library_all_bytes =
-        library_watch_folders_all_bytes(db, &app_data_dir, &cfg, &kiwix_str)?;
+    let models_bytes = models_m.bytes;
+    let chat_m = if chat_dir.is_dir() {
+        preflight_dir_bytes_fast(&chat_dir)?
+    } else {
+        PreflightMeasured::default()
+    };
+    let chat_models_all_bytes = chat_m.bytes;
+    let chat_models_smallest_bytes = pick_smallest_chat_model(&chat_dir)?
+        .map(|(_, len)| len)
+        .unwrap_or(0);
+    let (
+        offline_maps_non_satellite_bytes,
+        offline_maps_satellite_bytes,
+        offline_maps_all_bytes,
+        maps_partial,
+    ) = offline_maps_preflight_split(&app_data_dir)?;
+    let payload_children_m = sum_payload_children_bytes_except_launchers(app)?;
+    let bundled_payload_children_bytes = payload_children_m.bytes;
+    let root_payload_m = bundled_payload_root_total_bytes(app)?;
+    let bundled_payload_root_total_bytes = root_payload_m.bytes;
+    let lib_non_m = library_watch_folders_non_satellite_bytes(db, &app_data_dir, &cfg, &kiwix_str)?;
+    let library_non_satellite_bytes = lib_non_m.bytes;
+    let lib_all_m = library_watch_folders_all_bytes(db, &app_data_dir, &cfg, &kiwix_str)?;
+    let library_all_bytes = lib_all_m.bytes;
 
     let outpost_total_bytes = application_bundle_bytes_outpost
         .saturating_add(bundled_launchers_bytes)
+        .saturating_add(example_region_r)
+        .saturating_add(chat_models_smallest_bytes)
         .saturating_add(slim_sqlite_bytes);
 
-    let bastion_total_bytes = application_bytes
+    let mut bastion_total_bytes = application_bytes
         .saturating_add(bundled_launchers_bytes)
         .saturating_add(example_region_r)
         .saturating_add(full_sqlite_bytes)
         .saturating_add(models_bytes)
+        .saturating_add(chat_models_all_bytes)
         .saturating_add(offline_maps_non_satellite_bytes)
         .saturating_add(library_non_satellite_bytes)
         .saturating_add(bundled_payload_children_bytes);
+    bastion_total_bytes = bastion_total_bytes.max(outpost_total_bytes);
 
-    let citadel_total_bytes = application_bytes
+    let mut citadel_total_bytes = application_bytes
         .saturating_add(bundled_payload_root_total_bytes)
         .saturating_add(example_region_r)
         .saturating_add(full_sqlite_bytes)
         .saturating_add(models_bytes)
+        .saturating_add(chat_models_all_bytes)
         .saturating_add(offline_maps_all_bytes)
         .saturating_add(library_all_bytes);
+    citadel_total_bytes = citadel_total_bytes.max(bastion_total_bytes);
+    // Sister Server (citadel) must never size below Fast Node (outpost), even if estimates overlap.
+    citadel_total_bytes = citadel_total_bytes.max(outpost_total_bytes);
+
+    let fast_node_measure_status = if app_out_m.partial
+        || launch_m.partial
+        || models_m.partial
+        || chat_m.partial
+    {
+        "calculating".to_string()
+    } else {
+        "ready".to_string()
+    };
+    let sister_server_measure_status = if app_full_m.partial
+        || launch_m.partial
+        || models_m.partial
+        || chat_m.partial
+        || maps_partial
+        || lib_all_m.partial
+        || payload_children_m.partial
+        || root_payload_m.partial
+    {
+        "calculating".to_string()
+    } else {
+        "ready".to_string()
+    };
 
     let dest_trim = destination_path
         .as_ref()
@@ -2139,7 +2523,7 @@ pub fn aegis_export_preflight(
                 if !p.is_dir() {
                     continue;
                 }
-                let sz = tree_file_bytes_filtered(p, &skip_satellite_map_file)?;
+                let sz = preflight_dir_bytes_fast(p)?.bytes;
                 let name = p
                     .file_name()
                     .and_then(|s| s.to_str())
@@ -2203,6 +2587,8 @@ pub fn aegis_export_preflight(
         slim_sqlite_bytes,
         full_sqlite_bytes,
         models_bytes,
+        chat_models_all_bytes,
+        chat_models_smallest_bytes,
         example_region_extract_estimate_bytes,
         example_region_reserved_bytes: example_region_r,
         offline_maps_non_satellite_bytes,
@@ -2223,40 +2609,39 @@ pub fn aegis_export_preflight(
         destination_fits_outpost,
         destination_fits_bastion,
         destination_fits_citadel,
+        destination_fits_fast_node: destination_fits_outpost,
+        destination_fits_sister_server: destination_fits_citadel,
+        fast_node_measure_status,
+        sister_server_measure_status,
         expedition_plan,
     })
 }
 
-fn offline_maps_non_satellite_bytes(app_data_dir: &Path) -> Result<u64, String> {
-    let dir = map_manager_download::offline_maps_directory(app_data_dir);
-    if !dir.is_dir() {
-        return Ok(0);
-    }
-    let mut sum = 0u64;
-    for entry in WalkDir::new(&dir).follow_links(false).into_iter().map(|e| e.map_err(|e| e.to_string())) {
-        let entry = entry?;
-        let p = entry.path();
-        if p.is_file() && !skip_satellite_map_file(p) {
-            sum = sum.saturating_add(p.metadata().map_err(|e| e.to_string())?.len());
+/// Runs [`aegis_export_preflight`] on a background thread and emits the result on `athena:aegis-preflight-progress`.
+pub fn start_aegis_export_preflight_background(
+    app: &tauri::AppHandle,
+    db: Arc<Mutex<Database>>,
+    destination_path: Option<String>,
+) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let res = aegis_export_preflight(&app, &db, destination_path);
+        let ev = match res {
+            Ok(pf) => AegisPreflightProgressEvent {
+                done: true,
+                error: None,
+                preflight: Some(pf),
+            },
+            Err(e) => AegisPreflightProgressEvent {
+                done: true,
+                error: Some(e),
+                preflight: None,
+            },
+        };
+        if let Err(err) = app.emit("athena:aegis-preflight-progress", &ev) {
+            eprintln!("[athena] aegis preflight emit failed: {err}");
         }
-    }
-    Ok(sum)
-}
-
-fn offline_maps_satellite_only_bytes(app_data_dir: &Path) -> Result<u64, String> {
-    let dir = map_manager_download::offline_maps_directory(app_data_dir);
-    if !dir.is_dir() {
-        return Ok(0);
-    }
-    let mut sum = 0u64;
-    for entry in WalkDir::new(&dir).follow_links(false).into_iter().map(|e| e.map_err(|e| e.to_string())) {
-        let entry = entry?;
-        let p = entry.path();
-        if p.is_file() && skip_satellite_map_file(p) {
-            sum = sum.saturating_add(p.metadata().map_err(|e| e.to_string())?.len());
-        }
-    }
-    Ok(sum)
+    });
 }
 
 fn tree_file_bytes_filtered(path: &Path, skip: &dyn Fn(&Path) -> bool) -> Result<u64, String> {
@@ -2283,22 +2668,19 @@ fn library_watch_folders_non_satellite_bytes(
     app_data_dir: &Path,
     cfg: &AppConfig,
     kiwix_str: &str,
-) -> Result<u64, String> {
+) -> Result<PreflightMeasured, String> {
     let folders = {
         let g = db.lock().map_err(|e| e.to_string())?;
         compute_watcher_folders(&*g, app_data_dir, cfg)?
     };
-    let mut sum = 0u64;
+    let mut sum = PreflightMeasured::default();
     for folder in folders {
         if folder == kiwix_str {
             continue;
         }
         let p = Path::new(&folder);
         if p.is_dir() {
-            sum = sum.saturating_add(tree_file_bytes_filtered(
-                p,
-                &skip_satellite_map_file,
-            )?);
+            sum = sum.saturating_add(preflight_dir_bytes_fast(p)?);
         }
     }
     Ok(sum)
@@ -2309,19 +2691,19 @@ fn library_watch_folders_all_bytes(
     app_data_dir: &Path,
     cfg: &AppConfig,
     kiwix_str: &str,
-) -> Result<u64, String> {
+) -> Result<PreflightMeasured, String> {
     let folders = {
         let g = db.lock().map_err(|e| e.to_string())?;
         compute_watcher_folders(&*g, app_data_dir, cfg)?
     };
-    let mut sum = 0u64;
+    let mut sum = PreflightMeasured::default();
     for folder in folders {
         if folder == kiwix_str {
             continue;
         }
         let p = Path::new(&folder);
         if p.is_dir() {
-            sum = sum.saturating_add(tree_file_bytes(p)?);
+            sum = sum.saturating_add(preflight_dir_bytes_fast(p)?);
         }
     }
     Ok(sum)
@@ -2427,6 +2809,51 @@ fn copy_watcher_documents_to_usb_filtered(
     Ok(())
 }
 
+fn write_portable_marker_for_export(dest_root: &Path) -> Result<(), String> {
+    // Export layout: `data/` at the USB root, binaries in OS-specific subfolders.
+    // We place `portable.athena` beside each executable/bundle so portable mode resolves AthenaData
+    // to the USB's root `data/` directory.
+    let data_rel_from_athena_dir = "../data\n";
+    let marker_winlin = dest_root.join("ATHENA").join(PORTABLE_ATHENA_MARKER_FILENAME);
+    if marker_winlin.parent().map(|p| p.is_dir()).unwrap_or(false) {
+        fs::write(&marker_winlin, data_rel_from_athena_dir).map_err(|e| {
+            format!(
+                "Failed to write portable marker {}: {e}",
+                marker_winlin.display()
+            )
+        })?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mac_dir = dest_root.join("Mac");
+        if mac_dir.is_dir() {
+            // Find first .app bundle under Mac/ (export copies the running bundle there).
+            for entry in fs::read_dir(&mac_dir).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let p = entry.path();
+                if p.is_dir() && p.extension().map_or(false, |e| e == "app") {
+                    let marker = p.join("Contents").join(PORTABLE_ATHENA_MARKER_FILENAME);
+                    let parent = marker.parent().ok_or_else(|| {
+                        format!("Invalid portable marker path (no parent): {}", marker.display())
+                    })?;
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    // Contents/ -> ../../../data
+                    fs::write(&marker, "../../../data\n").map_err(|e| {
+                        format!(
+                            "Failed to write portable marker {}: {e}",
+                            marker.display()
+                        )
+                    })?;
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn copy_offline_maps_to_usb(
     app_data_dir: &Path,
     usb_data: &Path,
@@ -2507,11 +2934,21 @@ fn copy_full_payload_to_usb_root(
             let mut done = 0u64;
             for (src, dst, _sz, is_dir) in items {
                 if dst.exists() {
-                    let _ = if dst.is_dir() {
-                        std::fs::remove_dir_all(&dst)
+                    if dst.is_dir() {
+                        std::fs::remove_dir_all(&dst).map_err(|e| {
+                            format!(
+                                "Failed to remove existing payload destination {}: {e}",
+                                dst.display()
+                            )
+                        })?;
                     } else {
-                        std::fs::remove_file(&dst)
-                    };
+                        std::fs::remove_file(&dst).map_err(|e| {
+                            format!(
+                                "Failed to remove existing payload destination {}: {e}",
+                                dst.display()
+                            )
+                        })?;
+                    }
                 }
                 if is_dir {
                     copy_dir_recursive_impl(
@@ -2530,7 +2967,13 @@ fn copy_full_payload_to_usb_root(
                     )?;
                 } else {
                     let len = fs::metadata(&src).map_err(|e| e.to_string())?.len();
-                    fs::copy(&src, &dst).map_err(|e| e.to_string())?;
+                    fs::copy(&src, &dst).map_err(|e| {
+                        format!(
+                            "Failed to copy payload file {} -> {}: {e}",
+                            src.display(),
+                            dst.display()
+                        )
+                    })?;
                     done = done.saturating_add(len);
                     let frac = 0.30 + (0.42 - 0.30) * (done as f32 / total as f32).min(1.0);
                     io.note_file_bytes(app, "Copying full payload…", frac, len);
@@ -2646,7 +3089,12 @@ fn tier2_copy_payload_priority_fill_within_budget(
             dst.display()
         );
         if dst.exists() {
-            let _ = std::fs::remove_dir_all(&dst);
+            std::fs::remove_dir_all(&dst).map_err(|e| {
+                format!(
+                    "Failed to remove existing expedition payload {}: {e}",
+                    dst.display()
+                )
+            })?;
         }
         copy_dir_recursive_impl(
             &src,
@@ -2739,7 +3187,7 @@ fn export_expedition_to_usb(
         fs::create_dir_all(p).map_err(|e| e.to_string())?;
     }
 
-    let lz = bundled_payload_launchers_bytes(app);
+    let lz = bundled_payload_launchers_bytes(app).bytes;
     let rem0 = expedition_remaining_bytes(budget_bytes, io);
     if lz > rem0 {
         return Err(format!(
@@ -2747,11 +3195,21 @@ fn export_expedition_to_usb(
         ));
     }
     io.emit_phase(app, "Copying Windows/Linux launchers…", 0.30);
-    copy_bundled_payload_branches_to_usb(app, dest_root, io, 0.30, 0.42);
+    copy_bundled_payload_branches_to_usb(app, dest_root, io, 0.30, 0.42)?;
     io.emit_phase(app, "Payload stage complete.", 0.42);
 
-    let emb_sz = tree_file_bytes(emb_src).unwrap_or(0);
-    let rr_sz = tree_file_bytes(rr_src).unwrap_or(0);
+    let emb_sz = tree_file_bytes(emb_src).map_err(|e| {
+        format!(
+            "Failed to measure embedding folder {} for expedition sizing: {e}",
+            emb_src.display()
+        )
+    })?;
+    let rr_sz = tree_file_bytes(rr_src).map_err(|e| {
+        format!(
+            "Failed to measure reranker folder {} for expedition sizing: {e}",
+            rr_src.display()
+        )
+    })?;
     let models_total = emb_sz.saturating_add(rr_sz);
     if emb_src.is_dir()
         && rr_src.is_dir()
@@ -2946,7 +3404,9 @@ pub fn export_athena_to_usb(
     format_first: bool,
     device_path: Option<String>,
     expedition_budget_bytes: Option<u64>,
+    selected_external_chat_model_path: Option<String>,
 ) -> Result<(), String> {
+    let export_result = (|| -> Result<(), String> {
     let mut io = ExportIoReporter::new();
     let mut dest_root = PathBuf::from(destination_path.trim());
 
@@ -2965,7 +3425,7 @@ pub fn export_athena_to_usb(
     }
     #[cfg(not(target_os = "macos"))]
     if format_first {
-        let _ = device_path;
+        drop(device_path);
         return Err("Drive formatting is only supported on macOS.".to_string());
     }
 
@@ -2980,6 +3440,27 @@ pub fn export_athena_to_usb(
     fs::create_dir_all(dest_root.join("data")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dest_root.join("models")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dest_root.join("documents")).map_err(|e| e.to_string())?;
+
+    eprintln!(
+        "[athena] usb export: begin export_type={} dest={} wipe_after={} format_first={}",
+        export_type.trim(),
+        dest_root.display(),
+        wipe_after,
+        format_first
+    );
+    let probe = dest_root.join(".athena_usb_export_write_probe");
+    fs::write(&probe, b"ok").map_err(|e| {
+        format!(
+            "Cannot write to USB root {} (permission denied, read-only volume, or sandbox — check Full Disk Access / mount): {e}",
+            dest_root.display()
+        )
+    })?;
+    if let Err(e) = fs::remove_file(&probe) {
+        return Err(format!(
+            "Failed to remove USB write probe file {}: {e}",
+            probe.display()
+        ));
+    }
 
     let parsed = parse_usb_export_type(&export_type, expedition_budget_bytes)?;
     if wipe_after {
@@ -3005,6 +3486,7 @@ pub fn export_athena_to_usb(
         .join("models")
         .join("rerankers")
         .join(&rr_name);
+    let chat_src = chat_models_dir(&app_data_dir);
 
     let strip_non_launcher_payload_packs = matches!(
         &parsed,
@@ -3020,28 +3502,62 @@ pub fn export_athena_to_usb(
         &mut io,
         strip_non_launcher_payload_packs,
     )?;
+    write_portable_marker_for_export(&dest_root)?;
 
     let usb_data = dest_root.join("data");
     fs::create_dir_all(&usb_data).map_err(|e| e.to_string())?;
+    // Inject a minimal default config for Hive Mind behavior.
+    // Fast Node: join a seed/coordinator; Sister Server: broadcast resources.
+    let mut injected_cfg = AppConfig::default();
+    injected_cfg.hive_mind_seed_url = Some("http://athena-hivemind.local:5055".to_string());
+    injected_cfg.hive_mind_broadcast_resources = Some(matches!(&parsed, ParsedUsbExport::Manual(AegisManualTier::Citadel)));
+    save_config(&usb_data, &injected_cfg)?;
 
     match &parsed {
         ParsedUsbExport::Manual(AegisManualTier::Outpost) => {
             io.emit_phase(app, "Copying Windows/Linux launchers…", 0.30);
-            copy_bundled_payload_branches_to_usb(app, &dest_root, &mut io, 0.30, 0.42);
+            copy_bundled_payload_branches_to_usb(app, &dest_root, &mut io, 0.30, 0.42)?;
             io.emit_phase(app, "Payload stage complete.", 0.42);
-            io.emit_phase(
-                app,
-                "Skipping offline map tile pack (Outpost export saves USB space).",
-                0.48,
-            );
-            io.emit_phase(app, "Copying local index database…", 0.52);
+            io.emit_phase(app, "Building minimal vector basemap…", 0.44);
+            ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir)?;
+            io.emit_phase(app, "Basemap ready.", 0.50);
+
+            io.emit_phase(app, "Copying one small chat model…", 0.52);
+            let picked: Option<(PathBuf, u64)> = if let Some(ref p) = selected_external_chat_model_path {
+                let src = PathBuf::from(p.trim());
+                if !src.is_file() {
+                    return Err(format!("Selected model path is not a file: {}", src.display()));
+                }
+                let name_ok = src
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_ascii_lowercase().ends_with(".gguf"))
+                    .unwrap_or(false);
+                if !name_ok {
+                    return Err("Selected model must be a .gguf file.".to_string());
+                }
+                let len = fs::metadata(&src).map_err(|e| e.to_string())?.len();
+                Some((src, len))
+            } else {
+                pick_smallest_chat_model(&chat_src)?
+            };
+            let Some((small_chat, small_len)) = picked else {
+                return Err(format!(
+                    "No local chat models found in {}. Download at least one `.gguf` model or select one from the device scanner.",
+                    chat_src.display()
+                ));
+            };
+            copy_single_chat_model_to_usb(&small_chat, small_len, &usb_data, app, &mut io, 0.54)?;
+            io.emit_phase(app, "Chat model copied.", 0.56);
+
+            io.emit_phase(app, "Copying local index database…", 0.58);
             let db_dst = usb_data.join("athena_index.db");
             copy_slim_index_database_to_usb(db, &db_dst, app, &mut io)?;
-            io.emit_phase(app, "Index database stage complete.", 0.58);
+            io.emit_phase(app, "Index database stage complete.", 0.64);
         }
         ParsedUsbExport::Manual(AegisManualTier::Bastion) => {
             io.emit_phase(app, "Copying Windows/Linux launchers…", 0.30);
-            copy_bundled_payload_branches_to_usb(app, &dest_root, &mut io, 0.30, 0.42);
+            copy_bundled_payload_branches_to_usb(app, &dest_root, &mut io, 0.30, 0.42)?;
             io.emit_phase(app, "Payload stage complete.", 0.42);
             io.emit_phase(app, "Building proximity offline map…", 0.44);
             ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir)?;
@@ -3103,9 +3619,13 @@ pub fn export_athena_to_usb(
                 }),
                 &never_skip_file,
             )?;
-            io.emit_phase(app, "Models copied.", 0.58);
+            io.emit_phase(app, "Embedding & reranker copied.", 0.58);
 
-            copy_full_database_to_usb(&app_data_dir, &usb_data, app, &mut io, 0.59)?;
+            io.emit_phase(app, "Copying chat models…", 0.585);
+            copy_chat_models_dir_to_usb(&chat_src, &usb_data, app, &mut io, 0.585, 0.605)?;
+            io.emit_phase(app, "Chat models copied.", 0.61);
+
+            copy_full_database_to_usb(&app_data_dir, &usb_data, app, &mut io, 0.62)?;
 
             io.emit_phase(app, "Filling priority payload packs…", 0.64);
             tier2_copy_payload_priority_fill(app, &dest_root, &mut io)?;
@@ -3199,9 +3719,13 @@ pub fn export_athena_to_usb(
                 }),
                 &never_skip_file,
             )?;
-            io.emit_phase(app, "Models copied.", 0.58);
+            io.emit_phase(app, "Embedding & reranker copied.", 0.58);
 
-            copy_full_database_to_usb(&app_data_dir, &usb_data, app, &mut io, 0.59)?;
+            io.emit_phase(app, "Copying chat models…", 0.585);
+            copy_chat_models_dir_to_usb(&chat_src, &usb_data, app, &mut io, 0.585, 0.605)?;
+            io.emit_phase(app, "Chat models copied.", 0.61);
+
+            copy_full_database_to_usb(&app_data_dir, &usb_data, app, &mut io, 0.62)?;
 
             copy_offline_maps_to_usb(
                 &app_data_dir,
@@ -3259,6 +3783,11 @@ pub fn export_athena_to_usb(
     eprintln!("[athena] usb export: finished");
     io.emit_phase(app, "Export complete.", 1.0);
     Ok(())
+    })();
+    if let Err(ref e) = export_result {
+        aegis_export_emit_error(app, e.clone());
+    }
+    export_result
 }
 
 #[cfg(test)]

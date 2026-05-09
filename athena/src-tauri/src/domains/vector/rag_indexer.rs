@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::chunking;
 use crate::document_rag_read;
@@ -20,6 +21,102 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     embeddings::cosine_similarity(a, b)
 }
 
+fn parse_timestamp_to_seconds(ts: &str) -> Option<f64> {
+    let head = ts.trim().split_whitespace().next().unwrap_or("").replace(',', ".");
+    let parts: Vec<&str> = head.split(':').collect();
+    match parts.len() {
+        3 => {
+            let h: f64 = parts[0].parse().ok()?;
+            let m: f64 = parts[1].parse().ok()?;
+            let s: f64 = parts[2].parse().ok()?;
+            Some(h * 3600.0 + m * 60.0 + s)
+        }
+        2 => {
+            let m: f64 = parts[0].parse().ok()?;
+            let s: f64 = parts[1].parse().ok()?;
+            Some(m * 60.0 + s)
+        }
+        _ => None,
+    }
+}
+
+fn parse_webvtt_cues(content: &str) -> Vec<(f64, String)> {
+    let mut out = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if line.contains("-->") {
+            let start_part = line.split("-->").next().unwrap_or("").trim();
+            if let Some(t0) = parse_timestamp_to_seconds(start_part) {
+                i += 1;
+                let mut body: Vec<String> = Vec::new();
+                while i < lines.len() {
+                    let l = lines[i].trim();
+                    if l.is_empty() {
+                        break;
+                    }
+                    if l.contains("-->") {
+                        break;
+                    }
+                    body.push(l.to_string());
+                    i += 1;
+                }
+                let text = body.join("\n");
+                if !text.trim().is_empty() {
+                    out.push((t0, text));
+                }
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn parse_srt_cues(content: &str) -> Result<Vec<(f64, String)>, String> {
+    let mut out = Vec::new();
+    let normalized = content.replace("\r\n", "\n");
+    for block in normalized.split("\n\n") {
+        let block = block.trim();
+        if block.is_empty() {
+            continue;
+        }
+        let mut ls = block.lines();
+        let first = ls.next().unwrap_or("").trim();
+        let timing_line = if first.chars().all(|c| c.is_ascii_digit()) {
+            ls.next().unwrap_or("").trim()
+        } else {
+            first
+        };
+        if !timing_line.contains("-->") {
+            continue;
+        }
+        let start_part = timing_line.split("-->").next().unwrap_or("").trim();
+        let t0 = parse_timestamp_to_seconds(start_part).ok_or_else(|| {
+            format!("Unrecognized SRT timing line: {timing_line}")
+        })?;
+        let text: String = ls
+            .map(|l| l.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+        if !text.is_empty() {
+            out.push((t0, text));
+        }
+    }
+    Ok(out)
+}
+
+fn parse_subtitle_cues_by_ext(ext: &str, content: &str) -> Result<Vec<(f64, String)>, String> {
+    match ext {
+        "vtt" => Ok(parse_webvtt_cues(content)),
+        "srt" => parse_srt_cues(content),
+        _ => Err("Expected .vtt or .srt subtitle file.".to_string()),
+    }
+}
+
 /// Read supported document formats into a single UTF-8 string.
 ///
 /// Currently supported:
@@ -32,7 +129,8 @@ pub fn read_document_to_text(file_path: &Path) -> Result<String, String> {
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .ok_or_else(|| {
-            "Unsupported file extension (expected .txt, .md, .csv, .zim, or .pdf).".to_string()
+            "Unsupported file extension (expected .txt, .md, .csv, .zim, .pdf, .doc, .docx, .vtt, or .srt)."
+                .to_string()
         })?;
 
     match ext.as_str() {
@@ -56,8 +154,25 @@ pub fn read_document_to_text(file_path: &Path) -> Result<String, String> {
             }
         },
         "zim" => read_zim_to_text(file_path),
+        "doc" | "docx" => crate::indexer::extract_word_like_text_for_rag(file_path),
+        "vtt" | "srt" => {
+            let raw = fs::read_to_string(file_path)
+                .map_err(|e| format!("Failed to read {}: {e}", file_path.display()))?;
+            let cues = parse_subtitle_cues_by_ext(&ext, &raw)?;
+            if cues.is_empty() {
+                return Err(format!("No subtitle cues in {}.", file_path.display()));
+            }
+            Ok(cues
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n"))
+        }
         _ => {
-            Err("Unsupported file extension (expected .txt, .md, .csv, .zim, or .pdf).".to_string())
+            Err(
+                "Unsupported file extension (expected .txt, .md, .csv, .zim, .pdf, .doc, .docx, .vtt, or .srt)."
+                    .to_string(),
+            )
         }
     }
 }
@@ -160,6 +275,7 @@ pub struct RagDocumentSummary {
     pub file_type: String,
     pub total_chunks: i64,
     pub ingested_at: String,
+    pub source_package: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -210,8 +326,79 @@ pub async fn ingest_local_document(
         .and_then(|e| e.to_str())
         .map(|x| x.to_ascii_lowercase());
     let uses_chunk_worker = matches!(ext_plain.as_deref(), Some("txt" | "md" | "csv"));
+    let is_transcript = matches!(ext_plain.as_deref(), Some("vtt" | "srt"));
 
-    let (text, total_chunks) = if uses_chunk_worker {
+    if is_transcript {
+        let ext_owned = ext_plain.clone().unwrap_or_default();
+        let path_for_read = source_path.to_path_buf();
+        let title = doc_title.clone();
+        let (flat, cues, n) = match tokio::task::spawn_blocking(move || {
+            let raw = fs::read_to_string(&path_for_read).map_err(|e| e.to_string())?;
+            let cues = parse_subtitle_cues_by_ext(ext_owned.as_str(), &raw)?;
+            if cues.is_empty() {
+                return Err("No subtitle cues in file.".to_string());
+            }
+            let flat: String = cues
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let n = vector_index::count_transcript_index_rows(&title, &cues);
+            Ok::<(String, Vec<(f64, String)>, usize), String>((flat, cues, n))
+        })
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                emit_payload(true, 0, None, Some(e.clone()));
+                return Err(e);
+            }
+            Err(e) => {
+                let msg = format!("RAG transcript ingest task failed: {e}");
+                emit_payload(true, 0, None, Some(msg.clone()));
+                return Err(msg);
+            }
+        };
+        if n == 0 {
+            let err = "No indexable subtitle text.".to_string();
+            emit_payload(true, 0, None, Some(err.clone()));
+            return Err(err);
+        }
+        let preview = indexer::limit_text_for_index(source_path, flat.clone());
+        let meta = source_path.metadata().ok();
+        let size = meta.as_ref().map(|m| m.len() as i64);
+        let modified_at = meta
+            .and_then(|m| m.modified().ok())
+            .and_then(|st| st.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
+        {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            db.upsert_file(
+                &path_for_db,
+                "text",
+                &filename,
+                size,
+                modified_at,
+                preview.as_deref(),
+                None,
+                Some(doc_title.as_str()),
+                None,
+                None,
+            )?;
+        }
+        vector_index::index_transcript_spawn_blocking(
+            Arc::clone(&state.db),
+            path_for_db.clone(),
+            doc_title.clone(),
+            cues,
+        )
+        .await?;
+        let document_id = Uuid::new_v4().to_string();
+        emit_payload(true, n, Some(document_id.clone()), None);
+        return Ok(document_id);
+    }
+
+    let (text_for_preview, total_chunks, skip_vector_index) = if uses_chunk_worker {
         let path_for_read = source_path.to_path_buf();
         let title = doc_title.clone();
         match tokio::task::spawn_blocking(move || {
@@ -221,7 +408,7 @@ pub async fn ingest_local_document(
         {
             Ok(Ok((text, plan))) => {
                 let n: usize = plan.iter().map(|p| 1 + p.children.len()).sum();
-                (text, n)
+                (text, n, false)
             }
             Ok(Err(e)) => {
                 emit_payload(true, 0, None, Some(e.clone()));
@@ -250,7 +437,7 @@ pub async fn ingest_local_document(
         let words = chunking::words_from_plain_text(&text);
         let plan = chunking::build_parent_child_plan(&words, &doc_title);
         let n: usize = plan.iter().map(|p| 1 + p.children.len()).sum();
-        (text, n)
+        (text, n, false)
     };
 
     if total_chunks == 0 {
@@ -259,7 +446,7 @@ pub async fn ingest_local_document(
         return Err(err);
     }
 
-    let preview = indexer::limit_text_for_index(source_path, text.clone());
+    let preview = indexer::limit_text_for_index(source_path, text_for_preview.clone());
     let meta = source_path.metadata().ok();
     let size = meta.as_ref().map(|m| m.len() as i64);
     let modified_at = meta
@@ -281,14 +468,16 @@ pub async fn ingest_local_document(
             None,
         )?;
     }
-    vector_index::index_document_spawn_blocking(
-        std::sync::Arc::clone(&state.db),
-        path_for_db.clone(),
-        doc_title.clone(),
-        None,
-        text.clone(),
-    )
-    .await?;
+    if !skip_vector_index {
+        vector_index::index_document_spawn_blocking(
+            Arc::clone(&state.db),
+            path_for_db.clone(),
+            doc_title.clone(),
+            None,
+            text_for_preview.clone(),
+        )
+        .await?;
+    }
 
     let document_id = Uuid::new_v4().to_string();
     emit_payload(true, total_chunks, Some(document_id.clone()), None);
@@ -444,12 +633,16 @@ pub fn search_rag_chunks_blocking(
     query: &str,
     limit: usize,
 ) -> Result<Vec<RagSearchResult>, String> {
+    const MIN_SCORE: f32 = 0.65;
     let cap = limit.clamp(1, 50);
     let query_embedding = embeddings::embed_text(query);
     let hits = db.search_similar_chunks(query, cap)?;
     let mut out: Vec<RagSearchResult> = Vec::new();
     for h in hits {
         let semantic_score = cosine_similarity(&query_embedding, &h.vector);
+        if semantic_score < MIN_SCORE {
+            continue;
+        }
         out.push(RagSearchResult {
             chunk_id: format!("{}:{}", h.file_path, h.chunk_index),
             document_id: h.file_path.clone(),
@@ -499,7 +692,7 @@ pub async fn list_rag_documents(
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, filename, file_type, total_chunks, ingested_at
+            "SELECT id, filename, file_type, total_chunks, ingested_at, source_package
              FROM rag_documents
              ORDER BY ingested_at DESC",
         )
@@ -512,6 +705,7 @@ pub async fn list_rag_documents(
                 file_type: row.get(2)?,
                 total_chunks: row.get(3)?,
                 ingested_at: row.get(4)?,
+                source_package: row.get(5)?,
             })
         })
         .map_err(|e| e.to_string())?;

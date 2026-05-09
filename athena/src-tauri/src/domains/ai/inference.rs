@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::config::AppConfig;
 use crate::ollama::{
-    self, chat, chat_stream, get_available_models, is_ollama_running, select_model_for_tier,
+    self, chat, chat_stream, get_available_models, select_model_for_tier,
     ChatMessage, ModelInfo, ModelOptions,
 };
 use crate::model_manager;
@@ -53,9 +53,10 @@ pub fn ensure_inference_ready(
         let _ = resolve_model_name(config, ollama_models)?;
         Ok(())
     } else {
-        if !is_ollama_running() {
+        if get_available_models(Some(config)).is_err() {
             return Err(
-                "Ollama is not running. Start Ollama and ensure a model is installed.".to_string(),
+                "Cannot reach Ollama (local sidecar or Hive Mind). Check Settings and the network."
+                    .to_string(),
             );
         }
         if ollama_models.is_empty() {
@@ -64,6 +65,44 @@ pub fn ensure_inference_ready(
         let _ = resolve_model_name(config, ollama_models)?;
         Ok(())
     }
+}
+
+/// Normalize per-request routing from the UI (`auto`, empty) to "no override".
+pub fn normalize_frontend_model_override(raw: Option<&str>) -> Option<&str> {
+    let s = raw?.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    Some(s)
+}
+
+/// Prefer an explicit per-request model (Ollama tag or OpenAI-compatible id); fall back to config / tier.
+pub fn resolve_model_name_with_request_override(
+    config: &AppConfig,
+    ollama_models: &[ModelInfo],
+    request_override: Option<&str>,
+) -> Result<String, String> {
+    if let Some(s) = normalize_frontend_model_override(request_override) {
+        if is_openai_compatible_backend(config) {
+            return Ok(s.to_string());
+        }
+        if ollama_models.iter().any(|m| m.name == s) {
+            return Ok(s.to_string());
+        }
+        let stem = s
+            .strip_suffix(".gguf")
+            .or_else(|| s.strip_suffix(".GGUF"))
+            .unwrap_or(s);
+        if ollama_models.iter().any(|m| m.name == stem) {
+            return Ok(stem.to_string());
+        }
+        for m in ollama_models {
+            if m.name.eq_ignore_ascii_case(s) || m.name.eq_ignore_ascii_case(stem) {
+                return Ok(m.name.clone());
+            }
+        }
+    }
+    resolve_model_name(config, ollama_models)
 }
 
 pub fn resolve_model_name(
@@ -104,7 +143,7 @@ pub fn chat_unified(
         let key = config.openai_compatible_api_key.as_deref();
         chat_completions_blocking(&base, key, &model, messages, options)
     } else {
-        chat(&model, messages, options)
+        chat(Some(config), &model, messages, options)
     }
 }
 
@@ -113,7 +152,7 @@ pub fn load_models_for_inference(config: &AppConfig) -> Vec<ModelInfo> {
     if is_openai_compatible_backend(config) {
         Vec::new()
     } else {
-        get_available_models().unwrap_or_default()
+        get_available_models(Some(config)).unwrap_or_default()
     }
 }
 
@@ -217,13 +256,14 @@ pub fn chat_stream_unified<F, G>(
     on_chunk: &mut F,
     on_done: G,
     options: Option<ModelOptions>,
+    model_override: Option<&str>,
     stream_cancel: Option<Arc<AtomicBool>>,
 ) -> Result<(), String>
 where
     F: FnMut(&str),
     G: FnOnce(),
 {
-    let model = resolve_model_name(config, ollama_models)?;
+    let model = resolve_model_name_with_request_override(config, ollama_models, model_override)?;
     if is_openai_compatible_backend(config) {
         let base = effective_openai_base_url(config).ok_or_else(|| "Missing base URL.".to_string())?;
         let key = config.openai_compatible_api_key.as_deref();
@@ -239,6 +279,7 @@ where
         )
     } else {
         chat_stream(
+            Some(config),
             &model,
             messages,
             on_chunk,

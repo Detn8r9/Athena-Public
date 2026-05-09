@@ -391,6 +391,7 @@ pub fn spawn_network_job(
                         None,
                         None,
                         None,
+                        0,
                         None,
                         None,
                         None,

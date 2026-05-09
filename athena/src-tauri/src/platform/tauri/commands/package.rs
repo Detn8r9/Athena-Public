@@ -196,6 +196,12 @@ pub async fn download_package(
 
     let dest_dir = std::path::PathBuf::from(destination_folder);
     std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+    let dest_dir = std::fs::canonicalize(&dest_dir).map_err(|e| {
+        format!(
+            "Could not resolve absolute path for destination folder {}: {e}",
+            dest_dir.display()
+        )
+    })?;
     let (final_path, part_path) = package_manager::destination_paths(&dest_dir, &file_name)?;
 
     let cancel = CancellationToken::new();

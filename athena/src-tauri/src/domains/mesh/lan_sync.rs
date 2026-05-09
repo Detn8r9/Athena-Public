@@ -814,7 +814,8 @@ pub fn spawn_lan_sync(
             Ok(p) => p,
             Err(_) => return,
         };
-        let hostname = "athena";
+        // mdns_sd requires a unicast DNS-SD target hostname ending in `.local.` (not bare `athena`).
+        let hostname = "athena.local.";
         let instance_name = format!("athena-lan-{node_id}");
 
         let mut props = std::collections::HashMap::<String, String>::new();

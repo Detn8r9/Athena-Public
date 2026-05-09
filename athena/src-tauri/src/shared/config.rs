@@ -175,6 +175,13 @@ pub struct AppConfig {
     #[serde(default)]
     pub models_dir: Option<String>,
 
+    /// Hive Mind seed / coordinator URL (Fast Node defaults to LAN seed discovery target).
+    #[serde(default)]
+    pub hive_mind_seed_url: Option<String>,
+    /// When true, this node advertises/broadcasts its local resources (Sister Server).
+    #[serde(default)]
+    pub hive_mind_broadcast_resources: Option<bool>,
+
     /// Subfolder name under `models/embeddings` for the active ONNX embedding model.
     #[serde(default)]
     pub active_embedding_model_folder: Option<String>,

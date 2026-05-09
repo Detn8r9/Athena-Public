@@ -130,7 +130,16 @@ pub fn spawn_or_update(app: &AppHandle) -> Result<(), String> {
     ];
     args.extend(zims);
 
-    let sidecar = app.shell().sidecar("kiwix-serve").map_err(|e| e.to_string())?;
+    let sidecar = match app.shell().sidecar("kiwix-serve") {
+        Ok(s) => s,
+        Err(e) => {
+            // `kiwix-serve` is optional (GPL-3). If it isn't bundled/configured, don't fail downloads/ingestion.
+            eprintln!(
+                "[athena] kiwix-serve: sidecar not available; skipping ZIM HTTP server spawn: {e}"
+            );
+            return Ok(());
+        }
+    };
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     match sidecar.args(arg_refs).spawn() {
         Ok((mut rx, child)) => {

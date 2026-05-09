@@ -225,6 +225,23 @@ pub enum FileKind {
     Utf8Probe,
 }
 
+/// Plain text from `.doc` / `.docx` for RAG ingest (blocking-safe).
+pub fn extract_word_like_text_for_rag(path: &Path) -> Result<String, String> {
+    match file_kind_from_path(path) {
+        FileKind::Docx => extract_text_from_docx(path)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| format!("No text extracted from DOCX: {}", path.display())),
+        FileKind::Doc => extract_text_via_textutil(path)
+            .or_else(|| extract_text_from_docx(path))
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| format!("No text extracted from DOC: {}", path.display())),
+        _ => Err(format!(
+            "Not a Word document path (expected .doc or .docx): {}",
+            path.display()
+        )),
+    }
+}
+
 pub fn file_kind_from_path(path: &Path) -> FileKind {
     let ext = path
         .extension()
@@ -434,12 +451,10 @@ pub fn index_file(path: &Path) -> Option<IndexedFileData> {
             let display_title = pdf_document_title(path).unwrap_or_else(|| display_title_from_filename(&name));
             let mut index_pages: Option<Vec<(u32, String)>> = None;
 
-            // CPU-bound PDF parsing: run on blocking pool, with size/page guardrails.
+            // PDF parsing is CPU-bound and blocking. This function is called from non-async contexts,
+            // so avoid `tauri::async_runtime::block_on` (which can panic if invoked on a Tokio worker).
             if (metadata.len() as u64) <= PDF_MAX_PARSE_BYTES {
-                let path_buf = path.to_path_buf();
-                let parsed = tauri::async_runtime::block_on(async move {
-                    tokio::task::spawn_blocking(move || {
-                    match pdf_extract::extract_text_by_pages(&path_buf) {
+                match pdf_extract::extract_text_by_pages(path) {
                         Ok(pages) if !pages.is_empty() => {
                             let mut mapped: Vec<(u32, String)> = pages
                                 .into_iter()
@@ -460,13 +475,8 @@ pub fn index_file(path: &Path) -> Option<IndexedFileData> {
                             eprintln!("[athena] PDF Extraction Error: {:?}", e);
                             None
                         }
-                    }
-                    })
-                    .await
-                });
-                if let Ok(v) = parsed {
-                    index_pages = v;
                 }
+                .map(|v| index_pages = Some(v));
             } else {
                 eprintln!(
                     "[athena] PDF parse skipped due to size guardrail ({} bytes): {}",
@@ -476,9 +486,7 @@ pub fn index_file(path: &Path) -> Option<IndexedFileData> {
             }
 
             if index_pages.is_none() && (metadata.len() as u64) <= PDF_MAX_PARSE_BYTES {
-                let path_buf = path.to_path_buf();
-                let flat = tauri::async_runtime::block_on(async move {
-                    tokio::task::spawn_blocking(move || match pdf_extract::extract_text(&path_buf) {
+                let flat = match pdf_extract::extract_text(path) {
                         Ok(t) => {
                             let t = t.trim().to_string();
                             if t.is_empty() { None } else { Some(t) }
@@ -487,10 +495,8 @@ pub fn index_file(path: &Path) -> Option<IndexedFileData> {
                             eprintln!("[athena] PDF Extraction Error: {:?}", e);
                             None
                         }
-                    })
-                    .await
-                });
-                if let Ok(Some(t)) = flat {
+                    };
+                if let Some(t) = flat {
                     index_pages = Some(vec![(1u32, t)]);
                 }
             }
@@ -506,13 +512,7 @@ pub fn index_file(path: &Path) -> Option<IndexedFileData> {
             }
             let try_ocr = embedded_trim_len < PDF_EMBEDDED_TRY_OCR_BELOW_CHARS;
             let ocr = if try_ocr {
-                let path_buf = path.to_path_buf();
-                tauri::async_runtime::block_on(async move {
-                    tokio::task::spawn_blocking(move || crate::ocr::extract_text_from_scanned_pdf(&path_buf))
-                        .await
-                        .ok()
-                        .flatten()
-                })
+                crate::ocr::extract_text_from_scanned_pdf(path)
             } else {
                 None
             };
@@ -553,13 +553,7 @@ pub fn index_file(path: &Path) -> Option<IndexedFileData> {
         }
         FileKind::Image => {
             let meta = image_metadata(path);
-            let path_buf = path.to_path_buf();
-            let text_content = tauri::async_runtime::block_on(async move {
-                tokio::task::spawn_blocking(move || crate::ocr::extract_text_from_image(&path_buf))
-                    .await
-                    .ok()
-                    .flatten()
-            });
+            let text_content = crate::ocr::extract_text_from_image(path);
             (
                 text_content,
                 meta,
@@ -1300,8 +1294,13 @@ fn strip_html(html: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Indexes a ZIM file: one DB row per text article (HTML/plain). Caller must delete_by_path_prefix(zim_path) before upserting.
-pub fn index_zim_file(path: &std::path::Path) -> Vec<IndexedFileData> {
+/// Indexes a ZIM file and reports progress as `(processed, total_limit)` where `total_limit` is the
+/// configured upper bound (`ZIM_ARTICLE_LIMIT`). This keeps UI progress deterministic even though
+/// we don't know the true article count upfront.
+pub fn index_zim_file_with_progress<F>(path: &std::path::Path, mut on_progress: F) -> Vec<IndexedFileData>
+where
+    F: FnMut(usize, usize),
+{
     println!("[athena] Starting ZIM ingestion for file: {}", path.display());
     if !path.is_file() {
         eprintln!(
@@ -1321,7 +1320,6 @@ pub fn index_zim_file(path: &std::path::Path) -> Vec<IndexedFileData> {
             return Vec::new();
         }
     };
-    let _size = metadata.len() as i64;
     let modified_at = metadata
         .modified()
         .ok()
@@ -1340,9 +1338,16 @@ pub fn index_zim_file(path: &std::path::Path) -> Vec<IndexedFileData> {
     };
 
     let mut out = Vec::new();
+    let mut kept: usize = 0;
+    let mut seen: usize = 0;
+    let total_limit = ZIM_ARTICLE_LIMIT;
     for (idx, entry) in zim.iterate_by_urls().enumerate() {
         if idx >= ZIM_ARTICLE_LIMIT {
             break;
+        }
+        seen = idx + 1;
+        if seen == 1 || (seen % 4000 == 0) {
+            on_progress(seen, total_limit);
         }
         let is_text = match &entry.mime_type {
             zim::MimeType::Type(s) => s == "text/html" || s == "text/plain",
@@ -1387,6 +1392,7 @@ pub fn index_zim_file(path: &std::path::Path) -> Vec<IndexedFileData> {
         } else {
             entry.title.clone()
         };
+        kept += 1;
         out.push(IndexedFileData {
             path: article_path,
             file_type: "zim".to_string(),
@@ -1400,13 +1406,22 @@ pub fn index_zim_file(path: &std::path::Path) -> Vec<IndexedFileData> {
             index_pages: None,
             relative_path: None,
         });
+        if kept == 1 || (kept % 2000 == 0) {
+            on_progress(seen, total_limit);
+        }
     }
+    on_progress(seen, total_limit);
     println!(
         "[athena] ZIM ingestion finished: {} article(s) from {}",
         out.len(),
         path.display()
     );
     out
+}
+
+/// Indexes a ZIM file: one DB row per text article (HTML/plain). Caller must delete_by_path_prefix(zim_path) before upserting.
+pub fn index_zim_file(path: &std::path::Path) -> Vec<IndexedFileData> {
+    index_zim_file_with_progress(path, |_processed, _total| {})
 }
 
 #[cfg(test)]
