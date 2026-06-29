@@ -94,6 +94,7 @@ type Props = {
     expeditionBudgetBytes: number | null;
     selectedExternalChatModelPath: string | null;
   }) => void;
+  onCancelExport?: () => void;
 };
 
 function formatBytes(n: number): string {
@@ -154,6 +155,7 @@ export function ExportModal({
   exportIoHistories,
   status,
   onStartExport,
+  onCancelExport,
 }: Props) {
   const [usbs, setUsbs] = useState<UsbDriveInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -549,6 +551,11 @@ export function ExportModal({
             >
               {busy ? "Exporting…" : "Export"}
             </button>
+            {busy && onCancelExport ? (
+              <button type="button" className="secondary" onClick={onCancelExport}>
+                Cancel export
+              </button>
+            ) : null}
             {busy ? (
               <span className="text-muted small dev-rebuild-progress-text" aria-live="polite">
                 <span className="dev-rebuild-spinner" aria-hidden />

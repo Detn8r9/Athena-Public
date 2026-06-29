@@ -1983,6 +1983,11 @@ struct RebuildProgress {
 }
 
 #[tauri::command]
+fn cancel_aegis_export() {
+    portable::request_aegis_export_cancel();
+}
+
+#[tauri::command]
 async fn export_athena_to_usb(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -6421,6 +6426,7 @@ pub fn run() {
             commands::chat_console::chat_console_stream,
             commands::chat_console::abort_chat_console_stream,
             export_athena_to_usb,
+            cancel_aegis_export,
             aegis_export_preflight,
             start_aegis_export_preflight,
             usb::get_available_usbs,

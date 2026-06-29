@@ -3,10 +3,10 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,50 @@ pub enum AegisManualTier {
 pub const EXPEDITION_SECURITY_BUFFER_BYTES: u64 = 64 * 1024 * 1024;
 /// Example-region proximity extract size varies; use a conservative estimate for preflight (actual run uses `pmtiles extract`).
 pub const EXAMPLE_REGION_USB_EXTRACT_ESTIMATE_BYTES: u64 = 96 * 1024 * 1024;
+
+/// No byte progress for this long → fail fast with a clear error (stuck USB / hung file).
+const EXPORT_STALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const LARGE_FILE_COPY_THRESHOLD: u64 = 8 * 1024 * 1024;
+const COPY_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+
+static EXPORT_CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+static EXPORT_ABORT_REASON: Mutex<Option<String>> = Mutex::new(None);
+
+/// Operator requested cancel from the UI (`cancel_aegis_export`).
+pub fn request_aegis_export_cancel() {
+    EXPORT_CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+fn clear_aegis_export_cancel() {
+    EXPORT_CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+    if let Ok(mut g) = EXPORT_ABORT_REASON.lock() {
+        *g = None;
+    }
+}
+
+fn export_abort_reason_set(message: String) {
+    if let Ok(mut g) = EXPORT_ABORT_REASON.lock() {
+        if g.is_none() {
+            *g = Some(message);
+        }
+    }
+}
+
+fn export_cancel_requested() -> bool {
+    EXPORT_CANCEL_REQUESTED.load(Ordering::SeqCst)
+}
+
+fn export_check_cancelled() -> Result<(), String> {
+    if export_cancel_requested() {
+        return Err("Export cancelled by operator.".to_string());
+    }
+    if let Ok(g) = EXPORT_ABORT_REASON.lock() {
+        if let Some(msg) = g.as_ref() {
+            return Err(msg.clone());
+        }
+    }
+    Ok(())
+}
 
 #[inline]
 fn example_region_reserved_bytes() -> u64 {
@@ -209,6 +253,10 @@ struct AegisExportProgressPayload {
     total_bytes_copied: u64,
     read_bytes_per_sec: f64,
     write_bytes_per_sec: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eta_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -224,6 +272,8 @@ fn aegis_export_emit_full(
     total_bytes_copied: u64,
     read_bytes_per_sec: f64,
     write_bytes_per_sec: f64,
+    eta_seconds: Option<f64>,
+    detail: Option<String>,
 ) {
     let fraction = fraction.clamp(0.0, 1.0);
     let payload = AegisExportProgressPayload {
@@ -232,6 +282,8 @@ fn aegis_export_emit_full(
         total_bytes_copied,
         read_bytes_per_sec,
         write_bytes_per_sec,
+        eta_seconds,
+        detail,
     };
     if let Err(e) = app.emit("athena:aegis-export-progress", payload) {
         eprintln!("[athena] usb export: emit athena:aegis-export-progress failed: {e}");
@@ -262,6 +314,8 @@ struct ExportIoReporter {
     last_write_bps: f64,
     ema_read: f64,
     ema_write: f64,
+    session_start: Instant,
+    last_progress_at: Instant,
 }
 
 impl ExportIoReporter {
@@ -277,13 +331,49 @@ impl ExportIoReporter {
             last_write_bps: 0.0,
             ema_read: 0.0,
             ema_write: 0.0,
+            session_start: now,
+            last_progress_at: now,
         }
     }
 
-    fn emit_phase(&mut self, app: &tauri::AppHandle, phase: impl Into<String>, fraction: f32) {
-        if self.pending_since_emit > 0 {
-            self.push_window_rates();
+    fn touch_progress(&mut self) {
+        self.last_progress_at = Instant::now();
+    }
+
+    fn check_stall(&mut self, phase: &str) -> Result<(), String> {
+        export_check_cancelled()?;
+        let idle = self.last_progress_at.elapsed();
+        if idle >= EXPORT_STALL_TIMEOUT {
+            let mins = idle.as_secs() / 60;
+            let msg = format!(
+                "Export stalled: no progress for {mins} minutes while «{phase}» (~{:.1} GB transferred). \
+                 Check the USB cable/drive, cancel, and retry — or use Fast Node to skip full offline maps.",
+                self.total_session_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+            export_abort_reason_set(msg.clone());
+            return Err(msg);
         }
+        Ok(())
+    }
+
+    fn eta_seconds(&self, fraction: f32) -> Option<f64> {
+        if fraction <= 0.02 || fraction >= 0.995 {
+            return None;
+        }
+        let elapsed = self.session_start.elapsed().as_secs_f64();
+        if elapsed < 3.0 {
+            return None;
+        }
+        Some(elapsed * (1.0 / f64::from(fraction) - 1.0))
+    }
+
+    fn emit_payload(
+        &mut self,
+        app: &tauri::AppHandle,
+        phase: impl Into<String>,
+        fraction: f32,
+        detail: Option<String>,
+    ) {
         aegis_export_emit_full(
             app,
             phase,
@@ -291,11 +381,34 @@ impl ExportIoReporter {
             self.total_session_bytes,
             self.last_read_bps,
             self.last_write_bps,
+            self.eta_seconds(fraction),
+            detail,
         );
         self.last_emit_wall = Instant::now();
         self.pending_since_emit = 0;
         self.window_t0 = Instant::now();
         self.bytes_at_window_t0 = self.total_session_bytes;
+    }
+
+    fn emit_phase(&mut self, app: &tauri::AppHandle, phase: impl Into<String>, fraction: f32) {
+        if self.pending_since_emit > 0 {
+            self.push_window_rates();
+        }
+        self.touch_progress();
+        self.emit_payload(app, phase, fraction, None);
+    }
+
+    fn emit_phase_detail(
+        &mut self,
+        app: &tauri::AppHandle,
+        phase: impl Into<String>,
+        fraction: f32,
+        detail: impl Into<String>,
+    ) {
+        if self.pending_since_emit > 0 {
+            self.push_window_rates();
+        }
+        self.emit_payload(app, phase, fraction, Some(detail.into()));
     }
 
     fn push_window_rates(&mut self) {
@@ -321,27 +434,20 @@ impl ExportIoReporter {
     }
 
     fn maybe_emit_after_file(&mut self, app: &tauri::AppHandle, phase: &str, fraction: f32) {
+        let _ = self.check_stall(phase);
         let now = Instant::now();
         let time_ok = now.duration_since(self.last_emit_wall) >= Duration::from_millis(140);
         let bulk_ok = self.pending_since_emit >= 256 * 1024;
         if time_ok || bulk_ok {
             self.push_window_rates();
-            aegis_export_emit_full(
-                app,
-                phase,
-                fraction,
-                self.total_session_bytes,
-                self.last_read_bps,
-                self.last_write_bps,
-            );
-            self.last_emit_wall = now;
-            self.pending_since_emit = 0;
+            self.emit_payload(app, phase, fraction, None);
         }
     }
 
     fn note_file_bytes(&mut self, app: &tauri::AppHandle, phase: &str, fraction: f32, file_len: u64) {
         self.total_session_bytes += file_len;
         self.pending_since_emit += file_len;
+        self.touch_progress();
         self.maybe_emit_after_file(app, phase, fraction);
     }
 
@@ -354,6 +460,7 @@ impl ExportIoReporter {
         interval_secs: f64,
     ) {
         self.total_session_bytes += new_bytes;
+        self.touch_progress();
         let inst = (new_bytes as f64) / interval_secs.max(0.001);
         let blend = |prev: f64, v: f64, alpha: f64| {
             if prev <= 1.0 {
@@ -366,19 +473,8 @@ impl ExportIoReporter {
         self.ema_write = blend(self.ema_write, inst, 0.55);
         self.last_read_bps = self.ema_read;
         self.last_write_bps = self.ema_write;
-        let now = Instant::now();
-        aegis_export_emit_full(
-            app,
-            phase,
-            fraction,
-            self.total_session_bytes,
-            self.last_read_bps,
-            self.last_write_bps,
-        );
-        self.last_emit_wall = now;
-        self.pending_since_emit = 0;
-        self.window_t0 = now;
-        self.bytes_at_window_t0 = self.total_session_bytes;
+        let _ = self.check_stall(phase);
+        self.emit_payload(app, phase, fraction, None);
     }
 }
 
@@ -1033,6 +1129,7 @@ fn copy_dir_recursive_impl(
             if skip_file(path) {
                 continue;
             }
+            export_check_cancelled()?;
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
@@ -1068,6 +1165,44 @@ struct CopyJob {
     len: u64,
 }
 
+/// Chunked copy with cancel checks — large archives report incremental progress instead of appearing frozen.
+fn copy_file_resilient(
+    src: &Path,
+    dst: &Path,
+    expected_len: u64,
+    on_chunk: &dyn Fn(u64) -> Result<(), String>,
+) -> Result<u64, String> {
+    export_check_cancelled()?;
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut reader = fs::File::open(src).map_err(|e| format!("open {}: {e}", src.display()))?;
+    let mut writer = fs::File::create(dst).map_err(|e| format!("create {}: {e}", dst.display()))?;
+    let mut buf = vec![0u8; COPY_CHUNK_BYTES];
+    let mut copied: u64 = 0;
+    loop {
+        export_check_cancelled()?;
+        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        writer
+            .write_all(&buf[..n])
+            .map_err(|e| format!("write {}: {e}", dst.display()))?;
+        copied = copied.saturating_add(n as u64);
+        on_chunk(n as u64)?;
+    }
+    writer.flush().map_err(|e| e.to_string())?;
+    if expected_len > 0 && copied != expected_len {
+        return Err(format!(
+            "Short copy {} -> {} (expected {expected_len} B, wrote {copied} B)",
+            src.display(),
+            dst.display()
+        ));
+    }
+    Ok(copied)
+}
+
 /// Parallel recursive copy for large trees (maps/wiki/routing). Builds a manifest, then copies files using a small worker pool.
 /// Progress is throttled: updates at most every ~500ms or every 100 files (whichever comes first).
 fn copy_dir_recursive_parallel_impl(
@@ -1081,13 +1216,17 @@ fn copy_dir_recursive_parallel_impl(
     }
     fs::create_dir_all(dst).map_err(|e| e.to_string())?;
 
-    // Phase 1: manifest
+    // Phase 1: manifest (index files + total bytes so progress stays accurate for huge archives)
     let mut jobs: Vec<CopyJob> = Vec::new();
+    let mut total_bytes: u64 = 0;
+    let mut scan_ix: u64 = 0;
+    let scan_started = Instant::now();
     for entry in WalkDir::new(src)
         .follow_links(false)
         .into_iter()
         .map(|e| e.map_err(|e| e.to_string()))
     {
+        export_check_cancelled()?;
         let entry = entry?;
         let path = entry.path();
         let rel = path.strip_prefix(src).map_err(|e| e.to_string())?;
@@ -1102,7 +1241,24 @@ fn copy_dir_recursive_parallel_impl(
         if skip_file(path) {
             continue;
         }
+        scan_ix = scan_ix.saturating_add(1);
+        if scan_ix % 5_000 == 0 {
+            if let Some(p) = progress.as_mut() {
+                p.io.emit_phase_detail(
+                    p.app,
+                    p.phase,
+                    p.frac_lo,
+                    format!("Indexing {scan_ix} files ({:.1} GB)…", total_bytes as f64 / (1024.0 * 1024.0 * 1024.0)),
+                );
+            }
+        }
+        if scan_started.elapsed() >= Duration::from_secs(2) && scan_ix % 500 == 0 {
+            if let Some(p) = progress.as_mut() {
+                let _ = p.io.check_stall(p.phase);
+            }
+        }
         let len = fs::metadata(path).map_err(|e| e.to_string())?.len();
+        total_bytes = total_bytes.saturating_add(len);
         jobs.push(CopyJob {
             src: path.to_path_buf(),
             dst: target,
@@ -1111,6 +1267,16 @@ fn copy_dir_recursive_parallel_impl(
     }
     if jobs.is_empty() {
         return Ok(());
+    }
+    if let Some(p) = progress.as_mut() {
+        p.total = total_bytes.max(1);
+        *p.done = 0;
+        p.io.emit_phase_detail(
+            p.app,
+            p.phase,
+            p.frac_lo,
+            format!("Copying {} files ({:.1} GB)…", jobs.len(), total_bytes as f64 / (1024.0 * 1024.0 * 1024.0)),
+        );
     }
 
     // Ensure each parent directory exists once (huge map trees: avoid millions of redundant create_dir_all calls).
@@ -1131,6 +1297,7 @@ fn copy_dir_recursive_parallel_impl(
     }
 
     let expected_copy_results = jobs.len() as u64;
+    let progress_total_bytes = total_bytes.max(1);
     let n_workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
@@ -1150,14 +1317,18 @@ fn copy_dir_recursive_parallel_impl(
 
     std::thread::scope(|sp| {
         sp.spawn(|| {
-            let mut bytes_done: u64 = 0;
+            let mut bytes_since_emit: u64 = 0;
             let mut files_done: u64 = 0;
             let mut last_emit = Instant::now();
             while let Ok(msg) = rx_res.recv() {
                 match msg {
                     Ok(len) => {
-                        bytes_done = bytes_done.saturating_add(len);
-                        files_done = files_done.saturating_add(1);
+                        if len > 0 {
+                            bytes_since_emit = bytes_since_emit.saturating_add(len);
+                        }
+                        if len == 0 {
+                            files_done = files_done.saturating_add(1);
+                        }
                     }
                     Err(e) => {
                         if let Ok(mut g) = copy_errors_recv.lock() {
@@ -1169,46 +1340,60 @@ fn copy_dir_recursive_parallel_impl(
                     }
                 }
                 if let Some(p) = progress.as_mut() {
-                    *p.done = p.done.saturating_add(1);
+                    if bytes_since_emit > 0 {
+                        *p.done = p.done.saturating_add(bytes_since_emit);
+                    }
                     let now = Instant::now();
-                    let emit = files_done % 100 == 0
-                        || now.duration_since(last_emit) >= Duration::from_millis(500);
+                    let emit = now.duration_since(last_emit) >= Duration::from_millis(400);
                     if emit {
                         last_emit = now;
-                        let frac = if p.total > 0 {
+                        let frac = if progress_total_bytes > 0 {
                             p.frac_lo
                                 + (p.frac_hi - p.frac_lo)
-                                    * ((*p.done as f32) / (p.total as f32)).min(1.0)
+                                    * ((*p.done as f32) / (progress_total_bytes as f32)).min(1.0)
                         } else {
                             p.frac_lo
                         };
-                        p.io.note_poll_transfer(p.app, p.phase, frac, bytes_done, 0.5);
-                        bytes_done = 0;
+                        let _ = p.io.check_stall(p.phase);
+                        if bytes_since_emit > 0 {
+                            p.io.note_poll_transfer(p.app, p.phase, frac, bytes_since_emit, 0.4);
+                            bytes_since_emit = 0;
+                        } else {
+                            p.io.emit_payload(p.app, p.phase, frac, None);
+                        }
                     }
                 }
             }
         });
 
         pool.install(|| {
-            let copy_err_send = Arc::clone(&copy_errors);
             jobs.par_iter().for_each(|job| {
-                let res = fs::copy(&job.src, &job.dst)
-                    .map(|_| job.len)
-                    .map_err(|e| {
-                        format!(
-                            "copy {} -> {}: {}",
-                            job.src.display(),
-                            job.dst.display(),
-                            e
-                        )
-                    });
-                if tx_shared.send(res).is_err() {
-                    let msg = "Copy result channel closed before delivery.".to_string();
-                    if let Ok(mut g) = copy_err_send.lock() {
-                        if g.len() < 32 {
-                            g.push(msg);
-                        }
+                let tx_chunk = Arc::clone(&tx_shared);
+                let res: Result<(), String> = (|| {
+                    export_check_cancelled()?;
+                    if job.len >= LARGE_FILE_COPY_THRESHOLD {
+                        copy_file_resilient(&job.src, &job.dst, job.len, &|n| {
+                            if n > 0 {
+                                let _ = tx_chunk.send(Ok(n));
+                            }
+                            export_check_cancelled()
+                        })?;
+                    } else {
+                        let n = fs::copy(&job.src, &job.dst).map_err(|e| {
+                            format!(
+                                "copy {} -> {}: {}",
+                                job.src.display(),
+                                job.dst.display(),
+                                e
+                            )
+                        })?;
+                        let _ = tx_chunk.send(Ok(n));
                     }
+                    let _ = tx_chunk.send(Ok(0));
+                    Ok(())
+                })();
+                if let Err(e) = res {
+                    let _ = tx_shared.send(Err(e));
                 }
                 let n = yield_counter.fetch_add(1, Ordering::Relaxed) + 1;
                 if n % 256 == 0 {
@@ -1238,6 +1423,7 @@ fn copy_dir_recursive_parallel_impl(
         let preview: String = failures.into_iter().take(6).collect::<Vec<_>>().join(" | ");
         return Err(format!("Copy finished with {n} error(s). First: {preview}"));
     }
+    export_check_cancelled()?;
     Ok(())
 }
 
@@ -2874,14 +3060,7 @@ fn copy_offline_maps_to_usb(
     } else {
         &never_skip_file
     };
-    // Parallelize this tree: many small files is the worst case for single-threaded copy.
-    let total_files = WalkDir::new(&src)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_file() && !skip_ref(e.path()))
-        .count() as u64;
-    let mut done_files = 0u64;
+    let mut done_bytes = 0u64;
     copy_dir_recursive_parallel_impl(
         &src,
         &dst,
@@ -2891,8 +3070,8 @@ fn copy_offline_maps_to_usb(
             phase: "Copying offline map archives…",
             frac_lo,
             frac_hi,
-            total: total_files.max(1),
-            done: &mut done_files,
+            total: 1,
+            done: &mut done_bytes,
         }),
         skip_ref,
     )?;
@@ -3406,6 +3585,7 @@ pub fn export_athena_to_usb(
     expedition_budget_bytes: Option<u64>,
     selected_external_chat_model_path: Option<String>,
 ) -> Result<(), String> {
+    clear_aegis_export_cancel();
     let export_result = (|| -> Result<(), String> {
     let mut io = ExportIoReporter::new();
     let mut dest_root = PathBuf::from(destination_path.trim());
@@ -3787,6 +3967,7 @@ pub fn export_athena_to_usb(
     if let Err(ref e) = export_result {
         aegis_export_emit_error(app, e.clone());
     }
+    clear_aegis_export_cancel();
     export_result
 }
 

@@ -1110,6 +1110,8 @@ function App() {
         totalBytesCopied: number;
         readBytesPerSec: number;
         writeBytesPerSec: number;
+        etaSeconds?: number;
+        detail?: string;
       }>("athena:aegis-export-progress", (ev) => {
         const p = ev.payload;
         setUsbExportProgress({
@@ -1118,6 +1120,8 @@ function App() {
           totalBytesCopied: p.totalBytesCopied,
           readBps: p.readBytesPerSec ?? 0,
           writeBps: p.writeBytesPerSec ?? 0,
+          etaSeconds: p.etaSeconds,
+          detail: p.detail,
         });
       });
       unlistenExportError = await listen<{ message: string }>("athena:aegis-export-error", (ev) => {
@@ -9184,6 +9188,10 @@ ${tag}` : tag;
         onStartExport={({ destinationPath, devicePath, formatFirst, exportType, expeditionBudgetBytes, selectedExternalChatModelPath }) => {
           setUsbExportModalKind(exportType);
           void executeUsbExportFromModal({ destinationPath, devicePath, formatFirst, expeditionBudgetBytes, selectedExternalChatModelPath });
+        }}
+        onCancelExport={() => {
+          setUsbExportStatus("Cancelling export…");
+          void invoke("cancel_aegis_export").catch(() => {});
         }}
       />
 

@@ -4,12 +4,23 @@ export type AegisExportProgress = {
   totalBytesCopied?: number;
   readBps?: number;
   writeBps?: number;
+  etaSeconds?: number;
+  detail?: string;
 };
 
 export type AegisIoHistories = {
   read: number[];
   write: number[];
 };
+
+function formatDurationSeconds(secs: number): string {
+  if (secs <= 0) return "~0 s";
+  if (secs < 90) return `~${Math.round(secs)} s`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `~${mins} min`;
+  const hrs = (mins / 60).toFixed(1);
+  return `~${hrs} hr`;
+}
 
 function throughputLabel(bps: number): string {
   if (!Number.isFinite(bps) || bps < 8) return "—";
@@ -53,9 +64,15 @@ export function AegisExportIoPanel({ progress, histories, compact }: PanelProps)
   const readBps = progress?.readBps ?? 0;
   const writeBps = progress?.writeBps ?? 0;
   const totalDone = progress?.totalBytesCopied;
+  const eta = progress?.etaSeconds;
 
   return (
     <div className={`aegis-io-corner${compact ? " aegis-io-corner--compact" : ""}`}>
+      {progress?.detail ? (
+        <div className="aegis-io-total text-muted small" style={{ marginBottom: "0.35rem" }}>
+          {progress.detail}
+        </div>
+      ) : null}
       <div className="aegis-io-metric">
         <div className="aegis-io-metric-head">
           <span className="aegis-io-label">Read</span>
@@ -73,6 +90,7 @@ export function AegisExportIoPanel({ progress, histories, compact }: PanelProps)
       {typeof totalDone === "number" && totalDone > 0 ? (
         <div className="aegis-io-total text-muted small">
           Transferred {formatTransferred(totalDone)}
+          {typeof eta === "number" && eta > 0 ? ` · ETA ${formatDurationSeconds(eta)}` : ""}
         </div>
       ) : null}
     </div>

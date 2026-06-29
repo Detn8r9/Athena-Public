@@ -128,31 +128,62 @@ pub async fn stream_download_to_file(
     if final_path.exists() {
         return Err("File already exists.".to_string());
     }
-    let _ = std::fs::remove_file(&part_path);
+
+    let mut resume_from: u64 = 0;
+    if part_path.is_file() {
+        resume_from = tokio::fs::metadata(&part_path)
+            .await
+            .map_err(|e| e.to_string())?
+            .len();
+    }
 
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(60))
-        .read_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(120))
         .user_agent("AthenaMapManager/1.0")
         .redirect(reqwest::redirect::Policy::limited(16))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let response = client
-        .get(download_url)
+    let mut request = client.get(&download_url);
+    if resume_from > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+    }
+
+    let response = request
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
         .map_err(|e| e.to_string())?;
 
-    let total_bytes = response.content_length();
+    let status = response.status();
+    if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        if resume_from > 0 && part_path.is_file() {
+            std::fs::rename(&part_path, &final_path).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        return Err("Server rejected resume range.".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("Download failed HTTP {status}."));
+    }
+
+    let append = status == reqwest::StatusCode::PARTIAL_CONTENT && resume_from > 0;
+    if !append && resume_from > 0 {
+        resume_from = 0;
+        let _ = tokio::fs::remove_file(&part_path).await;
+    }
+
+    let total_bytes = if append {
+        response.content_length().map(|n| resume_from.saturating_add(n))
+    } else {
+        response.content_length()
+    };
 
     let _ = app.emit(
         MAP_DOWNLOAD_PROGRESS_EVENT,
         MapDownloadProgressPayload {
             map_id: map_id.clone(),
-            bytes_downloaded: 0,
+            bytes_downloaded: resume_from,
             total_bytes,
         },
     );
@@ -161,12 +192,13 @@ pub async fn stream_download_to_file(
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(true)
+        .append(append)
+        .truncate(!append)
         .open(&part_path)
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut downloaded: u64 = 0;
+    let mut downloaded: u64 = resume_from;
     let mut last_emit = Instant::now();
 
     while let Some(chunk_result) = stream.next().await {
