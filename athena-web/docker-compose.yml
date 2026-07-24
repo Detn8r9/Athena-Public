@@ -1,0 +1,63 @@
+name: athena
+
+services:
+  core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: athena-web-core:latest
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      COMFYUI_BASE_URL: http://comfyui:8188
+      DOCKER_HOST: unix:///var/run/docker.sock
+      ATHENA_DATA_DIR: /data
+      ATHENA_CATALOG_DIR: /app/catalogs
+    volumes:
+      - athena_data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    networks:
+      - athena_net
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - athena_net
+
+  # Optional multimedia engine — enable with: docker compose --profile comfyui up -d
+  comfyui:
+    profiles: ["comfyui"]
+    image: yanwk/comfyui-dl:latest
+    ports:
+      - "8188:8188"
+    volumes:
+      - comfyui_data:/root
+    restart: unless-stopped
+    networks:
+      - athena_net
+    # GPU (uncomment when available):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+
+volumes:
+  athena_data:
+  ollama_data:
+  comfyui_data:
+
+networks:
+  athena_net:
+    driver: bridge

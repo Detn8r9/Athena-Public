@@ -1,0 +1,344 @@
+:root {
+  --bg0: #0f1412;
+  --bg1: #17201b;
+  --bg2: #1f2b24;
+  --ink: #e8f0ea;
+  --muted: #8fa398;
+  --line: rgba(232, 240, 234, 0.12);
+  --accent: #c4a35a;
+  --accent-2: #3d8f6e;
+  --danger: #c45c4a;
+  --radius: 14px;
+  --font-display: "Instrument Serif", Georgia, serif;
+  --font-body: "DM Sans", system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(61, 143, 110, 0.18), transparent 55%),
+    radial-gradient(900px 500px at 90% 0%, rgba(196, 163, 90, 0.14), transparent 50%),
+    linear-gradient(165deg, var(--bg0), var(--bg1) 45%, #121916);
+  background-attachment: fixed;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem 1.5rem;
+  max-width: 1440px;
+  margin: 0 auto;
+}
+
+.brand-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.brand-bar h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(2.1rem, 4vw, 3rem);
+  letter-spacing: 0.02em;
+}
+
+.brand-bar p {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.status-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
+.pill {
+  border: 1px solid var(--line);
+  background: rgba(15, 20, 18, 0.55);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+.pill.on {
+  color: var(--ink);
+  border-color: rgba(61, 143, 110, 0.45);
+  background: rgba(61, 143, 110, 0.18);
+}
+
+.command-bar {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.command-bar input {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: rgba(15, 20, 18, 0.72);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0.85rem 1.1rem;
+  outline: none;
+}
+
+.command-bar input:focus {
+  border-color: rgba(196, 163, 90, 0.55);
+  box-shadow: 0 0 0 3px rgba(196, 163, 90, 0.12);
+}
+
+.btn {
+  border: 1px solid var(--line);
+  background: rgba(31, 43, 36, 0.9);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0.75rem 1rem;
+  white-space: nowrap;
+}
+
+.btn.primary {
+  background: linear-gradient(135deg, rgba(196, 163, 90, 0.95), rgba(168, 132, 55, 0.95));
+  color: #1a160c;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.btn.ghost {
+  background: transparent;
+}
+
+.widget {
+  height: 100%;
+  border: 1px solid var(--line);
+  background: rgba(15, 20, 18, 0.72);
+  backdrop-filter: blur(10px);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.widget-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  cursor: grab;
+}
+
+.widget-header h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.widget-body {
+  padding: 0.85rem;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-bottom: 0.75rem;
+  max-height: 55%;
+  overflow: auto;
+}
+
+.bubble {
+  border-radius: 12px;
+  padding: 0.55rem 0.7rem;
+  max-width: 92%;
+  line-height: 1.35;
+  font-size: 0.92rem;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: rgba(196, 163, 90, 0.18);
+}
+
+.bubble.assistant {
+  align-self: flex-start;
+  background: rgba(61, 143, 110, 0.16);
+}
+
+.chat-compose {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.chat-compose textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--ink);
+  padding: 0.65rem 0.75rem;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.module-list,
+.app-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.module-card,
+.app-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.65rem 0.75rem;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.module-card h4,
+.app-card h4 {
+  margin: 0 0 0.2rem;
+  font-size: 0.95rem;
+}
+
+.module-card p,
+.app-card p,
+.stub-copy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
+.progress {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  margin: 0.45rem 0;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 40;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(420px, 94vw);
+  height: 100%;
+  background: #121916;
+  border-left: 1px solid var(--line);
+  z-index: 50;
+  padding: 1rem;
+  overflow: auto;
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+}
+
+.drawer h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.8rem;
+}
+
+.settings-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  background: rgba(15, 20, 18, 0.65);
+  display: grid;
+  gap: 0.55rem;
+}
+
+.settings-panel label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.settings-panel input {
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 0.45rem 0.6rem;
+}
+
+.react-grid-item.react-grid-placeholder {
+  background: rgba(196, 163, 90, 0.25) !important;
+  border-radius: var(--radius);
+}
+
+.ptt-active {
+  background: rgba(196, 92, 74, 0.85) !important;
+  border-color: transparent !important;
+  color: white !important;
+}
+
+@media (max-width: 720px) {
+  .brand-bar {
+    flex-direction: column;
+  }
+  .command-bar {
+    grid-template-columns: 1fr;
+  }
+}

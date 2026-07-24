@@ -1,0 +1,60 @@
+# Curated Docker app store — Athena maps host ports automatically on install.
+version: 1
+
+apps:
+  - id: jellyfin
+    name: Jellyfin
+    description: Media server for movies, TV, and music.
+    image: jellyfin/jellyfin:latest
+    category: media
+    container_port: 8096
+    preferred_host_port: 8096
+    volumes:
+      - source: jellyfin_config
+        target: /config
+      - source: jellyfin_media
+        target: /media
+    env: {}
+    tags: [media, streaming]
+
+  - id: homeassistant
+    name: Home Assistant
+    description: Local home automation hub.
+    image: homeassistant/home-assistant:stable
+    category: automation
+    container_port: 8123
+    preferred_host_port: 8123
+    volumes:
+      - source: homeassistant_config
+        target: /config
+    env: {}
+    tags: [iot, automation]
+
+  - id: nodered
+    name: Node-RED
+    description: Flow-based automation wiring.
+    image: nodered/node-red:latest
+    category: automation
+    container_port: 1880
+    preferred_host_port: 1880
+    volumes:
+      - source: nodered_data
+        target: /data
+    env: {}
+    tags: [automation, flows]
+
+  - id: portainer
+    name: Portainer
+    description: Lightweight Docker UI for advanced container ops.
+    image: portainer/portainer-ce:latest
+    category: ops
+    container_port: 9000
+    preferred_host_port: 9000
+    volumes:
+      - source: portainer_data
+        target: /data
+      - source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        bind: true
+    env: {}
+    tags: [docker, ops]

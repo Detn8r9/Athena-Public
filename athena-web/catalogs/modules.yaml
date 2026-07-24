@@ -1,0 +1,64 @@
+# Athena module catalog — static YAML, downloaded on demand from internet or LAN peers.
+version: 1
+
+modules:
+  - id: ollama-qwen-0.5b
+    name: Qwen 2.5 0.5B (local stub)
+    category: llm
+    description: Tiny local chat model for offline failover via Ollama.
+    size_bytes: 400000000
+    required: true
+    provider: ollama
+    ollama_model: qwen2.5:0.5b
+    tags: [offline, failover, stub]
+
+  - id: whisper-base
+    name: Whisper Base (faster-whisper)
+    category: voice_stt
+    description: Local speech-to-text model for push-to-talk.
+    size_bytes: 150000000
+    required: false
+    provider: huggingface
+    artifact: Systran/faster-whisper-base
+    tags: [voice, stt]
+
+  - id: kokoro-tts
+    name: Kokoro TTS
+    category: voice_tts
+    description: High-quality local text-to-speech voices.
+    size_bytes: 320000000
+    required: false
+    provider: huggingface
+    artifact: hexgrad/Kokoro-82M
+    tags: [voice, tts]
+
+  - id: comfyui-engine
+    name: ComfyUI Engine
+    category: multimedia
+    description: Local image/video generation (Flux, SD, Wan, HunyuanVideo workflows).
+    size_bytes: 0
+    required: false
+    provider: compose_profile
+    compose_profile: comfyui
+    tags: [image, video, comfyui]
+
+  - id: flux-dev-fp8
+    name: Flux Dev (FP8)
+    category: image_model
+    description: Flux image model weights for ComfyUI.
+    size_bytes: 12000000000
+    required: false
+    depends_on: [comfyui-engine]
+    provider: url
+    url: ""
+    tags: [flux, image]
+
+  - id: survival-knowledge-pack
+    name: Survival Knowledge Pack
+    category: database
+    description: Curated offline knowledge corpus for field RAG.
+    size_bytes: 800000000
+    required: false
+    provider: url
+    url: ""
+    tags: [rag, knowledge]

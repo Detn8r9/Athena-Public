@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.pyc
+.env
+data/layout/
+data/modules/**
+!data/modules/.gitkeep
+data/models/**
+!data/models/.gitkeep
+data/apps/**
+!data/apps/.gitkeep
+*.egg-info/
+.DS_Store
