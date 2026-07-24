@@ -44,6 +44,47 @@ export type ModuleRow = {
   source?: string | null;
   error?: string | null;
   tags: string[];
+  provider?: string;
+  resolved_image?: string;
+  gpu_effective?: boolean;
+  host_port?: number | null;
+};
+
+export type PeersResponse = {
+  scanned_at: number | null;
+  peers: Array<{
+    base_url: string;
+    ip?: string;
+    manifest?: { modules?: Array<{ id: string; status?: string }> };
+  }>;
+  scanning?: boolean;
+};
+
+export type GpuStatus = {
+  nvidia_runtime_available: boolean;
+  effective_gpu: boolean;
+  override: boolean | null;
+  detail: string;
+};
+
+export type OfflineMapStatus = {
+  ready: boolean;
+  provider: string;
+  offline_maps_dir: string | null;
+  basemap_present: boolean;
+  tile_count: number;
+  regions: string[];
+  message: string;
+};
+
+export type MeshRadioStatus = {
+  connected: boolean;
+  provider: string;
+  node_id: string | null;
+  channel: string | null;
+  peers_heard: number;
+  last_packet_at: number | null;
+  message: string;
 };
 
 export type CatalogApp = {
@@ -99,6 +140,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ module_id, prefer_peer }),
     }),
+  peers: () => json<PeersResponse>("/api/modules/peers"),
+  scanPeers: () => json<PeersResponse>("/api/modules/peers/scan", { method: "POST" }),
+  gpuStatus: () => json<GpuStatus>("/api/settings/gpu"),
+  setGpuOverride: (gpu_override: boolean | null) =>
+    json<GpuStatus>("/api/settings/gpu", {
+      method: "PUT",
+      body: JSON.stringify({ gpu_override }),
+    }),
+  mapStatus: () => json<OfflineMapStatus>("/api/map/status"),
+  radioStatus: () => json<MeshRadioStatus>("/api/radio/status"),
   appsCatalog: () => json<CatalogApp[]>("/api/apps/catalog"),
   appsInstalled: () => json<InstalledApp[]>("/api/apps/installed"),
   installApp: (id: string) => json<InstalledApp>(`/api/apps/${id}/install`, { method: "POST" }),

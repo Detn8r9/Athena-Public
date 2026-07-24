@@ -14,13 +14,21 @@ router = APIRouter(tags=["voice"])
 class VoiceStatus(BaseModel):
     whisper_ready: bool
     kokoro_ready: bool
+    whisper_url: str
+    kokoro_url: str
     mode: str = "push_to_talk"
 
 
 @router.get("/voice/status", response_model=VoiceStatus)
 async def voice_status() -> VoiceStatus:
-    vp = VoicePipeline(get_settings())
-    return VoiceStatus(whisper_ready=vp.whisper_ready(), kokoro_ready=vp.kokoro_ready())
+    settings = get_settings()
+    vp = VoicePipeline(settings)
+    return VoiceStatus(
+        whisper_ready=await vp.whisper_ready(),
+        kokoro_ready=await vp.kokoro_ready(),
+        whisper_url=settings.whisper_base_url,
+        kokoro_url=settings.kokoro_base_url,
+    )
 
 
 @router.post("/voice/ptt")
@@ -28,7 +36,7 @@ async def push_to_talk(
     audio: UploadFile = File(...),
     force_local: bool = Form(False),
 ):
-    """Three-stage pipeline: STT → LLM → TTS. Returns WAV + transcript + reply JSON headers."""
+    """Three-stage pipeline: STT → LLM → TTS. Returns WAV + transcript headers."""
     settings = get_settings()
     vp = VoicePipeline(settings)
     raw = await audio.read()
@@ -47,7 +55,6 @@ async def push_to_talk(
         )
     )
     wav = await vp.synthesize(chat.content)
-    # Multipart-ish via headers + body for simplicity in the SPA.
     return Response(
         content=wav,
         media_type="audio/wav",

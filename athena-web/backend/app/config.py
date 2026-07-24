@@ -24,10 +24,18 @@ class Settings(BaseSettings):
 
     comfyui_base_url: str = "http://comfyui:8188"
 
+    whisper_base_url: str = "http://host.docker.internal:9000"
+    kokoro_base_url: str = "http://host.docker.internal:8880"
+
     athena_data_dir: Path = Path("/data")
     athena_catalog_dir: Path = Path("/app/catalogs")
     athena_static_dir: Path = Path("/app/static")
-    athena_peer_scan_cidrs: str = "192.168.0.0/16,10.0.0.0/8"
+    # Fallback when host interface CIDR detection is empty / complex.
+    athena_peer_scan_cidrs: str = "192.168.0.0/24,10.0.0.0/24"
+    athena_peer_scan_port: int = 8080
+    athena_peer_scan_concurrency: int = 32
+    athena_peer_scan_timeout_ms: int = 500
+    athena_peer_scan_max_hosts: int = 254
 
     docker_host: str = "unix:///var/run/docker.sock"
 
@@ -42,6 +50,14 @@ class Settings(BaseSettings):
     @property
     def apps_state_path(self) -> Path:
         return self.athena_data_dir / "apps" / "state.json"
+
+    @property
+    def runtime_settings_path(self) -> Path:
+        return self.athena_data_dir / "settings" / "runtime.json"
+
+    @property
+    def peers_cache_path(self) -> Path:
+        return self.athena_data_dir / "peers" / "cache.json"
 
 
 @lru_cache

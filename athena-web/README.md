@@ -59,10 +59,10 @@ athena-web/
   Dockerfile
 ```
 
-## Dashboard features (v1)
+## Phase 2 notes
 
-- Drag-and-drop widget grid (chat, modules, map stub, radio stub)
-- Command bar (text launch)
-- **More Apps** drawer for unpinned apps / Docker containers
-- Module downloader (internet or LAN peer)
-- Push-to-talk voice pipeline
+- Whisper (`fedirz/faster-whisper-server`) and Kokoro (`ghcr.io/remsky/kokoro-fastapi-*`) install as Docker modules, auto-start, and register in More Apps.
+- Voice PTT talks to those sidecars over HTTP (no in-process model imports).
+- Boot + manual LAN CIDR peer scan on `:8080`; peer module install streams `docker save` tarballs.
+- GPU: auto nvidia runtime detect + settings override; CUDA/GPU image tags + device requests.
+- Map/radio widgets call stub status APIs mirroring Tauri domains.

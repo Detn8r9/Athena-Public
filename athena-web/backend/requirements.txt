@@ -8,6 +8,6 @@ python-multipart>=0.0.20,<0.1
 docker>=7.1.0,<8
 litellm>=1.55.0,<2
 aiofiles>=24.1.0,<25
-numpy>=2.0.0,<3
-soundfile>=0.13.0,<0.14
-# Optional heavy deps (faster-whisper, kokoro) install via module manager.
+psutil>=6.0.0,<7
+# Voice models run in sidecar containers — no in-process faster-whisper / kokoro.
+

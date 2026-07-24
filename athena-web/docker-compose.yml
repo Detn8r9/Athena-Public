@@ -13,12 +13,16 @@ services:
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       COMFYUI_BASE_URL: http://comfyui:8188
+      WHISPER_BASE_URL: http://host.docker.internal:9000
+      KOKORO_BASE_URL: http://host.docker.internal:8880
       DOCKER_HOST: unix:///var/run/docker.sock
       ATHENA_DATA_DIR: /data
       ATHENA_CATALOG_DIR: /app/catalogs
     volumes:
       - athena_data:/data
       - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - ollama
     restart: unless-stopped

@@ -11,11 +11,12 @@ from docker.errors import DockerException, ImageNotFound, NotFound
 from pydantic import BaseModel, Field
 
 from backend.app.config import Settings
+from backend.app.services.gpu import docker_device_requests
 
 logger = logging.getLogger("athena.docker_apps")
 
 # Ports Athena itself uses — never auto-assign these to store apps.
-RESERVED_PORTS = {8080, 11434, 8188, 22, 80, 443}
+RESERVED_PORTS = {8080, 11434, 8188, 9000, 8880, 22, 80, 443}
 
 
 class AppCatalogEntry(BaseModel):
@@ -163,6 +164,7 @@ class DockerAppManager:
             ports={f"{entry.container_port}/tcp": host_port},
             volumes=volumes or None,
             environment=entry.env or None,
+            device_requests=docker_device_requests(self.settings),
         )
         installed = InstalledApp(
             id=entry.id,
@@ -176,6 +178,34 @@ class DockerAppManager:
             pinned=False,
         )
         self._state[entry.id] = installed
+        self._save_state()
+        return installed
+
+    def register_external(
+        self,
+        *,
+        app_id: str,
+        name: str,
+        image: str,
+        container_name: str,
+        container_id: str | None,
+        host_port: int,
+        container_port: int,
+        status: str = "running",
+    ) -> InstalledApp:
+        """Register a module-spawned container in the app store state."""
+        installed = InstalledApp(
+            id=app_id,
+            name=name,
+            image=image,
+            container_id=container_id,
+            container_name=container_name,
+            host_port=host_port,
+            container_port=container_port,
+            status=status,
+            pinned=False,
+        )
+        self._state[app_id] = installed
         self._save_state()
         return installed
 

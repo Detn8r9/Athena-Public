@@ -5,11 +5,10 @@ __pycache__/
 *.pyc
 .env
 data/layout/
-data/modules/**
-!data/modules/.gitkeep
-data/models/**
-!data/models/.gitkeep
-data/apps/**
-!data/apps/.gitkeep
+data/modules/state.json
+data/modules/*/
+data/models/*/
+data/apps/state.json
+data/apps/*/
 *.egg-info/
 .DS_Store

@@ -12,30 +12,42 @@ modules:
     ollama_model: qwen2.5:0.5b
     tags: [offline, failover, stub]
 
-  - id: whisper-base
-    name: Whisper Base (faster-whisper)
+  - id: whisper-server
+    name: Faster Whisper Server
     category: voice_stt
-    description: Local speech-to-text model for push-to-talk.
-    size_bytes: 150000000
+    description: OpenAI-compatible local STT (fedirz/faster-whisper-server). Auto-starts on install.
+    size_bytes: 2500000000
     required: false
-    provider: huggingface
-    artifact: Systran/faster-whisper-base
-    tags: [voice, stt]
+    provider: docker
+    image_cpu: fedirz/faster-whisper-server:latest-cpu
+    image_gpu: fedirz/faster-whisper-server:latest-cuda
+    container_port: 8000
+    host_port: 9000
+    health_path: /v1/models
+    gpu_capable: true
+    register_as_app: true
+    tags: [voice, stt, docker]
 
   - id: kokoro-tts
-    name: Kokoro TTS
+    name: Kokoro TTS (FastAPI)
     category: voice_tts
-    description: High-quality local text-to-speech voices.
-    size_bytes: 320000000
+    description: High-quality local TTS via Kokoro FastAPI container. Auto-starts on install.
+    size_bytes: 1200000000
     required: false
-    provider: huggingface
-    artifact: hexgrad/Kokoro-82M
-    tags: [voice, tts]
+    provider: docker
+    image_cpu: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    image_gpu: ghcr.io/remsky/kokoro-fastapi-gpu:latest
+    container_port: 8880
+    host_port: 8880
+    health_path: /health
+    gpu_capable: true
+    register_as_app: true
+    tags: [voice, tts, docker]
 
   - id: comfyui-engine
     name: ComfyUI Engine
     category: multimedia
-    description: Local image/video generation (Flux, SD, Wan, HunyuanVideo workflows).
+    description: Local image/video generation — enable Compose profile `comfyui` (GPU-capable host recommended).
     size_bytes: 0
     required: false
     provider: compose_profile
