@@ -697,10 +697,13 @@ fn pick_best_local_pmtiles_source(app_data_dir: &Path) -> Option<PathBuf> {
     candidates.pop()
 }
 
+/// When `require_local_basemap` is true (Outpost), require a local `.pmtiles` on the host
+/// instead of fetching a remote source.
 fn ensure_example_region_proximity_pmtiles(
     app: &tauri::AppHandle,
     dest_root: &Path,
     app_data_dir: &Path,
+    require_local_basemap: bool,
 ) -> Result<(), String> {
     const PROTOMAPS_SOURCE_URL: &str =
         "https://data.source.coop/protomaps/openstreetmap/tiles/v3.pmtiles";
@@ -716,9 +719,17 @@ fn ensure_example_region_proximity_pmtiles(
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out = out_dir.join("example_region_25mi.pmtiles");
 
-    let source = pick_best_local_pmtiles_source(app_data_dir)
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| PROTOMAPS_SOURCE_URL.to_string());
+    let local = pick_best_local_pmtiles_source(app_data_dir);
+    let source = match local.as_ref().and_then(|p| p.to_str().map(|s| s.to_string())) {
+        Some(s) => s,
+        None if require_local_basemap => {
+            return Err(
+                "No local offline basemap (.pmtiles) found under data/maps. Download a small basemap first, then retry Outpost export."
+                    .to_string(),
+            );
+        }
+        None => PROTOMAPS_SOURCE_URL.to_string(),
+    };
 
     let bbox = format!("--bbox={min_lon:.8},{min_lat:.8},{max_lon:.8},{max_lat:.8}");
     let out_str = out
@@ -732,6 +743,33 @@ fn ensure_example_region_proximity_pmtiles(
         600,
     )?;
     Ok(())
+}
+
+fn dir_contains_extension(dir: &Path, ext_lc: &str) -> bool {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return false;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_file() {
+            let ok = p
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|s| s.eq_ignore_ascii_case(ext_lc))
+                .unwrap_or(false);
+            if ok {
+                return true;
+            }
+        } else if p.is_dir() && dir_contains_extension(&p, ext_lc) {
+            return true;
+        }
+    }
+    false
+}
+
+fn usb_has_offline_map_artifact(usb_data: &Path) -> bool {
+    let maps = usb_data.join("maps");
+    dir_contains_extension(&maps, "pmtiles") || dir_contains_extension(&maps, "mbtiles")
 }
 
 fn available_space_bytes_for_destination(dest_root: &Path) -> Option<u64> {
@@ -1731,6 +1769,60 @@ fn verify_usb_export(
                         .to_string(),
                 );
             }
+        }
+        // Outpost checklist: one chat model + minimal offline map (app/launchers checked below).
+        let chat_dst = usb_data.join("models").join("chat");
+        if !dir_contains_extension(&chat_dst, "gguf") {
+            return Err(
+                "Verification failed: Outpost USB has no chat .gguf under data/models/chat. Download a chat model on the host and re-export."
+                    .to_string(),
+            );
+        }
+        if !usb_has_offline_map_artifact(&usb_data) {
+            return Err(
+                "Verification failed: Outpost USB has no offline map (.pmtiles/.mbtiles) under data/maps. Download a small basemap first, then re-export."
+                    .to_string(),
+            );
+        }
+    }
+
+    let is_citadel = export_type == "citadel"
+        || export_type == "complete"
+        || export_type == "absolute";
+    if is_citadel {
+        // Sister Server checklist: models tree, library mirrors when host had watch folders.
+        let chat_src = app_data_dir.join("models").join("chat");
+        let chat_dst = usb_data.join("models").join("chat");
+        if dir_contains_extension(&chat_src, "gguf") && !dir_contains_extension(&chat_dst, "gguf") {
+            return Err(
+                "Verification failed: Sister Server USB is missing chat models under data/models/chat."
+                    .to_string(),
+            );
+        }
+        if emb_src.is_dir() && !emb_dst.is_dir() {
+            return Err(format!(
+                "Verification failed: Sister Server USB missing embeddings at {}.",
+                emb_dst.display()
+            ));
+        }
+        if rr_src.is_dir() && !rr_dst.is_dir() {
+            return Err(format!(
+                "Verification failed: Sister Server USB missing rerankers at {}.",
+                rr_dst.display()
+            ));
+        }
+        let docs_dst = dest_root.join("documents");
+        if !docs_dst.is_dir() {
+            return Err(format!(
+                "Verification failed: Sister Server USB missing library mirrors folder: {}",
+                docs_dst.display()
+            ));
+        }
+        if usb_has_offline_map_artifact(app_data_dir) && !usb_has_offline_map_artifact(&usb_data) {
+            return Err(
+                "Verification failed: Sister Server USB has no offline map artifacts under data/maps."
+                    .to_string(),
+            );
         }
     }
 
@@ -3457,7 +3549,7 @@ fn export_expedition_to_usb(
 
     if example_region_reserved_bytes() <= expedition_remaining_bytes(budget_bytes, io) {
         io.emit_phase(app, "Building proximity offline map…", 0.44);
-        ensure_example_region_proximity_pmtiles(app, dest_root, app_data_dir)?;
+        ensure_example_region_proximity_pmtiles(app, dest_root, app_data_dir, false)?;
         io.emit_phase(app, "Offline map ready.", 0.50);
     } else {
         io.emit_phase(
@@ -3584,6 +3676,7 @@ pub fn export_athena_to_usb(
     device_path: Option<String>,
     expedition_budget_bytes: Option<u64>,
     selected_external_chat_model_path: Option<String>,
+    include_docker_volumes: bool,
 ) -> Result<(), String> {
     clear_aegis_export_cancel();
     let export_result = (|| -> Result<(), String> {
@@ -3653,6 +3746,17 @@ pub fn export_athena_to_usb(
             }
         }
     }
+    if include_docker_volumes {
+        match &parsed {
+            ParsedUsbExport::Manual(AegisManualTier::Citadel) => {}
+            _ => {
+                return Err(
+                    "Include Docker volumes is only supported for Sister Server (citadel) export."
+                        .to_string(),
+                );
+            }
+        }
+    }
 
     let app_data_dir = resolved_app_data_dir(app)?;
     let cfg = load_config(&app_data_dir);
@@ -3699,7 +3803,7 @@ pub fn export_athena_to_usb(
             copy_bundled_payload_branches_to_usb(app, &dest_root, &mut io, 0.30, 0.42)?;
             io.emit_phase(app, "Payload stage complete.", 0.42);
             io.emit_phase(app, "Building minimal vector basemap…", 0.44);
-            ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir)?;
+            ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir, true)?;
             io.emit_phase(app, "Basemap ready.", 0.50);
 
             io.emit_phase(app, "Copying one small chat model…", 0.52);
@@ -3740,7 +3844,7 @@ pub fn export_athena_to_usb(
             copy_bundled_payload_branches_to_usb(app, &dest_root, &mut io, 0.30, 0.42)?;
             io.emit_phase(app, "Payload stage complete.", 0.42);
             io.emit_phase(app, "Building proximity offline map…", 0.44);
-            ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir)?;
+            ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir, false)?;
             io.emit_phase(app, "Offline map ready.", 0.50);
 
             if !emb_src.is_dir() {
@@ -3840,7 +3944,7 @@ pub fn export_athena_to_usb(
 
             copy_full_payload_to_usb_root(app, &dest_root, &mut io)?;
             io.emit_phase(app, "Building proximity offline map…", 0.44);
-            ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir)?;
+            ensure_example_region_proximity_pmtiles(app, &dest_root, &app_data_dir, false)?;
             io.emit_phase(app, "Offline map ready.", 0.50);
 
             if !emb_src.is_dir() {
@@ -3925,6 +4029,11 @@ pub fn export_athena_to_usb(
                 &mut io,
                 false,
             )?;
+            if include_docker_volumes {
+                io.emit_phase(app, "Exporting Docker Marketplace volumes…", 0.86);
+                crate::marketplace::copy_volumes_to_usb(&dest_root, &app_data_dir)?;
+                io.emit_phase(app, "Docker volumes exported.", 0.88);
+            }
         }
         ParsedUsbExport::Expedition { budget_bytes } => {
             export_expedition_to_usb(
@@ -3951,10 +4060,14 @@ pub fn export_athena_to_usb(
         .to_string_lossy()
         .to_string();
 
+    let et_label = export_type_label_for_verify(&parsed).to_string();
+    io.emit_phase(app, "Verifying export…", 0.93);
+    verify_usb_export(&dest_root, &et_label, &app_data_dir, &emb_name, &rr_name)?;
+    if include_docker_volumes {
+        crate::marketplace::verify_usb_volumes(&dest_root)?;
+    }
+
     if wipe_after {
-        let et_label = export_type_label_for_verify(&parsed).to_string();
-        io.emit_phase(app, "Verifying export…", 0.93);
-        verify_usb_export(&dest_root, &et_label, &app_data_dir, &emb_name, &rr_name)?;
         io.emit_phase(app, "Scorched Earth: erasing local data…", 0.96);
         execute_scorched_wipe(db, &app_data_dir, &cfg, &kiwix_str)?;
         io.emit_phase(app, "Local wipe finished.", 0.99);

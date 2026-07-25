@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
 import { Bell, BookOpen, ClipboardList, Package, Shield } from "lucide-react";
 import { useAuth } from "../../domains/auth/AuthContext";
 import { LogbookView } from "../logbook/LogbookView";

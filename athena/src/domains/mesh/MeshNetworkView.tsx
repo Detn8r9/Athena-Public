@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Event } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { useTauriListen } from "../../shared/hooks/useTauriListen";
 
 const MESH_P2P_REPLICATION_PROGRESS_EVENT = "athena:mesh-p2p-replication-progress";

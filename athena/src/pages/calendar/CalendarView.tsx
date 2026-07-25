@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
 import type { MapMarker } from "../../domains/features/map/MapView";
 import { getRegionalHolidays, type HolidayEvent } from "../../shared/lib/calendarHolidays";
 import { useLexicon } from "../../shared/lexicon";

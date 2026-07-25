@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import type { GeoJSONSource, Map } from "maplibre-gl";
 import type { Feature, FeatureCollection, LineString } from "geojson";
 import { SRC_ROUTE } from "./maplibreLayerIds";

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 
 export type InferenceBackendMode = "ollama" | "openai_compatible";
 

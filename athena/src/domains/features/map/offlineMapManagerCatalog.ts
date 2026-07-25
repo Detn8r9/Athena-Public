@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 
 /** Mirrors `OfflineMapCatalogEntry` from the Rust catalog (JSON key `type` for archive format). */
 export interface OfflineMapCatalogEntry {

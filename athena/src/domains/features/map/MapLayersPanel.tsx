@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaListen as listen } from "../../../shared/ipc/athenaIpc";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import { isProbablySatelliteArchiveFileName } from "./satelliteMapArchive";
 import { getOfflineMapManagerCatalog, listDownloadedOfflineMapIds, type OfflineMapCatalogEntry } from "./offlineMapManagerCatalog";
 import { Settings } from "lucide-react";

@@ -2,8 +2,13 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from "react-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import {
+  athenaInvoke as invoke,
+  athenaListen as listen,
+  canUseHostCapability,
+  isAthenaDesktopRuntime,
+} from "../shared/ipc/athenaIpc";
 import "./App.css";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { TRIAGE_ITEMS, getTriageItem, TriageId } from "../shared/lib/triageData";
@@ -57,26 +62,40 @@ import { RadioSettingsView } from "../domains/features/radio/RadioSettingsView";
 import { CommsHubIcon } from "../shared/CommsHubIcon";
 import { ColorsAndThemes } from "../pages/Settings/ColorsAndThemes";
 import { AIAndKnowledgeSystemModelRouting } from "../pages/Settings/AIAndKnowledge";
+import { SettingsShell } from "../pages/Settings/SettingsShell";
+import { SettingsGroup } from "../pages/Settings/SettingsGroup";
+import { SettingsRow } from "../pages/Settings/SettingsRow";
+import { PillToggle } from "../pages/Settings/PillToggle";
+import { MarketplacePanel } from "../pages/marketplace/MarketplacePanel";
+import { MarketplaceView } from "../pages/marketplace/MarketplaceView";
+import type { SettingsPanelId } from "../pages/Settings/settingsSearchIndex";
+import type { SettingsSearchEntry } from "../pages/Settings/settingsSearchIndex";
+import {
+  SPOTLIGHT_STORAGE,
+  type SpotlightAction,
+} from "../shared/search/spotlightSearch";
+import {
+  probeDuplexCapability,
+  releaseMicPipeline,
+  startBargeInMonitor,
+  startWhisperListen,
+  synthesizeWithKokoro,
+  withTimeout,
+  type DuplexCapability,
+} from "../domains/voice/duplexVoice";
+import { ConversationFaceStage, usePersistedThinkMode } from "../domains/chat/ConversationFaceStage";
+import {
+  readChatSurfaceDefault,
+  saveChatSurfaceDefault,
+  thinkModeModelOptions,
+  type ChatSurfaceDefault,
+} from "../domains/chat/chatSurfacePrefs";
 import {
   MODEL_ROUTING_AUTO,
   SESSION_MODEL_FOLLOW_SETTINGS,
   ensureInferenceModelForRequest,
   resolveInferenceModelForView,
 } from "../domains/models/modelCatalog";
-import {
-  Activity,
-  Brain,
-  Calendar as CalendarIcon,
-  CircleHelp,
-  Compass,
-  KeyRound,
-  Monitor,
-  Palette,
-  RadioTower,
-  Route,
-  Usb,
-  Volume2,
-} from "lucide-react";
 
 type UserAndInferenceSettings = {
   user_display_name: string | null;
@@ -97,6 +116,9 @@ type UserAndInferenceSettings = {
   active_embedding_model_folder: string;
   active_reranker_model_folder: string;
   ai_inference_sleep: boolean;
+  connectivity_mode?: string;
+  connectivity_label?: string;
+  internet_allowed?: boolean;
 };
 
 interface HiveMindRouteStatus {
@@ -543,7 +565,8 @@ const VOICE_PRESET_LABELS: Record<VoicePresetId, string> = {
 };
 
 /** When true, voice (TTS) and microphone (conversation / speak-to-type) UI are hidden. Code remains in place. */
-const VOICE_AND_MIC_FEATURES_HIDDEN = true;
+/** Voice pack v1: browser STT/TTS. Set true only to hide mic/conversation UI in a build. */
+const VOICE_AND_MIC_FEATURES_HIDDEN = false;
 
 /** Renders basic markdown in message text: **bold**, *italic*, `code` */
 function formatMessageText(text: string): React.ReactNode {
@@ -955,6 +978,10 @@ function App() {
   const [calendarQuietHoursEnd, setCalendarQuietHoursEnd] = useState(7);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [inferenceBackendMode, setInferenceBackendMode] = useState<"ollama" | "openai_compatible">("ollama");
+  const [connectivityMode, setConnectivityMode] = useState<"auto" | "online" | "offline">("auto");
+  const [connectivityLabel, setConnectivityLabel] = useState("Online");
+  const [internetAllowed, setInternetAllowed] = useState(true);
+  const [marketplaceFocusAppId, setMarketplaceFocusAppId] = useState<string | null>(null);
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("http://127.0.0.1:1234/v1");
   const [openaiModelId, setOpenaiModelId] = useState("");
   const [openaiApiKeyLocal, setOpenaiApiKeyLocal] = useState("");
@@ -1035,25 +1062,10 @@ function App() {
   const [usbExportProgress, setUsbExportProgress] = useState<AegisExportProgress | null>(null);
   const [usbExportErrorDetail, setUsbExportErrorDetail] = useState<string | null>(null);
   const [usbExportIoHistories] = useState<AegisIoHistories>({ read: [], write: [] });
-  type SettingsPanel =
-    | "menu"
-    | "me"
-    | "general"
-    | "ai"
-    | "location"
-    | "apiKeys"
-    | "maps"
-    | "mesh"
-    | "voice"
-    | "calendar"
-    | "dateTime"
-    | "appearance"
-    | "colorsThemes"
-    | "themes"
-    | "troubleshooting"
-    | "usbExport"
-    | "developer";
-  const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>("menu");
+  type SettingsPanel = SettingsPanelId;
+  const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>("general");
+  const [settingsNavQuery, setSettingsNavQuery] = useState("");
+  const [settingsFocusId, setSettingsFocusId] = useState<string | null>(null);
   const settingsPanelOnOpenRef = useRef<SettingsPanel | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement>(null);
   const menuScrollPosRef = useRef(0);
@@ -1073,10 +1085,12 @@ function App() {
   }, [meshEmergencyRows]);
 
   function goToSettingsSubpanel(panel: SettingsPanel) {
-    if (settingsPanel === "menu" && settingsBodyRef.current) {
-      menuScrollPosRef.current = settingsBodyRef.current.scrollTop;
-    }
     setSettingsPanel(panel);
+  }
+
+  function handleSettingsSearchResult(entry: SettingsSearchEntry) {
+    setSettingsPanel(entry.panel);
+    setSettingsFocusId(entry.id);
   }
 
   async function executeUsbExportFromModal(args: {
@@ -1085,6 +1099,7 @@ function App() {
     formatFirst: boolean;
     expeditionBudgetBytes?: number | null;
     selectedExternalChatModelPath?: string | null;
+    includeDockerVolumes?: boolean;
   }) {
     if (usbExportBusy) return;
     const exportType = usbExportModalKind;
@@ -1095,10 +1110,10 @@ function App() {
     setUsbExportStatus(
       usbScorchedEarth
         ? exportType === "fastNode"
-          ? "Copying Fast Node tier, then verifying…"
+          ? "Copying Outpost tier, then verifying…"
           : "Copying Sister Server tier, then verifying…"
         : exportType === "fastNode"
-          ? "Copying Fast Node tier…"
+          ? "Copying Outpost tier…"
           : "Copying Sister Server tier…",
     );
     let unlistenProgress: (() => void) | undefined;
@@ -1135,6 +1150,7 @@ function App() {
         devicePath: args.devicePath,
         expeditionBudgetBytes: args.expeditionBudgetBytes ?? null,
         selectedExternalChatModelPath: args.selectedExternalChatModelPath ?? null,
+        includeDockerVolumes: args.includeDockerVolumes ?? false,
       });
       setUsbExportErrorDetail(null);
       setUsbExportStatus(usbScorchedEarth ? "Finished. Local data was erased." : "Finished.");
@@ -1174,6 +1190,19 @@ function App() {
       return false;
     }
   });
+  const [lanBridgeStatus, setLanBridgeStatus] = useState<{
+    enabled: boolean;
+    port: number;
+    listening: boolean;
+    distReady: boolean;
+    distPath: string;
+    primaryLanIp?: string | null;
+    lanIps?: string[];
+    connectedClients?: number;
+    authenticatedSessions?: number;
+  } | null>(null);
+  const [lanBridgePortDraft, setLanBridgePortDraft] = useState("8787");
+  const [lanBridgeBusy, setLanBridgeBusy] = useState(false);
   const [deviceStats, setDeviceStats] = useState<{
     cpu_usage_pct: number;
     ram_used_mb: number;
@@ -1472,6 +1501,16 @@ function App() {
   const [conversationMicError, setConversationMicError] = useState<string | null>(null);
   const [conversationModeActive, setConversationModeActive] = useState(false);
   const conversationModeRef = useRef(false);
+  const [chatSurface, setChatSurface] = useState<ChatSurfaceDefault>(() => readChatSurfaceDefault());
+  const [thinkMode, setThinkMode] = usePersistedThinkMode();
+  const [voiceEnergyRms, setVoiceEnergyRms] = useState(0);
+  const sendingRef = useRef(false);
+  const [duplexCapability, setDuplexCapability] = useState<DuplexCapability | null>(null);
+  const duplexCapabilityRef = useRef<DuplexCapability | null>(null);
+  const conversationMicStreamRef = useRef<MediaStream | null>(null);
+  const whisperListenSessionRef = useRef<{ stop: () => void; setPaused: (p: boolean) => void } | null>(null);
+  const bargeInStopRef = useRef<(() => void) | null>(null);
+  const speakGenerationRef = useRef(0);
   const speakMessageAtIndexRef = useRef<(index: number, onAfterSpeak?: () => void) => void>(() => {});
   const startConversationListeningRef = useRef<() => void>(() => {});
   const logErrorRef = useRef<(msg: string) => void>(() => {});
@@ -1507,7 +1546,7 @@ function App() {
           lastChunkAtMs: streamLastChunkAtRef.current,
           gotFirstChunk: streamGotFirstChunkRef.current,
         });
-        if (w.action === "stall_first_timeout") {
+        if (w.action === "stall_first_timeout" || w.action === "stall_idle") {
           setStreamStallMessage(w.message);
           setMessages((prev) => {
             const next = [...prev];
@@ -1520,21 +1559,11 @@ function App() {
             }
             return next;
           });
+          sendingRef.current = false;
           setSending(false);
-        } else if (w.action === "stall_idle") {
-          setStreamStallMessage(w.message);
-          setMessages((prev) => {
-            const next = [...prev];
-            const i = next.length - 1;
-            if (i >= 0 && next[i].role === "assistant") {
-              next[i] = {
-                ...next[i],
-                content: w.message,
-              };
-            }
-            return next;
-          });
-          setSending(false);
+          if (conversationModeRef.current) {
+            setTimeout(() => startConversationListeningRef.current?.(), 500);
+          }
         }
       }
       if (mapChatSending) {
@@ -1564,6 +1593,39 @@ function App() {
   useEffect(() => {
     conversationModeRef.current = conversationModeActive;
   }, [conversationModeActive]);
+
+  useEffect(() => {
+    duplexCapabilityRef.current = duplexCapability;
+  }, [duplexCapability]);
+
+  useEffect(() => {
+    if (!conversationModeActive) return;
+    let cancelled = false;
+    const refresh = () => {
+      void probeDuplexCapability().then((cap) => {
+        if (!cancelled) setDuplexCapability(cap);
+      });
+    };
+    refresh();
+    const t = window.setInterval(refresh, 12000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [conversationModeActive]);
+
+  function releaseConversationMic() {
+    whisperListenSessionRef.current?.stop();
+    whisperListenSessionRef.current = null;
+    bargeInStopRef.current?.();
+    bargeInStopRef.current = null;
+    const stream = conversationMicStreamRef.current;
+    if (stream) {
+      releaseMicPipeline(stream);
+      stream.getTracks().forEach((t) => t.stop());
+      conversationMicStreamRef.current = null;
+    }
+  }
   const appRef = useRef<HTMLDivElement>(null);
   const triageMenuRef = useRef<HTMLDivElement>(null);
   const [nightVisionMode, setNightVisionMode] = useState<NightVisionMode>(() => {
@@ -1978,6 +2040,9 @@ function App() {
   }
 
   function stopTts() {
+    speakGenerationRef.current += 1;
+    bargeInStopRef.current?.();
+    bargeInStopRef.current = null;
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -2026,22 +2091,42 @@ function App() {
     return list[0] ?? voices[0];
   }
 
+  function attachBargeInWhileSpeaking() {
+    bargeInStopRef.current?.();
+    bargeInStopRef.current = null;
+    const stream = conversationMicStreamRef.current;
+    if (!stream || !conversationModeRef.current) return;
+    bargeInStopRef.current = startBargeInMonitor(stream, () => {
+      if (!conversationModeRef.current) return;
+      stopTts();
+      startConversationListeningRef.current?.();
+    }).stop;
+  }
+
   function speakMessageAtIndex(index: number, onAfterSpeak?: () => void) {
-    if (!ttsEnabled) {
+    // Face Conversation always speaks back so the loop does not die when TTS is off in Chat settings.
+    const shouldSpeak = ttsEnabled || conversationModeRef.current;
+    if (!shouldSpeak) {
       onAfterSpeak?.();
       return;
     }
-    const msg = messages[index];
+    const msg = messagesRef.current[index] ?? messages[index];
     if (!msg || msg.role !== "assistant" || !msg.content.trim()) {
       onAfterSpeak?.();
       return;
     }
+    // Cap spoken length so Kokoro/browser TTS cannot hang the Conversation loop.
+    const speakText = msg.content.length > 1200 ? `${msg.content.slice(0, 1200).trim()}…` : msg.content;
 
     stopTts();
+    const gen = ++speakGenerationRef.current;
     setTtsSpeakingIndex(index);
     setTtsPaused(false);
 
     const applyEnd = () => {
+      if (speakGenerationRef.current !== gen) return;
+      bargeInStopRef.current?.();
+      bargeInStopRef.current = null;
       stopFalloutStatic();
       ttsUtteranceRef.current = null;
       ttsAudioRef.current = null;
@@ -2050,34 +2135,62 @@ function App() {
       onAfterSpeak?.();
     };
 
-    if ((voicePreset === "fallout" || voicePreset === "ultron") && typeof invoke !== "undefined") {
-      invoke<string>("synthesize_speech", { text: msg.content, voiceId: voicePreset })
-        .then((base64Wav) => {
-          const binary = atob(base64Wav);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const blob = new Blob([bytes], { type: "audio/wav" });
-          const url = URL.createObjectURL(blob);
-          const audio = new Audio(url);
-          ttsAudioRef.current = audio;
-          audio.onended = () => {
-            URL.revokeObjectURL(url);
-            applyEnd();
-          };
-          audio.onerror = () => {
-            URL.revokeObjectURL(url);
-            applyEnd();
-          };
-          audio.play().catch(() => applyEnd());
+    const playBlob = (blob: Blob) => {
+      if (speakGenerationRef.current !== gen) return;
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      ttsAudioRef.current = audio;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        applyEnd();
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        applyEnd();
+      };
+      attachBargeInWhileSpeaking();
+      audio.play().catch(() => applyEnd());
+    };
+
+    const fallBackToPiperOrSystem = () => {
+      if (speakGenerationRef.current !== gen) return;
+      if ((voicePreset === "fallout" || voicePreset === "ultron") && typeof invoke !== "undefined") {
+        void withTimeout(
+          invoke<string>("synthesize_speech", { text: speakText, voiceId: voicePreset }),
+          20_000,
+          "Piper TTS timed out",
+        )
+          .then((base64Wav) => {
+            if (speakGenerationRef.current !== gen) return;
+            const binary = atob(base64Wav);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            playBlob(new Blob([bytes], { type: "audio/wav" }));
+          })
+          .catch(() => {
+            if (speakGenerationRef.current !== gen) return;
+            setTtsSpeakingIndex(null);
+            speakWithSystemTts(index, speakText, applyEnd);
+            attachBargeInWhileSpeaking();
+          });
+        return;
+      }
+      speakWithSystemTts(index, speakText, applyEnd);
+      attachBargeInWhileSpeaking();
+    };
+
+    const cap = duplexCapabilityRef.current;
+    if (cap?.kokoro && cap.kokoroBaseUrl) {
+      void withTimeout(synthesizeWithKokoro(cap.kokoroBaseUrl, speakText), 25_000, "Kokoro TTS timed out")
+        .then((blob) => {
+          if (speakGenerationRef.current !== gen) return;
+          playBlob(blob);
         })
-        .catch(() => {
-          setTtsSpeakingIndex(null);
-          speakWithSystemTts(index, msg.content, applyEnd);
-        });
+        .catch(() => fallBackToPiperOrSystem());
       return;
     }
 
-    speakWithSystemTts(index, msg.content, applyEnd);
+    fallBackToPiperOrSystem();
   }
 
   function speakWithSystemTts(
@@ -2128,109 +2241,234 @@ function App() {
     synth.addEventListener("voiceschanged", onVoicesChanged);
   }
 
-  function startConversationListening() {
+  function startBrowserConversationListening() {
     if (!conversationModeRef.current) return;
     const SpeechRecognitionAPI =
       typeof window !== "undefined" &&
       (window.SpeechRecognition || window.webkitSpeechRecognition);
     if (!SpeechRecognitionAPI) {
-      logErrorRef.current?.("Speech recognition not supported.");
+      const msg =
+        "Speech recognition is not available in this browser. Use Chrome/Edge (or another Chromium build) for Conversation mode, or type instead.";
+      logErrorRef.current?.(msg);
+      setConversationMicError(msg);
       setConversationMicStatus("denied");
       return;
     }
     speechRecognitionRef.current?.abort();
     setConversationInterimTranscript("");
     let hadResult = false;
-    const tryStart = () => {
-      const rec = new SpeechRecognitionAPI();
-      rec.continuous = false;
-      rec.interimResults = true;
-      rec.lang = "en-US";
-      rec.maxAlternatives = 2;
-      rec.onresult = (e: SpeechRecognitionEvent) => {
-        const results = Array.from(e.results);
-        const transcript = results
-          .map((r) => r[0]?.transcript)
-          .filter(Boolean)
-          .join(" ")
-          .trim();
-        const lastIsFinal = results[results.length - 1]?.isFinal;
-        if (lastIsFinal) {
-          setConversationInterimTranscript("");
-          if (transcript) {
-            hadResult = true;
-            setSpeechListening(false);
-            handleSend(transcript);
-          }
-        } else {
-          setConversationInterimTranscript(transcript);
-        }
-      };
-      rec.onend = () => {
+    const rec = new SpeechRecognitionAPI();
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+    rec.maxAlternatives = 2;
+    rec.onresult = (e: SpeechRecognitionEvent) => {
+      const results = Array.from(e.results);
+      const transcript = results
+        .map((r) => r[0]?.transcript)
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      const lastIsFinal = results[results.length - 1]?.isFinal;
+      if (lastIsFinal) {
         setConversationInterimTranscript("");
-        if (conversationModeRef.current && !hadResult) {
-          setTimeout(() => startConversationListening(), 500);
-        } else {
+        if (transcript) {
+          hadResult = true;
           setSpeechListening(false);
+          handleSend(transcript);
         }
-      };
-      rec.onerror = (e: SpeechRecognitionErrorEvent) => {
-        setConversationInterimTranscript("");
-        setSpeechListening(false);
-        const permissionDenied = e.error === "not-allowed" || e.error === "audio-capture";
-        if (permissionDenied) {
-          setConversationMicError(`Microphone denied (${e.error}). Allow in System Settings → Privacy & Security → Microphone.`);
-          setConversationMicStatus("denied");
-          logErrorRef.current?.("Microphone access denied. Allow microphone to use conversation mode.");
-          return;
-        }
-        if (conversationModeRef.current) {
-          setTimeout(() => startConversationListening(), 800);
-        }
-      };
-      speechRecognitionRef.current = rec;
-      rec.start();
-      setSpeechListening(true);
+      } else {
+        setConversationInterimTranscript(transcript);
+      }
     };
-    if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
-      setConversationMicStatus("requesting");
-      setConversationMicError(null);
-      (async () => {
-        try {
-          const { requestMicrophonePermission } = await import("tauri-plugin-macos-permissions-api");
-          await requestMicrophonePermission();
-        } catch {
-          /* Not Tauri, or not macOS; continue with getUserMedia */
-        }
-        if (!conversationModeRef.current) return;
-        const timeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Request timed out. Check System Settings → Privacy & Security → Microphone for Athena.")), 10000)
-        );
-        try {
-          const stream = await Promise.race([
-            navigator.mediaDevices.getUserMedia({ audio: true }),
-            timeout,
-          ]);
-          if (!conversationModeRef.current) return;
-          stream.getTracks().forEach((t) => t.stop());
-          setConversationMicStatus("granted");
-          setConversationMicError(null);
-          tryStart();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          setConversationMicError(msg);
-          setConversationMicStatus("denied");
-          logErrorRef.current?.(`Microphone: ${msg}`);
-        }
-      })();
-    } else {
+    rec.onend = () => {
+      setConversationInterimTranscript("");
+      if (conversationModeRef.current && !hadResult) {
+        setTimeout(() => startConversationListening(), 500);
+      } else {
+        setSpeechListening(false);
+      }
+    };
+    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+      setConversationInterimTranscript("");
+      setSpeechListening(false);
+      const permissionDenied = e.error === "not-allowed" || e.error === "audio-capture";
+      if (permissionDenied) {
+        setConversationMicError(`Microphone denied (${e.error}). Allow in System Settings → Privacy & Security → Microphone.`);
+        setConversationMicStatus("denied");
+        logErrorRef.current?.("Microphone access denied. Allow microphone to use conversation mode.");
+        return;
+      }
+      if (conversationModeRef.current) {
+        setTimeout(() => startConversationListening(), 800);
+      }
+    };
+    speechRecognitionRef.current = rec;
+    rec.start();
+    setSpeechListening(true);
+  }
+
+  async function ensureConversationMicStream(): Promise<MediaStream | null> {
+    if (conversationMicStreamRef.current) {
+      const live = conversationMicStreamRef.current.getTracks().some((t) => t.readyState === "live");
+      if (live) return conversationMicStreamRef.current;
+      releaseConversationMic();
+    }
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      return null;
+    }
+    setConversationMicStatus("requesting");
+    setConversationMicError(null);
+    try {
+      const { requestMicrophonePermission } = await import("tauri-plugin-macos-permissions-api");
+      await requestMicrophonePermission();
+    } catch {
+      /* Not Tauri / macOS */
+    }
+    if (!conversationModeRef.current) return null;
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "Request timed out. Check System Settings → Privacy & Security → Microphone for Athena.",
+            ),
+          ),
+        10000,
+      ),
+    );
+    try {
+      const stream = await Promise.race([
+        navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        }),
+        timeout,
+      ]);
+      if (!conversationModeRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return null;
+      }
+      conversationMicStreamRef.current = stream;
       setConversationMicStatus("granted");
-      tryStart();
+      setConversationMicError(null);
+      return stream;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setConversationMicError(msg);
+      setConversationMicStatus("denied");
+      logErrorRef.current?.(`Microphone: ${msg}`);
+      return null;
     }
   }
 
+  function startConversationListening() {
+    if (!conversationModeRef.current) return;
+    whisperListenSessionRef.current?.stop();
+    whisperListenSessionRef.current = null;
+    bargeInStopRef.current?.();
+    bargeInStopRef.current = null;
+    speechRecognitionRef.current?.abort();
+    setConversationInterimTranscript("");
+
+    void (async () => {
+      const cap = duplexCapabilityRef.current ?? (await probeDuplexCapability());
+      if (!conversationModeRef.current) return;
+      setDuplexCapability(cap);
+
+      if (cap.whisper && cap.whisperBaseUrl) {
+        const stream = await ensureConversationMicStream();
+        if (!conversationModeRef.current) return;
+        if (!stream) {
+          // Mic failed — try browser STT (may also fail)
+          startBrowserConversationListening();
+          return;
+        }
+        setSpeechListening(true);
+        const session = startWhisperListen({
+          stream,
+          whisperBaseUrl: cap.whisperBaseUrl,
+          onInterim: (hint) => setConversationInterimTranscript(hint),
+          onEnergy: (rms) => setVoiceEnergyRms(rms),
+          isPaused: () => sendingRef.current || !conversationModeRef.current,
+          onTranscript: (text) => {
+            if (sendingRef.current) return;
+            setSpeechListening(false);
+            setConversationInterimTranscript("");
+            whisperListenSessionRef.current?.setPaused(true);
+            whisperListenSessionRef.current?.stop();
+            whisperListenSessionRef.current = null;
+            void handleSend(text);
+          },
+          onError: (message) => {
+            logErrorRef.current?.(`Whisper STT: ${message} — falling back to browser speech.`);
+            whisperListenSessionRef.current?.stop();
+            whisperListenSessionRef.current = null;
+            setSpeechListening(false);
+            void probeDuplexCapability().then((next) => {
+              setDuplexCapability(next);
+              if (conversationModeRef.current && !sendingRef.current) startBrowserConversationListening();
+            });
+          },
+        });
+        whisperListenSessionRef.current = session;
+        return;
+      }
+
+      // Browser STT path — still acquire mic for barge-in during TTS when possible
+      void ensureConversationMicStream().then(() => {
+        if (conversationModeRef.current) startBrowserConversationListening();
+      });
+    })();
+  }
+
+  function enterConversationFace() {
+    setChatSurface("conversation");
+    setConversationModeActive(true);
+    void probeDuplexCapability().then((cap) => {
+      setDuplexCapability(cap);
+      startConversationListening();
+    });
+  }
+
+  function exitConversationFace(switchToChat = true) {
+    setConversationModeActive(false);
+    speechRecognitionRef.current?.abort();
+    stopTts();
+    releaseConversationMic();
+    setSpeechListening(false);
+    setConversationInterimTranscript("");
+    setConversationMicStatus("idle");
+    setConversationMicError(null);
+    if (switchToChat) setChatSurface("chat");
+  }
+
+  const conversationFacePhase = (() => {
+    if (!conversationModeActive) return "idle" as const;
+    if (sending) return "thinking" as const;
+    if (ttsSpeakingIndex != null) return "speaking" as const;
+    if (speechListening) return "listening" as const;
+    return "idle" as const;
+  })();
+
+  const lastAssistantText =
+    [...messages].reverse().find((m) => m.role === "assistant" && m.content.trim())?.content ?? "";
+
   speakMessageAtIndexRef.current = speakMessageAtIndex;
   startConversationListeningRef.current = startConversationListening;
+
+  useEffect(() => {
+    if (currentView !== "chat") return;
+    if (readChatSurfaceDefault() !== "conversation") return;
+    if (conversationModeRef.current) return;
+    enterConversationFace();
+    // only when entering chat view
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentView]);
+
 
   // Load theme + personality config from backend so persona matches the selected preset.
   useEffect(() => {
@@ -2332,6 +2570,12 @@ function App() {
         Number.isFinite(uis.calendar_quiet_hours_end) ? Math.max(0, Math.min(23, uis.calendar_quiet_hours_end)) : 7,
       );
       setInferenceBackendMode(uis.inference_backend === "openai_compatible" ? "openai_compatible" : "ollama");
+      {
+        const m = (uis.connectivity_mode ?? "auto").toLowerCase();
+        setConnectivityMode(m === "online" || m === "offline" ? m : "auto");
+        setConnectivityLabel(uis.connectivity_label ?? (uis.internet_allowed === false ? "Offline" : "Online"));
+        setInternetAllowed(uis.internet_allowed !== false);
+      }
       setHiveMindSeedUrl(uis.hive_mind_seed_url ?? "");
       setOpenaiBaseUrl(uis.openai_compatible_base_url?.trim() || "http://127.0.0.1:1234/v1");
       setOpenaiModelId(uis.openai_compatible_model ?? "");
@@ -2600,6 +2844,81 @@ function App() {
       }
     } catch (e) {
       logError(String(e));
+    }
+  }
+
+  function handleSpotlightAction(action: SpotlightAction) {
+    switch (action.type) {
+      case "view":
+        setMarketplaceFocusAppId(null);
+        setCurrentView(action.view);
+        break;
+      case "settings":
+        settingsPanelOnOpenRef.current = action.panel;
+        setSettingsPanel(action.panel);
+        setSettingsOpen(true);
+        break;
+      case "personnel":
+        setCurrentView("personnel");
+        setProfilePersonnelId(action.personId);
+        break;
+      case "map": {
+        if (action.markerId) {
+          void invoke<Array<{ id: string; lat: number; lng: number }>>("get_map_markers")
+            .then((rows) => rows.find((r) => r.id === action.markerId))
+            .then((m) => {
+              if (!m) {
+                setCurrentView("map");
+                return;
+              }
+              setMapViewCenter([m.lat, m.lng]);
+              setMapViewZoom(14);
+              setCurrentView("map");
+            })
+            .catch(() => setCurrentView("map"));
+          break;
+        }
+        if (action.poiId) {
+          void invoke<Array<{ id: string; lat: number; lon: number }>>("get_pois")
+            .then((rows) => rows.find((r) => r.id === action.poiId))
+            .then((p) => {
+              if (!p) {
+                setCurrentView("map");
+                return;
+              }
+              setMapViewCenter([p.lat, p.lon]);
+              setMapViewZoom(14);
+              setCurrentView("map");
+            })
+            .catch(() => setCurrentView("map"));
+          break;
+        }
+        setCurrentView("map");
+        break;
+      }
+      case "inventory":
+        try {
+          if (action.query) sessionStorage.setItem(SPOTLIGHT_STORAGE.inventoryQuery, action.query);
+          if (action.itemId) sessionStorage.setItem(SPOTLIGHT_STORAGE.inventoryItemId, action.itemId);
+        } catch {
+          /* ignore */
+        }
+        setCurrentView("logbook");
+        break;
+      case "chat":
+        setCurrentView("chat");
+        setChatWorkspaceTab("local");
+        void loadChat(action.chatId);
+        break;
+      case "marketplace":
+        setMarketplaceFocusAppId(action.appId ?? null);
+        setCurrentView("marketplace");
+        break;
+      case "web":
+        void openUrl(action.url);
+        break;
+      default:
+        break;
     }
   }
 
@@ -3119,7 +3438,7 @@ function App() {
     if (settingsOpen) {
       menuScrollPosRef.current = 0;
       setLibraryError(null);
-      const target = settingsPanelOnOpenRef.current ?? "menu";
+      const target = settingsPanelOnOpenRef.current ?? "general";
       settingsPanelOnOpenRef.current = null;
       setSettingsPanel(target);
       setSettingsTitleClickCount(0);
@@ -3157,18 +3476,33 @@ function App() {
     if (!settingsOpen) {
       setThemesSubView("main");
       setStudioDraft(null);
+      setSettingsNavQuery("");
+      setSettingsFocusId(null);
     }
   }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!settingsOpen || !settingsFocusId) return;
+    const root = settingsBodyRef.current;
+    if (!root) return;
+    const el = root.querySelector(
+      `[data-settings-focus="${settingsFocusId.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`,
+    ) as HTMLElement | null;
+    if (!el) return;
+    el.classList.add("settings-focus-active");
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = window.setTimeout(() => {
+      el.classList.remove("settings-focus-active");
+      setSettingsFocusId(null);
+    }, 1700);
+    return () => window.clearTimeout(t);
+  }, [settingsOpen, settingsFocusId, settingsPanel]);
 
   useLayoutEffect(() => {
     const el = settingsBodyRef.current;
     if (!el) return;
-    if (settingsPanel === "menu") {
-      el.scrollTop = menuScrollPosRef.current;
-    } else {
-      el.scrollTop = 0;
-    }
-  }, [settingsPanel]);
+    if (!settingsFocusId) el.scrollTop = 0;
+  }, [settingsPanel, settingsFocusId]);
 
   useLayoutEffect(() => {
     if (settingsPanel !== "themes") return;
@@ -3937,6 +4271,7 @@ function App() {
             setMapChatSending(false);
           } else {
             setStreamStallMessage(null);
+            sendingRef.current = false;
             setSending(false);
             setTimeout(() => {
               if (temporaryChatRef.current) return;
@@ -3966,13 +4301,15 @@ function App() {
                   const lastMsg = messagesRef.current[lastIndex];
                   if (lastMsg?.role === "assistant" && lastMsg.content?.trim()) {
                     speakMessageAtIndexRef.current?.(lastIndex, () => {
-                      if (conversationModeRef.current) startConversationListeningRef.current?.();
+                      if (conversationModeRef.current) {
+                        setTimeout(() => startConversationListeningRef.current?.(), 350);
+                      }
                     });
                   } else {
-                    startConversationListeningRef.current?.();
+                    setTimeout(() => startConversationListeningRef.current?.(), 350);
                   }
                 } else {
-                  startConversationListeningRef.current?.();
+                  setTimeout(() => startConversationListeningRef.current?.(), 350);
                 }
               }, 150);
             }
@@ -3998,6 +4335,7 @@ function App() {
               }
               return next;
             });
+            sendingRef.current = false;
             setSending(false);
           }
           inputRef.current?.focus();
@@ -4075,8 +4413,50 @@ function App() {
   useEffect(() => {
     if (settingsOpen && settingsPanel === "general") {
       setStartupViewPreference(readStartupView());
+      if (isAthenaDesktopRuntime()) {
+        void invoke<{
+          enabled: boolean;
+          port: number;
+          listening: boolean;
+          distReady: boolean;
+          distPath: string;
+          primaryLanIp?: string | null;
+          lanIps?: string[];
+          connectedClients?: number;
+          authenticatedSessions?: number;
+        }>("get_lan_bridge_status")
+          .then((st) => {
+            setLanBridgeStatus(st);
+            setLanBridgePortDraft(String(st.port || 8787));
+          })
+          .catch(() => setLanBridgeStatus(null));
+      }
     }
   }, [settingsOpen, settingsPanel]);
+
+  // Live LAN client counts on the desktop host while the bridge is listening.
+  useEffect(() => {
+    if (!isAthenaDesktopRuntime()) return;
+    const tick = () => {
+      void invoke<{
+        enabled: boolean;
+        port: number;
+        listening: boolean;
+        distReady: boolean;
+        distPath: string;
+        primaryLanIp?: string | null;
+        lanIps?: string[];
+        connectedClients?: number;
+        authenticatedSessions?: number;
+      }>("get_lan_bridge_status")
+        .then(setLanBridgeStatus)
+        .catch(() => {});
+    };
+    tick();
+    if (!lanBridgeStatus?.listening) return;
+    const id = window.setInterval(tick, 4000);
+    return () => window.clearInterval(id);
+  }, [lanBridgeStatus?.listening]);
 
   useEffect(() => {
     if (currentView !== "map") {
@@ -4382,8 +4762,32 @@ ${tag}` : tag;
 
   async function handleSend(overrideText?: string) {
     const text = (overrideText !== undefined ? overrideText : input).trim();
-    if (!text || sending) return;
+    if (!text || sending || sendingRef.current) return;
     if (localChatHistoryReadOnly) return;
+
+    // Lock immediately so Conversation VAD cannot double-fire during wake/RAG awaits.
+    sendingRef.current = true;
+    setSending(true);
+    setSpeechListening(false);
+    whisperListenSessionRef.current?.setPaused(true);
+
+    // Wake local AI if asleep so Conversation doesn't fail mid-turn.
+    if (aiInferenceSleep) {
+      try {
+        await invoke("set_ai_inference_sleep", { value: false });
+        setAiInferenceSleep(false);
+        // Brief settle so Ollama can accept the next request after wake.
+        await new Promise((r) => setTimeout(r, 250));
+      } catch {
+        /* continue; backend may still reject */
+      }
+    }
+
+    const think = thinkModeModelOptions(thinkMode, aiTemperature, aiNumCtx);
+    const userFacingText = text;
+    const inConversation = conversationModeRef.current;
+    const modelPromptPrefix = inConversation ? think.promptPrefix : "";
+
     const attachNote =
       attachments.length > 0
         ? `\n\n[Attached files for this question: ${attachments
@@ -4392,73 +4796,81 @@ ${tag}` : tag;
         : "";
     let ragContextString = "";
     let ragSources: string[] = [];
-    try {
-      let ragFilters: RagSearchFilters | undefined;
+    // Face Conversation prioritizes turn latency — skip heavy retrieval context there.
+    if (!inConversation) {
       try {
-        const raw = window.localStorage.getItem("athena-rag-search-filters-v1");
-        if (raw) {
-          ragFilters = JSON.parse(raw) as RagSearchFilters;
+        let ragFilters: RagSearchFilters | undefined;
+        try {
+          const raw = window.localStorage.getItem("athena-rag-search-filters-v1");
+          if (raw) {
+            ragFilters = JSON.parse(raw) as RagSearchFilters;
+          }
+        } catch {
+          ragFilters = undefined;
         }
-      } catch {
-        ragFilters = undefined;
+        const ragResults = await invoke<RagSearchChunk[]>("search_rag_chunks", {
+          query: text,
+          limit: 3,
+          filters: ragFilters,
+        });
+        if (Array.isArray(ragResults) && ragResults.length > 0) {
+          ragContextString = ragResults
+            .map((r) => (typeof r.content === "string" ? r.content.trim() : ""))
+            .filter((s) => s.length > 0)
+            .join("\n\n");
+          ragSources = Array.from(
+            new Set(
+              ragResults
+                .map((r) =>
+                  typeof r.source === "string" && r.source.trim().length > 0
+                    ? r.source.trim()
+                    : typeof r.document_id === "string"
+                      ? r.document_id.trim()
+                      : "",
+                )
+                .filter((s) => s.length > 0),
+            ),
+          );
+        }
+      } catch (_) {
+        // Graceful fallback: continue without RAG context.
       }
-      const ragResults = await invoke<RagSearchChunk[]>("search_rag_chunks", {
-        query: text,
-        limit: 3,
-        filters: ragFilters,
-      });
-      if (Array.isArray(ragResults) && ragResults.length > 0) {
-        ragContextString = ragResults
-          .map((r) => (typeof r.content === "string" ? r.content.trim() : ""))
-          .filter((s) => s.length > 0)
-          .join("\n\n");
-        ragSources = Array.from(
-          new Set(
-            ragResults
-              .map((r) =>
-                typeof r.source === "string" && r.source.trim().length > 0
-                  ? r.source.trim()
-                  : typeof r.document_id === "string"
-                    ? r.document_id.trim()
-                    : "",
-              )
-              .filter((s) => s.length > 0),
-          ),
-        );
-      }
-    } catch (_) {
-      // Graceful fallback: continue without RAG context.
     }
 
     let spatialContextString = "";
-    try {
-      const spatial = await invoke<string>("get_spatial_context");
-      spatialContextString = typeof spatial === "string" ? spatial.trim() : "";
-    } catch (_) {
-      // Graceful fallback: continue without spatial context.
+    if (!inConversation) {
+      try {
+        const spatial = await invoke<string>("get_spatial_context");
+        spatialContextString = typeof spatial === "string" ? spatial.trim() : "";
+      } catch (_) {
+        // Graceful fallback: continue without spatial context.
+      }
     }
 
     let radioTrafficContextString = "";
-    try {
-      const recentRadio = await invoke<RadioLogEntry[]>("get_recent_radio_logs");
-      if (Array.isArray(recentRadio) && recentRadio.length > 0) {
-        radioTrafficContextString = recentRadio
-          .map((r) => {
-            const ts = typeof r.timestamp === "string" ? r.timestamp : "";
-            const dir = typeof r.direction === "string" ? r.direction : "";
-            const msg = typeof r.message === "string" ? r.message : "";
-            return `Radio Log [${ts}] [${dir}]: ${msg}`;
-          })
-          .join("\n");
+    if (!inConversation) {
+      try {
+        const recentRadio = await invoke<RadioLogEntry[]>("get_recent_radio_logs");
+        if (Array.isArray(recentRadio) && recentRadio.length > 0) {
+          radioTrafficContextString = recentRadio
+            .map((r) => {
+              const ts = typeof r.timestamp === "string" ? r.timestamp : "";
+              const dir = typeof r.direction === "string" ? r.direction : "";
+              const msg = typeof r.message === "string" ? r.message : "";
+              return `Radio Log [${ts}] [${dir}]: ${msg}`;
+            })
+            .join("\n");
+        }
+      } catch (_) {
+        // Graceful fallback: continue without radio traffic context.
       }
-    } catch (_) {
-      // Graceful fallback: continue without radio traffic context.
     }
 
     const promptForModel =
-      ragContextString || spatialContextString || radioTrafficContextString
+      (ragContextString || spatialContextString || radioTrafficContextString
         ? `Use the following document context, spatial map context, and recent radio traffic context to answer the user's question.\n\nDocument Context: ${ragContextString || "(none)"}\n\nSpatial Map Context: ${spatialContextString || "(none)"}\n\nRecent Radio Traffic Context: ${radioTrafficContextString || "(none)"}\n\nQuestion: ${text}`
-        : text;
+        : text);
+    const promptWithMode = `${modelPromptPrefix}${promptForModel}`;
 
     const localSourcesLabel: LibraryStreamSource[] =
       ragSources.length > 0
@@ -4468,7 +4880,7 @@ ${tag}` : tag;
           : [];
     const userMessage: ChatMessage = {
       role: "user",
-      content: text + attachNote,
+      content: userFacingText + attachNote,
       timestamp: Date.now(),
       ...(localSourcesLabel.length > 0 ? { sources: localSourcesLabel } : {}),
     };
@@ -4476,7 +4888,6 @@ ${tag}` : tag;
     if (text.toLowerCase() === "/rag-count") {
       setInput("");
       setMessages((prev) => [...prev, userMessage, { role: "assistant", content: "", timestamp: Date.now() }]);
-      setSending(true);
       streamSendStartRef.current = Date.now();
       streamGotFirstChunkRef.current = true;
       streamLastChunkAtRef.current = Date.now();
@@ -4504,7 +4915,11 @@ ${tag}` : tag;
           return next;
         });
       }
+      sendingRef.current = false;
       setSending(false);
+      if (conversationModeRef.current) {
+        setTimeout(() => startConversationListeningRef.current?.(), 400);
+      }
       return;
     }
     // If we have prior messages but no chat id yet (e.g. user sent follow-up before stream-done save finished),
@@ -4543,32 +4958,56 @@ ${tag}` : tag;
     streamLastChunkAtRef.current = null;
     streamGotFirstChunkRef.current = false;
     setStreamStallMessage(null);
-    setSending(true);
-    const { userLat, userLon } = await resolveGpsForChatPayload();
-    invoke("send_message_stream", {
-      message: promptForModel,
-      history: currentMessages.map((m) => ({ role: m.role, content: m.content })),
-      userLat,
-      userLon,
-      chatId: chatIdToUse,
-      modelOptions: { temperature: aiTemperature, num_ctx: aiNumCtx },
-      model: chatInferenceModel,
-    }).catch((e) => {
+    try {
+      const { userLat, userLon } = await resolveGpsForChatPayload();
+      invoke("send_message_stream", {
+        message: promptWithMode,
+        history: currentMessages.map((m) => ({ role: m.role, content: m.content })),
+        userLat,
+        userLon,
+        chatId: chatIdToUse,
+        modelOptions: {
+          temperature: inConversation ? think.temperature : aiTemperature,
+          num_ctx: inConversation ? think.num_ctx : aiNumCtx,
+        },
+        model: chatInferenceModel,
+      }).catch((e) => {
+        const errMsg = e != null ? String(e) : "Send failed";
+        logError(errMsg);
+        setStreamStallMessage(null);
+        setLibraryError(`Message failed: ${errMsg}`);
+        setMessages((prev) => {
+          const next = [...prev];
+          const i = next.length - 1;
+          if (i >= 0 && next[i].role === "assistant") {
+            next[i] = { ...next[i], content: `Error: ${e}` };
+          }
+          return next;
+        });
+        sendingRef.current = false;
+        setSending(false);
+        inputRef.current?.focus();
+        if (conversationModeRef.current) {
+          setTimeout(() => startConversationListeningRef.current?.(), 400);
+        }
+      });
+    } catch (e) {
       const errMsg = e != null ? String(e) : "Send failed";
       logError(errMsg);
-      setStreamStallMessage(null);
-      setLibraryError(`Message failed: ${errMsg}`);
+      sendingRef.current = false;
+      setSending(false);
       setMessages((prev) => {
         const next = [...prev];
         const i = next.length - 1;
         if (i >= 0 && next[i].role === "assistant") {
-          next[i] = { ...next[i], content: `Error: ${e}` };
+          next[i] = { ...next[i], content: `Error: ${errMsg}` };
         }
         return next;
       });
-      setSending(false);
-      inputRef.current?.focus();
-    });
+      if (conversationModeRef.current) {
+        setTimeout(() => startConversationListeningRef.current?.(), 400);
+      }
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -5143,6 +5582,8 @@ ${tag}` : tag;
           onToggleAiInferenceSleep={toggleAiInferenceSleep}
           sessionModelRouting={headerSessionModelRouting}
           ollamaHiveRoute={ollamaHiveRoute}
+          internetAllowed={internetAllowed}
+          onSpotlightAction={handleSpotlightAction}
         />
         {meshSosGlobalBanner}
         {(triageMenuOpen || activeTriageId) &&
@@ -5246,13 +5687,33 @@ ${tag}` : tag;
                     setCurrentView("data_acquisition");
                     return;
                   }
+                  setMarketplaceFocusAppId(null);
                   setCurrentView(destination);
                 }}
               />
             </div>
           ) : null}
+          {currentView === "marketplace" ? (
+            <MarketplaceView focusAppId={marketplaceFocusAppId} />
+          ) : null}
           {currentView === "chat" ? (
-            <div className="app-chat-workspace">
+            <div className={`app-chat-workspace${conversationModeActive ? " app-chat-workspace--face" : ""}`}>
+      {conversationModeActive ? (
+        <ConversationFaceStage
+          open
+          phase={conversationFacePhase}
+          interimTranscript={conversationInterimTranscript}
+          lastAssistantText={lastAssistantText}
+          duplexLabel={duplexCapability?.label ?? "Probing voice modules…"}
+          micError={conversationMicError}
+          stallMessage={streamStallMessage}
+          thinkMode={thinkMode}
+          onThinkModeChange={setThinkMode}
+          energyRms={voiceEnergyRms}
+          onClose={() => exitConversationFace(true)}
+          onSwitchToChat={() => exitConversationFace(true)}
+        />
+      ) : null}
       <aside className={`chat-sidebar ${chatsOpen ? "" : "chat-sidebar-collapsed"}`}>
         <div className="sidebar-head">
           <button
@@ -5888,18 +6349,57 @@ ${tag}` : tag;
               ) : speechListening ? (
                 <>
                   <span className="conversation-hearing-dot" aria-hidden />
-                  <span className="conversation-hearing-label">Listening…</span>
+                  <span className="conversation-hearing-label">
+                    Listening
+                    {duplexCapability?.whisper ? " (Whisper)" : " (browser)"}
+                    …
+                  </span>
                   {conversationInterimTranscript ? (
                     <span className="conversation-hearing-transcript">"{conversationInterimTranscript}"</span>
                   ) : null}
                 </>
+              ) : ttsSpeakingIndex != null ? (
+                <>
+                  <span className="conversation-hearing-dot conversation-hearing-dot--speaking" aria-hidden />
+                  <span className="conversation-hearing-label">
+                    Speaking
+                    {duplexCapability?.kokoro ? " (Kokoro)" : ""}
+                    … interrupt anytime
+                  </span>
+                </>
               ) : (
-                <span className="conversation-hearing-label conversation-hearing-idle">Ready for your message</span>
+                <span className="conversation-hearing-label conversation-hearing-idle">
+                  Ready · {duplexCapability?.label ?? "Browser speech"}
+                </span>
               )}
             </div>
           )}
           <div className="chat-input-row">
             <div className="chat-input-left-buttons">
+              <div className="chat-surface-toggle" role="group" aria-label="Chat or Conversation">
+                <button
+                  type="button"
+                  className={`chat-surface-btn${chatSurface === "chat" && !conversationModeActive ? " chat-surface-btn--active" : ""}`}
+                  onClick={() => {
+                    saveChatSurfaceDefault("chat");
+                    setChatSurface("chat");
+                    if (conversationModeActive) exitConversationFace(true);
+                  }}
+                >
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  className={`chat-surface-btn${conversationModeActive ? " chat-surface-btn--active" : ""}`}
+                  disabled={localChatHistoryReadOnly}
+                  onClick={() => {
+                    saveChatSurfaceDefault("conversation");
+                    enterConversationFace();
+                  }}
+                >
+                  Conversation
+                </button>
+              </div>
               {!VOICE_AND_MIC_FEATURES_HIDDEN && (
                 <button
                   type="button"
@@ -5907,20 +6407,18 @@ ${tag}` : tag;
                   disabled={localChatHistoryReadOnly}
                   onClick={() => {
                     if (conversationModeActive) {
-                      setConversationModeActive(false);
-                      speechRecognitionRef.current?.abort();
-                      stopTts();
-                      setSpeechListening(false);
-                      setConversationInterimTranscript("");
-                      setConversationMicStatus("idle");
-                      setConversationMicError(null);
+                      exitConversationFace(true);
                     } else {
-                      setConversationModeActive(true);
-                      startConversationListening();
+                      saveChatSurfaceDefault("conversation");
+                      enterConversationFace();
                     }
                   }}
-                  title={conversationModeActive ? "Exit active conversation" : "Active conversation: have one long continuous back-and-forth with Athena. Speak, get a reply, then speak again."}
-                  aria-label={conversationModeActive ? "Exit active conversation" : "Start active conversation"}
+                  title={
+                    conversationModeActive
+                      ? `Exit face Conversation (${duplexCapability?.label ?? "Browser speech"})`
+                      : "Open Yes Man–style face Conversation (continuous talk)"
+                  }
+                  aria-label={conversationModeActive ? "Exit conversation face mode" : "Start conversation face mode"}
                 >
                   <span className="chat-tools-icon" aria-hidden>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -5929,7 +6427,7 @@ ${tag}` : tag;
                       <line x1="12" x2="12" y1="19" y2="22" />
                     </svg>
                   </span>
-                  <span className="chat-tools-label">{conversationModeActive ? (speechListening ? "Listening…" : "On") : "Conversation"}</span>
+                  <span className="chat-tools-label">{conversationModeActive ? (speechListening ? "Listening…" : "Face On") : "Face"}</span>
                 </button>
               )}
               <div className="chat-tools">
@@ -6252,6 +6750,30 @@ ${tag}` : tag;
         </div>
       )}
 
+      {isAthenaDesktopRuntime() && lanBridgeStatus?.listening ? (
+        <div
+          className="lan-clients-chip"
+          aria-live="polite"
+          title="LAN browsers connected / operators signed in over LAN"
+        >
+          LAN {lanBridgeStatus.connectedClients ?? 0} linked · {lanBridgeStatus.authenticatedSessions ?? 0} signed in
+        </div>
+      ) : null}
+      {user ? (
+        <button
+          type="button"
+          className="lan-clients-chip"
+          aria-live="polite"
+          title="Connectivity (Settings → AI). Click to change."
+          onClick={() => {
+            setSettingsOpen(true);
+            goToSettingsSubpanel("ai");
+          }}
+        >
+          Net: {connectivityLabel}
+        </button>
+      ) : null}
+
       {deviceOverlayEnabled && (
         <div className="device-details-overlay" aria-live="polite" aria-label="Device stats">
           <button
@@ -6436,296 +6958,92 @@ ${tag}` : tag;
 
       {settingsOpen && (
         <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
-          <div className="library-modal settings-modal glass-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="library-header library-header-with-back">
-              <div className="library-header-left">
-                {settingsPanel !== "menu" ? (
-                  <button
-                    type="button"
-                    className="settings-back-btn"
-                    onClick={() => {
-                      if (settingsPanel === "themes" && themesSubView === "studio") {
-                        cancelThemeStudio();
-                        return;
-                      }
-                      setSettingsPanel("menu");
-                    }}
-                    aria-label={lx.settingsBackAria}
-                  >
-                    {lx.settingsBackLabel}
-                  </button>
-                ) : null}
-              </div>
-              <h2
-                className={settingsPanel === "menu" ? "settings-title-tappable" : undefined}
-                onClick={
-                  settingsPanel === "menu"
-                    ? () => {
-                        const next = settingsTitleClickCount + 1;
-                        setSettingsTitleClickCount(next);
-                        if (next >= 7) goToSettingsSubpanel("developer");
-                      }
-                    : undefined
+          <div
+            className="library-modal settings-modal settings-modal--hybrid glass-panel"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <SettingsShell
+              panel={settingsPanel === "themes" ? "colorsThemes" : settingsPanel}
+              onSelectPanel={(next) => {
+                if (next === "colorsThemes") {
+                  setThemesSubView("main");
+                  setStudioDraft(null);
                 }
-                role={settingsPanel === "menu" ? "button" : undefined}
-                aria-label={settingsPanel === "menu" ? lx.settingsMenuTitleAria : undefined}
-              >
-                {settingsPanel === "menu"
-                  ? lx.settingsMenuTitle
-                  : settingsPanel === "me"
-                    ? lx.settingsPanelMe
-                    : settingsPanel === "general"
-                      ? lx.settingsPanelGeneral
-                      : settingsPanel === "ai"
+                goToSettingsSubpanel(next);
+              }}
+              query={settingsNavQuery}
+              onQueryChange={setSettingsNavQuery}
+              onSelectSearchResult={handleSettingsSearchResult}
+              detailTitle={
+                settingsPanel === "me"
+                  ? lx.settingsPanelMe
+                  : settingsPanel === "general"
+                    ? lx.settingsPanelGeneral
+                    : settingsPanel === "ai"
                       ? lx.settingsPanelAi
+                      : settingsPanel === "marketplace"
+                        ? "Marketplace"
                       : settingsPanel === "location"
                         ? lx.settingsPanelLocation
                         : settingsPanel === "apiKeys"
                           ? lx.settingsPanelApiKeys
-                        : settingsPanel === "maps"
-                          ? lx.settingsPanelMaps
-                          : settingsPanel === "mesh"
-                          ? lx.settingsPanelMesh
-                          : settingsPanel === "voice"
-                            ? lx.settingsPanelVoice
-                            : settingsPanel === "calendar"
-                              ? lx.settingsPanelCalendar
-                              : settingsPanel === "dateTime"
-                                ? lx.settingsPanelDateTime
-                            : settingsPanel === "appearance"
-                              ? lx.settingsPanelAppearance
-                              : settingsPanel === "themes"
-                                ? themesSubView === "studio"
-                                  ? lx.settingsPanelThemeStudio
-                                  : lx.settingsPanelThemes
-                                : settingsPanel === "troubleshooting"
-                                  ? lx.settingsPanelTroubleshooting
-                                  : settingsPanel === "usbExport"
-                                    ? lx.settingsNavUsbExport
-                                    : lx.settingsPanelDeveloper}
-              </h2>
-              <button
-                type="button"
-                className="close-btn"
-                onClick={() => setSettingsOpen(false)}
-                aria-label={lx.settingsCloseAria}
-              >
-                ×
-              </button>
-            </div>
-            <div className="settings-modal-body" ref={settingsBodyRef}>
-            {settingsPanel === "menu" && (
-              <nav className="settings-nav" aria-label={lx.settingsNavAria}>
-                <button
-                  type="button"
-                  className="settings-nav-me-card"
-                  onClick={() => goToSettingsSubpanel("me")}
-                  aria-label={`${lx.settingsPanelMe}: ${user.name}`}
-                >
-                  <div className="settings-nav-me-avatar" aria-hidden>
-                    <RankAvatar rankLevel={user.rank_level} variant="nav" />
-                  </div>
-                  <div className="settings-nav-me-card-text">
-                    <span className="settings-nav-me-card-name">
-                      {(user.display_name?.trim() || user.name || "").trim() || "—"}
-                    </span>
-                    <span className="settings-nav-me-card-sub text-muted">{lx.settingsNavMeAccountHint}</span>
-                    <span className="settings-nav-me-card-meta text-muted">
-                      {user.division} · {formatRomanRank(user.rank_level)}
-                    </span>
-                  </div>
-                  <span className="settings-nav-me-chevron" aria-hidden>
-                    ›
-                  </span>
-                </button>
-                <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">System</span>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("general")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <Activity size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavGeneral}</span>
-                        <span className="text-muted">{lx.settingsNavGeneralDesc}</span>
-                      </span>
-                    </span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("dateTime")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <CalendarIcon size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">Date, Time &amp; Calendar</span>
-                        <span className="text-muted">
-                          {lx.settingsNavDateTimeDesc} · {lx.settingsNavCalendarDesc}
-                        </span>
-                      </span>
-                    </span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("calendar")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <CalendarIcon size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavCalendar}</span>
-                        <span className="text-muted">{lx.settingsNavCalendarDesc}</span>
-                      </span>
-                    </span>
-                  </button>
-                </div>
-                <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">Tactical &amp; Hardware</span>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("mesh")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <RadioTower size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavMesh}</span>
-                        <span className="text-muted">
-                          {meshRadioConnected === null
-                            ? lx.settingsNavMeshChecking
-                            : meshRadioConnected === false
-                              ? "USB radio optional — set signup phrase anytime"
-                              : lx.settingsNavMeshOk}
-                        </span>
-                      </span>
-                    </span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("location")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <Compass size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">Location &amp; GPS</span>
-                        <span className="text-muted">{lx.settingsNavLocationDesc}</span>
-                      </span>
-                    </span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("maps")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <Route size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavOfflineMaps}</span>
-                        <span className="text-muted">
-                          {lx.settingsNavOfflineMapsDesc}
-                          {featureMapEnabled ? (
-                            <span className="settings-build-note">{lx.settingsNavOfflineMapsNoteMapOn}</span>
-                          ) : (
-                            <span className="settings-build-note">{lx.settingsNavOfflineMapsNoteMapOff}</span>
-                          )}
-                        </span>
-                      </span>
-                    </span>
-                  </button>
-                </div>
-                <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">Intelligence</span>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("ai")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <Brain size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavAiModels}</span>
-                        <span className="text-muted">{lx.settingsNavAiModelsDesc}</span>
-                      </span>
-                    </span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("apiKeys")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <KeyRound size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavApiKeys}</span>
-                        <span className="text-muted">{lx.settingsNavApiKeysDesc}</span>
-                      </span>
-                    </span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("voice")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <Volume2 size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavVoice}</span>
-                        <span className="text-muted">
-                          {lx.settingsNavVoiceDesc}
-                          {VOICE_AND_MIC_FEATURES_HIDDEN ? (
-                            <span className="settings-build-note">{lx.settingsNavVoiceHiddenNote}</span>
-                          ) : null}
-                        </span>
-                      </span>
-                    </span>
-                  </button>
-                </div>
-                <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">Appearance</span>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("appearance")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <Monitor size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavWindowDisplay}</span>
-                        <span className="text-muted">{lx.settingsNavWindowDisplayDesc}</span>
-                      </span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-nav-item"
-                    onClick={() => {
-                      setThemesSubView("main");
-                      setStudioDraft(null);
-                      goToSettingsSubpanel("colorsThemes");
-                    }}
-                  >
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <Palette size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">Colors &amp; Themes</span>
-                        <span className="text-muted">Preset experiences and palette colors.</span>
-                      </span>
-                    </span>
-                  </button>
-                </div>
-                <div className="settings-nav-group">
-                  <span className="settings-nav-group-label">Data &amp; Diagnostics</span>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("usbExport")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <Usb size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavUsbExport}</span>
-                        <span className="text-muted">{lx.settingsNavUsbExportDesc}</span>
-                      </span>
-                    </span>
-                  </button>
-                  <button type="button" className="settings-nav-item" onClick={() => goToSettingsSubpanel("troubleshooting")}>
-                    <span className="settings-nav-row">
-                      <span className="settings-nav-icon" aria-hidden>
-                        <CircleHelp size={18} />
-                      </span>
-                      <span className="settings-nav-text">
-                        <span className="settings-nav-label">{lx.settingsNavTroubleshooting}</span>
-                        <span className="text-muted">{lx.settingsNavTroubleshootingDesc}</span>
-                      </span>
-                    </span>
-                  </button>
-                </div>
-              </nav>
-            )}
+                          : settingsPanel === "maps"
+                            ? lx.settingsPanelMaps
+                            : settingsPanel === "mesh"
+                              ? lx.settingsPanelMesh
+                              : settingsPanel === "voice"
+                                ? lx.settingsPanelVoice
+                                : settingsPanel === "calendar"
+                                  ? lx.settingsPanelCalendar
+                                  : settingsPanel === "dateTime"
+                                    ? lx.settingsPanelDateTime
+                                    : settingsPanel === "appearance"
+                                      ? lx.settingsPanelAppearance
+                                      : settingsPanel === "themes"
+                                        ? themesSubView === "studio"
+                                          ? lx.settingsPanelThemeStudio
+                                          : lx.settingsPanelThemes
+                                        : settingsPanel === "colorsThemes"
+                                          ? "Colors & Themes"
+                                          : settingsPanel === "troubleshooting"
+                                            ? lx.settingsPanelTroubleshooting
+                                            : settingsPanel === "usbExport"
+                                              ? lx.settingsNavUsbExport
+                                              : lx.settingsPanelDeveloper
+              }
+              detailBack={
+                settingsPanel === "themes" && themesSubView === "studio"
+                  ? {
+                      label: lx.settingsBackLabel,
+                      ariaLabel: lx.settingsBackAria,
+                      onClick: () => cancelThemeStudio(),
+                    }
+                  : null
+              }
+              me={{
+                name: user.name,
+                displayName: user.display_name,
+                division: user.division,
+                rankLabel: formatRomanRank(user.rank_level),
+                avatar: <RankAvatar rankLevel={user.rank_level} variant="nav" />,
+                accountHint: lx.settingsNavMeAccountHint,
+              }}
+              canUseUsbExport={canUseHostCapability("usbExport")}
+              searchPlaceholder={lx.settingsNavSearchPlaceholder}
+              searchAria={lx.settingsNavSearchAria}
+              searchNoMatch={lx.settingsNavSearchNoMatch}
+              navAria={lx.settingsNavAria}
+              chromeTitle={lx.settingsMenuTitle}
+              chromeTitleAria={lx.settingsMenuTitleAria}
+              onChromeTitleClick={() => {
+                const next = settingsTitleClickCount + 1;
+                setSettingsTitleClickCount(next);
+                if (next >= 7) goToSettingsSubpanel("developer");
+              }}
+              closeAria={lx.settingsCloseAria}
+              onClose={() => setSettingsOpen(false)}
+              detailScrollRef={settingsBodyRef}
+            >
             {settingsPanel === "me" && (
               <>
                 <header className="settings-me-pane-header">
@@ -6930,155 +7248,235 @@ ${tag}` : tag;
             )}
             {settingsPanel === "general" && (
               <>
-                <section className="library-section settings-general-about">
-                  <p className="settings-general-about__name text-muted">
+                <div className="settings-detail-hero" data-settings-focus="general-about">
+                  <div className="settings-detail-hero__icon" aria-hidden>
+                    <span style={{ fontWeight: 700, fontSize: "1.1rem" }}>A</span>
+                  </div>
+                  <p className="settings-detail-hero__name">
                     Autonomous Tactical Heuristic Emergency Network Archive
                   </p>
-                  <p className="settings-general-about__version text-muted small">v1.0.0-tactical</p>
-                </section>
-                <section className="library-section">
-                  <h3>System preferences</h3>
-                  <div className="glass-panel settings-general-prefs" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "1rem" }}>
-                    <div className="settings-general-pref-block">
-                      <label htmlFor="settings-startup-view" className="settings-general-pref-label">
-                        Default startup page
-                      </label>
-                      <p className="text-muted small" style={{ margin: "0.15rem 0 0.35rem" }}>
-                        Select the default screen on launch.
-                      </p>
-                      <div className="settings-startup-view-row">
-                        <label htmlFor="settings-startup-view" className="settings-startup-view-label">
-                          Open to
-                        </label>
-                        <select
-                          id="settings-startup-view"
-                          className="settings-startup-view-select"
-                          value={startupViewPreference}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            const next = APP_VIEWS.find((x) => x === v);
-                            if (!next) return;
-                            saveStartupView(next);
-                            setStartupViewPreference(next);
+                  <p className="settings-detail-hero__version">v1.0.0-tactical</p>
+                </div>
+
+                <SettingsGroup label="System preferences">
+                  <SettingsRow
+                    focusId="startup-view"
+                    spotlight={settingsFocusId === "startup-view"}
+                    title="Default startup page"
+                    subtitle="Screen opened when Athena launches"
+                    trailing={
+                      <select
+                        id="settings-startup-view"
+                        className="theme-select settings-row-inline-control"
+                        value={startupViewPreference}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          const next = APP_VIEWS.find((x) => x === v);
+                          if (!next) return;
+                          saveStartupView(next);
+                          setStartupViewPreference(next);
+                        }}
+                        aria-label="Default startup page"
+                      >
+                        {APP_VIEWS.map((v) => (
+                          <option key={v} value={v}>
+                            {APP_VIEW_LABELS[v]}
+                          </option>
+                        ))}
+                      </select>
+                    }
+                  />
+                  <SettingsRow
+                    focusId="device-overlay"
+                    spotlight={settingsFocusId === "device-overlay"}
+                    title="Device stats overlay"
+                    subtitle="CPU, RAM, and network telemetry in the corner"
+                    trailing={
+                      <PillToggle
+                        checked={deviceOverlayEnabled}
+                        onCheckedChange={setDeviceOverlayEnabled}
+                        aria-label="Show device stats overlay"
+                      />
+                    }
+                  />
+                </SettingsGroup>
+
+                {isAthenaDesktopRuntime() ? (
+                  <SettingsGroup label="LAN access">
+                    <SettingsRow
+                      focusId="lan-access"
+                      spotlight={settingsFocusId === "lan-access"}
+                      title="Allow LAN access"
+                      subtitle="Serve this UI on Wi‑Fi for phones and tablets. Requires npm run build once. Not athena-web :8080."
+                      trailing={
+                        <PillToggle
+                          checked={Boolean(lanBridgeStatus?.enabled && lanBridgeStatus?.listening)}
+                          disabled={lanBridgeBusy}
+                          aria-label="Allow LAN access"
+                          onCheckedChange={(enabled) => {
+                            const port = Number.parseInt(lanBridgePortDraft, 10);
+                            setLanBridgeBusy(true);
+                            void invoke<{
+                              enabled: boolean;
+                              port: number;
+                              listening: boolean;
+                              distReady: boolean;
+                              distPath: string;
+                              primaryLanIp?: string | null;
+                              lanIps?: string[];
+                            }>("set_lan_bridge_enabled", {
+                              enabled,
+                              port: Number.isFinite(port) && port > 0 ? port : 8787,
+                            })
+                              .then((st) => {
+                                setLanBridgeStatus(st);
+                                setLanBridgePortDraft(String(st.port || 8787));
+                              })
+                              .catch((err) => {
+                                window.alert(
+                                  typeof err === "string"
+                                    ? err
+                                    : err instanceof Error
+                                      ? err.message
+                                      : "Could not update LAN access.",
+                                );
+                              })
+                              .finally(() => setLanBridgeBusy(false));
                           }}
-                          aria-label="Default startup page"
-                        >
-                          {APP_VIEWS.map((v) => (
-                            <option key={v} value={v}>
-                              {APP_VIEW_LABELS[v]}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                    <div className="settings-general-pref-block">
-                      <div className="feature-checkbox-wrap">
-                        <input
-                          id="settings-device-overlay"
-                          type="checkbox"
-                          className="feature-checkbox"
-                          checked={deviceOverlayEnabled}
-                          onChange={(e) => setDeviceOverlayEnabled(e.target.checked)}
-                          aria-label="Show device stats overlay"
                         />
-                        <label htmlFor="settings-device-overlay" className="feature-checkbox-label">
-                          Device stats overlay
-                        </label>
-                      </div>
-                      <p className="text-muted small" style={{ margin: "0.35rem 0 0" }}>
-                        Display CPU/RAM/Network telemetry in the corner.
-                      </p>
-                    </div>
-                  </div>
-                </section>
-                <section className="library-section">
-                  <h3>Age &amp; catalog access</h3>
-                  <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", display: "grid", gap: "0.65rem" }}>
-                    <label htmlFor="user-birthdate" className="text-muted small">
-                      Birthdate (YYYY-MM-DD)
-                    </label>
-                    <input
-                      id="user-birthdate"
-                      type="date"
-                      className="theme-select"
-                      value={userBirthdateIso}
-                      onChange={(e) => setUserBirthdateIso(e.target.value)}
-                      onBlur={() => {
-                        void invoke("set_user_birthdate_iso", {
-                          value: userBirthdateIso.trim() || null,
-                        }).then(() => loadModelSettings());
-                      }}
+                      }
                     />
-                    {userIs18 ? (
-                      <label style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+                    <SettingsRow
+                      focusId="lan-port"
+                      spotlight={settingsFocusId === "lan-port"}
+                      title="LAN address"
+                      subtitle={(() => {
+                        const port =
+                          lanBridgeStatus?.port ??
+                          (Number.isFinite(Number.parseInt(lanBridgePortDraft, 10))
+                            ? Number.parseInt(lanBridgePortDraft, 10)
+                            : 8787);
+                        const ip = lanBridgeStatus?.primaryLanIp?.trim() || null;
+                        const browsers = lanBridgeStatus?.connectedClients ?? 0;
+                        const sessions = lanBridgeStatus?.authenticatedSessions ?? 0;
+                        const crowd =
+                          lanBridgeStatus?.listening
+                            ? ` · ${browsers} browser${browsers === 1 ? "" : "s"} · ${sessions} signed in`
+                            : "";
+                        if (lanBridgeStatus?.listening) {
+                          if (ip) {
+                            return `Listening — open http://${ip}:${port} on another device.${crowd}.${
+                              !lanBridgeStatus.distReady ? " UI assets missing — run npm run build." : ""
+                            }`;
+                          }
+                          return `Listening on port ${port}, but this Mac’s LAN IP could not be detected.${crowd}`;
+                        }
+                        if (ip) {
+                          return `This Mac’s LAN IP is ${ip}. After enabling, use http://${ip}:${port}`;
+                        }
+                        return "Bridge is off. Connect to Wi‑Fi or Ethernet to detect this Mac’s LAN IP.";
+                      })()}
+                      trailing={
                         <input
-                          type="checkbox"
+                          id="settings-lan-port"
+                          className="theme-select settings-row-inline-control"
+                          value={lanBridgePortDraft}
+                          disabled={lanBridgeBusy || Boolean(lanBridgeStatus?.listening)}
+                          onChange={(e) => setLanBridgePortDraft(e.target.value.replace(/[^\d]/g, "").slice(0, 5))}
+                          inputMode="numeric"
+                          aria-label="LAN bridge port"
+                          title="LAN port"
+                        />
+                      }
+                    />
+                    {lanBridgeStatus?.listening ? (
+                      <SettingsRow
+                        title="Connected now"
+                        subtitle="Browsers with an open link to this Mac, and operators who signed in over LAN."
+                        trailing={
+                          <span className="text-muted small" style={{ whiteSpace: "nowrap" }}>
+                            {lanBridgeStatus.connectedClients ?? 0} / {lanBridgeStatus.authenticatedSessions ?? 0}
+                          </span>
+                        }
+                      />
+                    ) : null}
+                  </SettingsGroup>
+                ) : (
+                  <SettingsGroup label="LAN access">
+                    <SettingsRow
+                      title="Connected over LAN"
+                      subtitle="USB export, drive format, and native dialogs stay on the desktop host."
+                    />
+                  </SettingsGroup>
+                )}
+
+                <SettingsGroup label="Age &amp; catalog access" focusId="age-catalog">
+                  <SettingsRow
+                    title="Birthdate"
+                    subtitle="Used to verify age 18+ for unrestricted catalog"
+                    trailing={
+                      <input
+                        id="user-birthdate"
+                        type="date"
+                        className="theme-select settings-row-inline-control"
+                        value={userBirthdateIso}
+                        onChange={(e) => setUserBirthdateIso(e.target.value)}
+                        onBlur={() => {
+                          void invoke("set_user_birthdate_iso", {
+                            value: userBirthdateIso.trim() || null,
+                          }).then(() => loadModelSettings());
+                        }}
+                      />
+                    }
+                  />
+                  {userIs18 ? (
+                    <SettingsRow
+                      title="Unrestricted catalog"
+                      subtitle="Detailed medical/survival/engineering topics. Local runtimes only."
+                      trailing={
+                        <PillToggle
                           checked={allowNsfwCatalog}
-                          onChange={(e) => {
-                            const v = e.target.checked;
+                          aria-label="Allow unrestricted model catalog"
+                          onCheckedChange={(v) => {
                             setAllowNsfwCatalog(v);
                             void invoke("set_allow_nsfw_unrestricted_models", { value: v }).then(() => loadModelSettings());
                           }}
                         />
-                        <span className="text-muted small">
-                          Allow unrestricted model catalog access for detailed medical/survival/engineering topics. Local runtimes only.
-                          Operator assumes responsibility for compliance.
-                        </span>
-                      </label>
-                    ) : (
-                      <p className="text-muted small" style={{ margin: 0 }}>
-                        Set a valid birthdate to verify age 18+ to unlock the unrestricted catalog toggle.
-                      </p>
-                    )}
-                  </div>
-                </section>
-                <section className="library-section">
-                  <h3>Help &amp; shortcuts</h3>
-                  <p className="text-muted small" style={{ marginTop: 0 }}>
-                    Full guide: header <strong>?</strong> or <strong>Open Help</strong> below.
-                  </p>
-                  <div className="settings-shortcuts-grid text-muted small">
-                    <div className="settings-shortcuts-cell">
-                      <kbd className="settings-kbd">⌘</kbd>/<kbd className="settings-kbd">Ctrl</kbd>+<kbd className="settings-kbd">K</kbd> or{" "}
-                      <kbd className="settings-kbd">/</kbd>
-                      <span className="settings-shortcuts-desc">Focus chat input</span>
-                    </div>
-                    <div className="settings-shortcuts-cell">
-                      <kbd className="settings-kbd">⌘</kbd>/<kbd className="settings-kbd">Ctrl</kbd>+<kbd className="settings-kbd">F</kbd>
-                      <span className="settings-shortcuts-desc">Find in current chat</span>
-                    </div>
-                    <div className="settings-shortcuts-cell">
-                      <code>/athena</code>
-                      <span className="settings-shortcuts-desc">How the app works (built-in reference)</span>
-                    </div>
-                    <div className="settings-shortcuts-cell">
-                      <code>/rag-count</code>
-                      <span className="settings-shortcuts-desc">Indexed library documents &amp; chunks</span>
-                    </div>
-                  </div>
-                  <div className="settings-inline-actions">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSettingsOpen(false);
-                        setHelpOpen(true);
-                      }}
-                    >
-                      Open Help guide
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() => {
-                        setSettingsOpen(false);
-                        setDataAcquisitionTab("documents");
-                        setCurrentView("data_acquisition");
-                      }}
-                    >
-                      Open Library
-                    </button>
-                  </div>
-                </section>
+                      }
+                    />
+                  ) : (
+                    <SettingsRow
+                      title="Unrestricted catalog"
+                      subtitle="Set a valid birthdate (18+) to unlock this toggle."
+                    />
+                  )}
+                </SettingsGroup>
+
+                <SettingsGroup label="Help &amp; shortcuts">
+                  <SettingsRow
+                    title="Open Help guide"
+                    subtitle="Full in-app documentation"
+                    chevron
+                    onClick={() => {
+                      setSettingsOpen(false);
+                      setHelpOpen(true);
+                    }}
+                  />
+                  <SettingsRow
+                    title="Open Library"
+                    subtitle="Documents and acquisition"
+                    chevron
+                    onClick={() => {
+                      setSettingsOpen(false);
+                      setDataAcquisitionTab("documents");
+                      setCurrentView("data_acquisition");
+                    }}
+                  />
+                  <SettingsRow
+                    title="Keyboard shortcuts"
+                    subtitle="⌘/Ctrl+K focus chat · ⌘/Ctrl+F find · /athena · /rag-count"
+                  />
+                </SettingsGroup>
               </>
             )}
             {settingsPanel === "calendar" && (
@@ -7188,8 +7586,53 @@ ${tag}` : tag;
                 </section>
               </>
             )}
+            {settingsPanel === "marketplace" && (
+              <MarketplacePanel
+                onOpenMarketplace={() => {
+                  setSettingsOpen(false);
+                  setMarketplaceFocusAppId(null);
+                  setCurrentView("marketplace");
+                }}
+              />
+            )}
             {settingsPanel === "ai" && (
               <>
+                <section className="library-section">
+                  <h3>Connectivity (NOMAD)</h3>
+                  <p className="text-muted small">
+                    Effective status: <strong>{connectivityLabel}</strong>. Offline blocks Marketplace image downloads and
+                    remote/cloud LLM routes; local Ollama and localhost OpenAI-compatible servers still work.
+                  </p>
+                  <div className="settings-inline-actions" style={{ flexWrap: "wrap", gap: "0.45rem", marginTop: "0.5rem" }}>
+                    {(
+                      [
+                        ["auto", "Auto"],
+                        ["online", "Prefer online"],
+                        ["offline", "Offline only"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className={connectivityMode === value ? "glass-action-btn" : "secondary"}
+                        onClick={() => {
+                          void invoke<{ mode: string; label: string; internetAllowed: boolean }>("set_connectivity_mode", {
+                            value,
+                          })
+                            .then((st) => {
+                              const m = (st.mode ?? value).toLowerCase();
+                              setConnectivityMode(m === "online" || m === "offline" ? m : "auto");
+                              setConnectivityLabel(st.label ?? label);
+                              setInternetAllowed(st.internetAllowed !== false);
+                            })
+                            .catch((err) => setLibraryError(String(err)));
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </section>
                 <AIAndKnowledgeSystemModelRouting
                   globalSystemModel={globalSystemModel}
                   chatAnalysisModel={chatAnalysisModel}
@@ -7709,29 +8152,24 @@ ${tag}` : tag;
                     </label>
                   </div>
                 </section>
-                <section className="library-section">
-                  <h3>Answers &amp; citations</h3>
-                  <p className="text-muted small">
-                    When your Library is used to build a reply, you can show which files contributed.
-                  </p>
-                  <div className="feature-checkbox-wrap">
-                    <input
-                      id="show-sources-in-chat-ai"
-                      type="checkbox"
-                      className="feature-checkbox"
-                      checked={showSourcesInChat}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setShowSourcesInChat(checked);
-                        invoke("set_show_sources_in_chat", { value: checked }).catch(() => {});
-                      }}
-                      aria-label="Show library sources in chat"
+                  <SettingsGroup label="Answers &amp; citations">
+                    <SettingsRow
+                      focusId="show-sources"
+                      spotlight={settingsFocusId === "show-sources"}
+                      title='Show "From your library"'
+                      subtitle="Citations under assistant messages when Library contributes"
+                      trailing={
+                        <PillToggle
+                          checked={showSourcesInChat}
+                          aria-label="Show library sources in chat"
+                          onCheckedChange={(checked) => {
+                            setShowSourcesInChat(checked);
+                            invoke("set_show_sources_in_chat", { value: checked }).catch(() => {});
+                          }}
+                        />
+                      }
                     />
-                    <label htmlFor="show-sources-in-chat-ai" className="feature-checkbox-label">
-                      Show &quot;From your library&quot; under assistant messages
-                    </label>
-                  </div>
-                </section>
+                  </SettingsGroup>
               </>
             )}
             {settingsPanel === "location" && (
@@ -7770,19 +8208,21 @@ ${tag}` : tag;
                       Check again
                     </button>
                   </div>
-                  <div className="feature-checkbox-wrap">
-                    <input
-                      id="feature-map-checkbox"
-                      type="checkbox"
-                      className="feature-checkbox"
-                      checked={featureMapEnabled}
-                      onChange={(e) => handleFeatureMapToggle(e.target.checked)}
-                      aria-label="Enable location-aware answers"
+                  <SettingsGroup>
+                    <SettingsRow
+                      focusId="feature-map"
+                      spotlight={settingsFocusId === "feature-map"}
+                      title="Enable location-aware answers"
+                      subtitle="Use your address for place-based advice"
+                      trailing={
+                        <PillToggle
+                          checked={featureMapEnabled}
+                          onCheckedChange={(v) => handleFeatureMapToggle(v)}
+                          aria-label="Enable location-aware answers"
+                        />
+                      }
                     />
-                    <label htmlFor="feature-map-checkbox" className="feature-checkbox-label">
-                      Enable location-aware answers
-                    </label>
-                  </div>
+                  </SettingsGroup>
                   {featureMapEnabled && (
                     <div className="library-section location-field-wrap">
                       <label htmlFor="user-location-input">Your location (address or area)</label>
@@ -8238,12 +8678,12 @@ ${tag}` : tag;
                     </p>
                   )}
                   <h4 className="settings-subheading" style={{ marginTop: "1rem" }}>
-                    Remote signup (optional)
+                    Remote signup (trust phrase)
                   </h4>
                   <p className="text-muted small">
-                    When a phrase is set, unknown handhelds can send one registration line to create their contact. Share
-                    the phrase only with people you trust. You can always add people manually from{" "}
-                    <strong>Mesh home → profiles</strong>.
+                    <strong>On:</strong> unknown handhelds can register once by sending the phrase you set — treat it like a
+                    shared password. <strong>Off:</strong> only contacts you add under Mesh home → Trusted radios can talk
+                    as known nodes. Prefer manual trust when operating with strangers.
                   </p>
                   <p className="text-muted small">
                     Status: <strong>{meshRemoteRegEnabled ? "Remote signup is on" : "Remote signup is off"}</strong>
@@ -8302,19 +8742,21 @@ ${tag}` : tag;
                       When enabled, registered radios can use <code>/ai</code> in a message for offline model answers (needs
                       Ollama or your configured backend running on this computer).
                     </p>
-                    <div className="feature-checkbox-wrap">
-                      <input
-                        id="mesh-ai-auto-reply-checkbox"
-                        type="checkbox"
-                        className="feature-checkbox"
-                        checked={meshAiAutoReply}
-                        onChange={(e) => void handleMeshAiAutoReplyToggle(e.target.checked)}
-                        aria-label="Auto-reply to Meshtastic messages with AI"
+                    <SettingsGroup>
+                      <SettingsRow
+                        focusId="mesh-ai-reply"
+                        spotlight={settingsFocusId === "mesh-ai-reply"}
+                        title="Allow /ai mesh questions"
+                        subtitle="Registered radios can use /ai for offline model answers"
+                        trailing={
+                          <PillToggle
+                            checked={meshAiAutoReply}
+                            onCheckedChange={(v) => void handleMeshAiAutoReplyToggle(v)}
+                            aria-label="Auto-reply to Meshtastic messages with AI"
+                          />
+                        }
                       />
-                      <label htmlFor="mesh-ai-auto-reply-checkbox" className="feature-checkbox-label">
-                        Allow /ai mesh questions to use local AI
-                      </label>
-                    </div>
+                    </SettingsGroup>
                     <RadioSettingsView />
                   </section>
                 ) : null}
@@ -8333,35 +8775,95 @@ ${tag}` : tag;
                 {!VOICE_AND_MIC_FEATURES_HIDDEN && (
                   <section className="library-section">
                     <h3>Text-to-Speech</h3>
-                    <p className="text-muted">
-                      Have Athena read responses aloud using your browser&apos;s built-in voices. Works offline on most systems.
-                    </p>
-                    <div className="feature-checkbox-wrap">
-                      <input
-                        id="feature-tts-checkbox"
-                        type="checkbox"
-                        className="feature-checkbox"
-                        checked={ttsEnabled}
-                        onChange={(e) => {
-                          const enabled = e.target.checked;
-                          setTtsEnabled(enabled);
-                          if (!enabled) {
-                            stopTts();
-                          }
-                          if (typeof window !== "undefined") {
-                            try {
-                              window.localStorage.setItem("athena-tts-enabled", enabled ? "1" : "0");
-                            } catch {
-                              // ignore
-                            }
-                          }
-                        }}
-                        aria-label="Enable text-to-speech for Athena's replies"
+                    <SettingsGroup>
+                      <SettingsRow
+                        focusId="chat-surface-default"
+                        spotlight={settingsFocusId === "chat-surface-default"}
+                        title="Default Chat surface"
+                        subtitle="Open Chat typing UI, or Conversation face mode"
+                        trailing={
+                          <select
+                            className="theme-select"
+                            value={chatSurface}
+                            aria-label="Default Chat surface"
+                            onChange={(e) => {
+                              const v = e.target.value === "conversation" ? "conversation" : "chat";
+                              saveChatSurfaceDefault(v);
+                              setChatSurface(v);
+                            }}
+                          >
+                            <option value="chat">Chat (type + quick mic)</option>
+                            <option value="conversation">Conversation (face mode)</option>
+                          </select>
+                        }
                       />
-                      <label htmlFor="feature-tts-checkbox" className="feature-checkbox-label">
-                        Enable text-to-speech
-                      </label>
-                    </div>
+                    </SettingsGroup>
+                    <p className="text-muted small settings-build-banner">
+                      <strong>Voice pack:</strong> Conversation prefers Marketplace{" "}
+                      <strong>Whisper</strong> (STT) and <strong>Kokoro</strong> (TTS) when those Docker
+                      modules are installed and healthy. If they are missing or down, Athena falls back to
+                      this device&apos;s browser speech engines. Interrupt Athena mid-reply by speaking
+                      (barge-in). Face mode uses a Yes Man–style holographic avatar with Quick/Deep think
+                      and optional camera emotion cues.
+                    </p>
+                    <p className="text-muted">
+                      Have Athena read responses aloud. Status when Conversation is on:{" "}
+                      <strong>{duplexCapability?.label ?? "Probe modules from Conversation or Marketplace"}</strong>
+                    </p>
+                    <SettingsGroup>
+                      <SettingsRow
+                        focusId="voice-duplex-status"
+                        spotlight={settingsFocusId === "voice-duplex-status"}
+                        title="Duplex modules"
+                        subtitle="Whisper STT and Kokoro TTS from Marketplace"
+                        trailing={
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => {
+                              void probeDuplexCapability().then(setDuplexCapability);
+                            }}
+                          >
+                            Refresh status
+                          </button>
+                        }
+                      />
+                    </SettingsGroup>
+                    {duplexCapability ? (
+                      <p className="text-muted small">
+                        Whisper: {duplexCapability.whisper ? "healthy" : "unavailable"} · Kokoro:{" "}
+                        {duplexCapability.kokoro ? "healthy" : "unavailable"} · Mode: {duplexCapability.label}
+                      </p>
+                    ) : (
+                      <p className="text-muted small">Click Refresh status, or start Conversation to probe.</p>
+                    )}
+                    <SettingsGroup>
+                      <SettingsRow
+                        focusId="tts-enable"
+                        spotlight={settingsFocusId === "tts-enable"}
+                        title="Enable text-to-speech"
+                        subtitle="Read Athena replies aloud (Kokoro when available, else system voices)"
+                        trailing={
+                          <PillToggle
+                            checked={ttsEnabled}
+                            aria-label="Enable text-to-speech for Athena's replies"
+                            onCheckedChange={(enabled) => {
+                              setTtsEnabled(enabled);
+                              if (!enabled) {
+                                stopTts();
+                              }
+                              if (typeof window !== "undefined") {
+                                try {
+                                  window.localStorage.setItem("athena-tts-enabled", enabled ? "1" : "0");
+                                } catch {
+                                  // ignore
+                                }
+                              }
+                            }}
+                          />
+                        }
+                      />
+                    </SettingsGroup>
                     {ttsEnabled && (
                       <>
                         <div className="tts-voice-row">
@@ -8442,35 +8944,32 @@ ${tag}` : tag;
             )}
             {settingsPanel === "appearance" && (
               <section className="library-section ui-colors-section">
-                <h3>Window</h3>
-                <div className="feature-checkbox-wrap" style={{ marginBottom: "1rem" }}>
-                  <input
-                    id="fullscreen-toggle"
-                    type="checkbox"
-                    className="feature-checkbox"
-                    checked={fullscreen}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setFullscreen(checked);
-                      void (async () => {
-                        try {
-                          await invoke("set_fullscreen", { fullscreen: checked });
-                        } catch {
-                          /* Native transition may fail; resync from window below */
-                        }
-                        const actual = await invoke<boolean>("is_fullscreen").catch(() => false);
-                        setFullscreen(actual);
-                      })();
-                    }}
-                    aria-label="Fullscreen (macOS: native fullscreen)"
+                <SettingsGroup label="Window">
+                  <SettingsRow
+                    focusId="fullscreen"
+                    spotlight={settingsFocusId === "fullscreen"}
+                    title="Fullscreen"
+                    subtitle="On macOS, uses native fullscreen (dedicated space). Press Escape or toggle again to exit."
+                    trailing={
+                      <PillToggle
+                        checked={fullscreen}
+                        aria-label="Fullscreen (macOS: native fullscreen)"
+                        onCheckedChange={(checked) => {
+                          setFullscreen(checked);
+                          void (async () => {
+                            try {
+                              await invoke("set_fullscreen", { fullscreen: checked });
+                            } catch {
+                              /* Native transition may fail; resync from window below */
+                            }
+                            const actual = await invoke<boolean>("is_fullscreen").catch(() => false);
+                            setFullscreen(actual);
+                          })();
+                        }}
+                      />
+                    }
                   />
-                  <label htmlFor="fullscreen-toggle" className="feature-checkbox-label">
-                    Fullscreen
-                  </label>
-                </div>
-                <p className="text-muted small" style={{ marginTop: "-0.5rem", marginBottom: "1rem" }}>
-                  On macOS, uses native fullscreen (dedicated space, menu bar and dock hide). Press Escape or toggle again to exit.
-                </p>
+                </SettingsGroup>
                 <h3>Night vision</h3>
                 <div className="nightvision-mode-wrap">
                   <label htmlFor="nightvision-mode-select">Night vision</label>
@@ -8871,12 +9370,13 @@ ${tag}` : tag;
                 </section>
               </section>
             )}
-            {settingsPanel === "usbExport" && (
+            {settingsPanel === "usbExport" && canUseHostCapability("usbExport") && (
               <section className="library-section">
-                <h3>USB export</h3>
+                <h3>USB export (Outpost / Sister)</h3>
                 <p className="text-muted small">
-                  Copy ATHENA and a portable <code>data</code> folder to a USB drive. The export flow creates <code>data</code>, <code>models</code>, and{" "}
-                  <code>documents</code> on the destination automatically.
+                  Copy ATHENA and a portable <code>data</code> folder to a USB drive.{" "}
+                  <strong>Outpost</strong> is a slim Fast Node (one chat model, slim DB, minimal map).{" "}
+                  <strong>Sister Server</strong> is a full Citadel clone (models, library mirrors, fuller maps).
                 </p>
                 <div className="settings-inline-actions" style={{ flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
                   <button
@@ -8888,7 +9388,7 @@ ${tag}` : tag;
                       setUsbExportModalOpen(true);
                     }}
                   >
-                    Export Fast Node
+                    Export Outpost
                   </button>
                   <button
                     type="button"
@@ -8907,6 +9407,14 @@ ${tag}` : tag;
                     {usbExportStatus}
                   </p>
                 ) : null}
+              </section>
+            )}
+            {settingsPanel === "usbExport" && !canUseHostCapability("usbExport") && (
+              <section className="library-section">
+                <h3>USB export</h3>
+                <p className="text-muted small">
+                  USB export and drive format are available only on the Athena desktop host, not from a LAN browser.
+                </p>
               </section>
             )}
             {settingsPanel === "troubleshooting" && (
@@ -9058,7 +9566,7 @@ ${tag}` : tag;
               </section>
             )}
             {libraryError !== null && <p className="error">{libraryError}</p>}
-            </div>
+            </SettingsShell>
             {localDataInstallOpen && (
               <div
                 className="settings-nested-backdrop"

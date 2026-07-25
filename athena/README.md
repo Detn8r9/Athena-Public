@@ -1,6 +1,8 @@
 # Athena (Tauri + React + TypeScript)
 
-Run all npm/cargo commands from **this directory** (`athena/`).
+This is the **primary ATHENA product** — the dedicated desktop UI. Run all npm/cargo commands from **this directory** (`athena/`).
+
+The sibling folder `../athena-web/` is an **experimental** Docker dashboard with a **different** UI (port 8080). Prefer this app for the real Athena experience.
 
 ## Where to look
 
@@ -23,11 +25,30 @@ Product notes, audits, and archives live one level up: **`../docs/`** (index: `.
 
 ```bash
 npm install
-npm run dev          # Vite only
-npm run tauri dev    # App with Rust backend
+npm run dev          # Vite only (UI without Rust)
+npm run tauri dev    # Desktop app with Rust backend
 npm run tauri build  # Release bundle
+npm run build        # Production web assets (required for LAN static serve)
 npm run icon         # Regenerate squircle + platform icons from branding/athena-icon-square.png
 ```
+
+### LAN web host (same UI as desktop)
+
+1. `npm run build` so `dist/` exists.
+2. `npm run tauri dev` (or a release build).
+3. Settings → General → enable **Allow LAN access** (listens on `0.0.0.0:8787` by default).
+4. On another device: `http://<host-lan-ip>:8787`.
+
+Host-only actions (USB format, native file dialogs, Aegis drive erase) stay desktop-only.
+
+### USB clone tiers (Outpost / Sister)
+
+| UI label | Backend | What is copied |
+|----------|---------|----------------|
+| **Outpost** (Fast Node) | `outpost` | Slim app + launchers, slim `athena_index.db`, one chat `.gguf`, minimal offline map. No full library / embeddings. |
+| **Sister Server** | `citadel` | Full app data + models + library mirrors (and scorched-earth option). |
+
+Mesh/radio is part of the app binary, not an extra USB payload for Outpost.
 
 ## Offline directions & Valhalla (optional)
 

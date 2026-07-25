@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 
 export type NewItemLine = {
   lineId: string | null;

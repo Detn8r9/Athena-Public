@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { Bell, Check, CheckCheck, X } from "lucide-react";
 import { useAuth } from "../../domains/auth/AuthContext";
 import { useTauriListen } from "../../shared/hooks/useTauriListen";

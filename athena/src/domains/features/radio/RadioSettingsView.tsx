@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 
 type ActionKind = "name" | "region" | "key" | null;
 type SavedKind = "name" | "region" | "key" | null;

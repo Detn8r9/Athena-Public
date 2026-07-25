@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
 import { useCallback, useEffect, useState } from "react";
 
 const STATION_AI_HISTORY_KEY = "athena-station-ai-transcript-history";
@@ -103,7 +103,7 @@ export function StationAiOperatorConsole() {
     <div className="station-ai-operator-console">
       {error ? (
         <p className="station-ai-operator-error" role="alert">
-          {error}
+          Station AI queue error: {error}. Check mesh/LAN connectivity and that the remote worker is online, then refresh.
         </p>
       ) : null}
 

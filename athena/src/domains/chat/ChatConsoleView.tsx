@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Event } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useLexicon } from "../../shared/lexicon";
 import { useTauriListen } from "../../shared/hooks/useTauriListen";

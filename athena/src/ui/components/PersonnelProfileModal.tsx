@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { X } from "lucide-react";
 import { formatRomanRank } from "../../shared/lib/romanRanks";
 

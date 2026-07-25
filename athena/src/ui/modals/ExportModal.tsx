@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke, athenaListen as listen, canUseHostCapability } from "../../shared/ipc/athenaIpc";
+import { type UnlistenFn } from "@tauri-apps/api/event";
 import { AegisExportIoPanel, type AegisExportProgress, type AegisIoHistories } from "../../pages/export/AegisExportIoPanel";
 
 export type UsbDriveInfo = {
@@ -93,6 +93,7 @@ type Props = {
     exportType: ExportTier;
     expeditionBudgetBytes: number | null;
     selectedExternalChatModelPath: string | null;
+    includeDockerVolumes: boolean;
   }) => void;
   onCancelExport?: () => void;
 };
@@ -130,15 +131,15 @@ const MANUAL_TIER_CARDS: Array<{
 }> = [
   {
     id: "fastNode",
-    title: "Fast Node (default)",
+    title: "Outpost (Fast Node)",
     systems:
-      "Minimal field node: application binaries + OS launchers + slim configuration + slim station DB + one small local chat model. Explicitly excludes massive offline maps, full library mirrors, and large payload packs. Designed to boot quickly and join the Hive Mind network.",
+      "Slim field clone: app binaries + OS launchers, slim station DB, one small chat model (.gguf), and a minimal offline map when available. Excludes full library mirrors, embeddings/rerankers, and large map packs. Boots quickly to join the Hive Mind network. Mesh/radio is in the app — not a separate USB payload.",
   },
   {
     id: "sisterServer",
-    title: "Sister Server (full clone)",
+    title: "Sister Server (Citadel)",
     systems:
-      "Full clone: complete application payload, all local AI models, full databases, and complete offline maps. Intended to broadcast/serve resources to the Hive Mind network.",
+      "Full clone: complete application payload, local AI models (including embeddings/rerankers when present), databases, library mirrors, and fuller offline maps. Intended to broadcast/serve resources to the Hive Mind network.",
   },
 ];
 
@@ -169,6 +170,8 @@ export function ExportModal({
   const [discoveringModels, setDiscoveringModels] = useState(false);
   const [discoverErr, setDiscoverErr] = useState<string | null>(null);
   const [selectedExternalChatModelPath, setSelectedExternalChatModelPath] = useState<string | null>(null);
+  const [includeDockerVolumes, setIncludeDockerVolumes] = useState(false);
+  const [dockerVolumeBytes, setDockerVolumeBytes] = useState<number | null>(null);
 
   const isMac =
     typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "");
@@ -178,6 +181,24 @@ export function ExportModal({
       onScorchedEarthChange(false);
     }
   }, [tier, scorchedEarth, onScorchedEarthChange]);
+
+  useEffect(() => {
+    if (!open || tier !== "sisterServer" || !includeDockerVolumes) {
+      setDockerVolumeBytes(null);
+      return;
+    }
+    let cancelled = false;
+    void invoke<number>("marketplace_docker_volume_bytes")
+      .then((n) => {
+        if (!cancelled) setDockerVolumeBytes(typeof n === "number" ? n : 0);
+      })
+      .catch(() => {
+        if (!cancelled) setDockerVolumeBytes(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, tier, includeDockerVolumes]);
 
   useEffect(() => {
     if (!open) {
@@ -208,6 +229,8 @@ export function ExportModal({
   const selected = usbs[selectedIdx];
   const noUsb = !loading && usbs.length === 0;
   const formatBlocked = formatFirst && isMac && selected && !String(selected.device_path || "").trim();
+  const hostUsb = canUseHostCapability("usbExport");
+  const hostFormat = canUseHostCapability("usbFormat");
 
   useEffect(() => {
     if (!open) {
@@ -286,7 +309,7 @@ export function ExportModal({
   const exportButtonTitle = useMemo(() => {
     if (noUsb) return "No USB drive detected.";
     if (!exportReady) {
-      return "Pick a drive and tier that fit this volume, fix format/device path, or satisfy Fast Node model requirements.";
+      return "Pick a drive and tier that fit this volume, fix format/device path, or satisfy Outpost model requirements.";
     }
     if (pfLoading) {
       return "Sizes may still be updating in the background; export is allowed unless a tier is marked too small.";
@@ -341,6 +364,7 @@ export function ExportModal({
       exportType: tier,
       expeditionBudgetBytes: null,
       selectedExternalChatModelPath: tier === "fastNode" ? selectedExternalChatModelPath : null,
+      includeDockerVolumes: tier === "sisterServer" ? includeDockerVolumes : false,
     });
   }
 
@@ -360,10 +384,10 @@ export function ExportModal({
             Pick a removable drive, review measured sizes, then choose the Hive Mind role you want this USB to deploy.
           </p>
           <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
-            <strong>Fast Node:</strong> minimal payload for quick boot and network join (one small local chat model; no full maps or library mirrors).
+            <strong>Outpost (Fast Node):</strong> slim clone — one chat model, slim DB, minimal map; no full library mirrors.
           </p>
           <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
-            <strong>Sister Server:</strong> full clone intended to broadcast/serve resources to the Hive Mind network.
+            <strong>Sister Server (Citadel):</strong> full clone (app data, models, library mirrors) for serving the Hive Mind network.
           </p>
 
           {loading ? (
@@ -450,8 +474,8 @@ export function ExportModal({
             <div style={{ marginBottom: "0.75rem" }}>
               <div className="text-muted small" style={{ marginBottom: "0.35rem" }}>
                 {needsExternalModelScan
-                  ? "No local chat models found in ATHENA’s models directory. Select a `.gguf` from this device to include as the Fast Node’s single model."
-                  : "Fast Node will include one small local chat model (smallest `.gguf` under ATHENA’s models directory)."}
+                  ? "No local chat models found in ATHENA’s models directory. Select a `.gguf` from this device to include as Outpost’s single model."
+                  : "Outpost will include one small local chat model (smallest `.gguf` under ATHENA’s models directory)."}
               </div>
               {discoveringModels ? <p className="text-muted small">Scanning this device for `.gguf` models…</p> : null}
               {discoverErr ? (
@@ -504,6 +528,7 @@ export function ExportModal({
             </p>
           ) : null}
 
+          {hostFormat ? (
           <label className="dev-toggle-row" style={{ alignItems: "flex-start", gap: "0.65rem", marginBottom: "0.65rem" }}>
             <input
               type="checkbox"
@@ -519,7 +544,9 @@ export function ExportModal({
               </p>
             </span>
           </label>
+          ) : null}
 
+          {hostUsb ? (
           <label className="dev-toggle-row" style={{ alignItems: "flex-start", gap: "0.65rem", marginBottom: "0.75rem" }}>
             <input
               type="checkbox"
@@ -534,10 +561,44 @@ export function ExportModal({
               </p>
             </span>
           </label>
+          ) : (
+            <p className="text-muted small">USB format and scorched-earth wipe are desktop-host only.</p>
+          )}
+
+          {tier === "sisterServer" && hostUsb ? (
+            <label className="dev-toggle-row" style={{ alignItems: "flex-start", gap: "0.65rem", marginBottom: "0.75rem" }}>
+              <input
+                type="checkbox"
+                checked={includeDockerVolumes}
+                onChange={(e) => setIncludeDockerVolumes(e.target.checked)}
+                disabled={busy}
+              />
+              <span>
+                <span className="dev-toggle-label">Include Docker Marketplace volumes</span>
+                <p className="text-muted small" style={{ margin: "0.35rem 0 0" }}>
+                  Off by default (can be large). When on, archives installed Marketplace Docker volumes onto the USB.
+                  Requires Docker and at least one installed Marketplace app with volumes.
+                  {dockerVolumeBytes != null
+                    ? ` Current volume data ≈ ${formatBytes(dockerVolumeBytes)}.`
+                    : ""}
+                </p>
+              </span>
+            </label>
+          ) : null}
 
           {formatFirst && isMac && selected && !String(selected.device_path || "").trim() ? (
             <p className="text-muted small" role="alert">
               Could not resolve a raw device path for this volume. Unplug the drive, reinsert it, or pick another drive before formatting.
+            </p>
+          ) : null}
+
+          {tier === "sisterServer" && pf && !pfLoading ? (
+            <p className="text-muted small" style={{ marginTop: 0, marginBottom: "0.65rem" }}>
+              Sister Server will copy about {formatBytes(pf.citadelTotalBytes)}
+              {pf.citadelEstimatedSeconds > 0
+                ? ` (~${formatDurationSeconds(pf.citadelEstimatedSeconds)} at ${pf.assumedWriteMebibytesPerSec} MiB/s)`
+                : ""}
+              .
             </p>
           ) : null}
 
@@ -549,7 +610,7 @@ export function ExportModal({
               title={exportButtonTitle}
               onClick={() => void handleStart()}
             >
-              {busy ? "Exporting…" : "Export"}
+              {busy ? "Exporting…" : tier === "fastNode" ? "Export Outpost" : "Export Sister Server"}
             </button>
             {busy && onCancelExport ? (
               <button type="button" className="secondary" onClick={onCancelExport}>

@@ -11,7 +11,8 @@ export type AppView =
   | "archive"
   | "data_acquisition"
   | "personnel"
-  | "org_chart";
+  | "org_chart"
+  | "marketplace";
 
 const STORAGE_KEY_STARTUP_VIEW = "athena-startup-view";
 
@@ -29,6 +30,7 @@ export const APP_VIEWS: readonly AppView[] = [
   "data_acquisition",
   "personnel",
   "org_chart",
+  "marketplace",
 ];
 
 function isAppView(value: string): value is AppView {
@@ -51,6 +53,7 @@ export const APP_VIEW_LABELS: Record<AppView, string> = {
   data_acquisition: "Data acquisition",
   personnel: "Personnel",
   org_chart: "Org chart",
+  marketplace: "Marketplace",
 };
 
 export function readStartupView(): AppView {

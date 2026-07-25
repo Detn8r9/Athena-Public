@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Wand2 } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 
 type MapToolResult = { tool: string; ok: boolean; error?: string; data?: unknown };
 

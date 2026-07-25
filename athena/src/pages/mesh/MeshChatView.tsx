@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { MeshProfileManager, type MeshProfileRow } from "./MeshProfileManager";
 import { useTauriListen } from "../../shared/hooks/useTauriListen";
 

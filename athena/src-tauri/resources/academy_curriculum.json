@@ -1,6 +1,108 @@
 {
   "ageGroups": [
     {
+      "id": "field",
+      "label": "Field basics (Outpost)",
+      "subjects": [
+        {
+          "id": "water",
+          "label": "Water & sanitation",
+          "lessons": [
+            {
+              "id": "field-water-1",
+              "title": "Safe drinking water",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Water_purification"
+            },
+            {
+              "id": "field-water-2",
+              "title": "Boiling and disinfection",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Water_disinfection"
+            },
+            {
+              "id": "field-water-3",
+              "title": "Hygiene in the field",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Personal_hygiene"
+            }
+          ]
+        },
+        {
+          "id": "shelter",
+          "label": "Shelter & fire",
+          "lessons": [
+            {
+              "id": "field-shelter-1",
+              "title": "Emergency shelter",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Emergency_shelter"
+            },
+            {
+              "id": "field-fire-1",
+              "title": "Fire safety",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Fire_safety"
+            },
+            {
+              "id": "field-hypothermia",
+              "title": "Hypothermia awareness",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Hypothermia"
+            }
+          ]
+        },
+        {
+          "id": "first-aid",
+          "label": "First aid",
+          "lessons": [
+            {
+              "id": "field-aid-1",
+              "title": "First aid overview",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/First_aid"
+            },
+            {
+              "id": "field-aid-2",
+              "title": "Bleeding control basics",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Bleeding"
+            },
+            {
+              "id": "field-aid-3",
+              "title": "Shock (circulatory)",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Shock_(circulatory)"
+            }
+          ]
+        },
+        {
+          "id": "comms",
+          "label": "Comms & navigation",
+          "lessons": [
+            {
+              "id": "field-comms-1",
+              "title": "Radio basics",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Radio"
+            },
+            {
+              "id": "field-nav-1",
+              "title": "Map reading",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Map"
+            },
+            {
+              "id": "field-nav-2",
+              "title": "Compass navigation",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Compass"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "ms",
       "label": "Middle School",
       "subjects": [
@@ -9,34 +111,78 @@
           "label": "Science",
           "lessons": [
             {
-              "id": "ms-sci-main",
-              "title": "Sample: Main Page",
-              "zimNameHint": "",
-              "articleUrl": "A/Main_Page"
+              "id": "ms-sci-earth",
+              "title": "Earth",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Earth"
             },
             {
-              "id": "ms-sci-earth",
-              "title": "Sample: Earth",
-              "zimNameHint": "",
-              "articleUrl": "A/Earth"
+              "id": "ms-sci-water",
+              "title": "Water cycle",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Water_cycle"
+            },
+            {
+              "id": "ms-sci-weather",
+              "title": "Weather",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Weather"
             }
           ]
         },
         {
           "id": "reading",
           "label": "Reading & reference",
-          "lessons": []
+          "lessons": [
+            {
+              "id": "ms-ref-dict",
+              "title": "Dictionary habit",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Dictionary"
+            }
+          ]
         }
       ]
     },
     {
       "id": "hs",
-      "label": "High School",
+      "label": "High School / adult",
       "subjects": [
         {
-          "id": "reference",
-          "label": "Reference library",
-          "lessons": []
+          "id": "medicine",
+          "label": "Health reference",
+          "lessons": [
+            {
+              "id": "hs-med-cpr",
+              "title": "CPR overview",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Cardiopulmonary_resuscitation"
+            },
+            {
+              "id": "hs-med-wound",
+              "title": "Wound care",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Wound"
+            }
+          ]
+        },
+        {
+          "id": "engineering",
+          "label": "Practical engineering",
+          "lessons": [
+            {
+              "id": "hs-eng-elec",
+              "title": "Electricity basics",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Electricity"
+            },
+            {
+              "id": "hs-eng-battery",
+              "title": "Batteries",
+              "zimNameHint": "wikipedia",
+              "articleUrl": "A/Electric_battery"
+            }
+          ]
         }
       ]
     }

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { useAuth } from "../../domains/auth/AuthContext";
 import { ASSIGNABLE_RANKS, formatRomanRank } from "../../shared/lib/romanRanks";
 import {

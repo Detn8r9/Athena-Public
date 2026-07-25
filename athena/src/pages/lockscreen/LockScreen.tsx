@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
+import { type UnlistenFn } from "@tauri-apps/api/event";
 import { CircleHelp, Lock, Moon, Sun } from "lucide-react";
 import { useAuth } from "../../domains/auth/AuthContext";
 import type { MeshRadioIdentity } from "../mesh/MeshNetworkHubView";

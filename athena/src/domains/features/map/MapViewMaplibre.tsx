@@ -3,8 +3,8 @@
  * Offline-first: basemap from online OSM, local PNG tree, or MBTiles via Tauri protocols.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaListen as listen } from "../../../shared/ipc/athenaIpc";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import maplibregl, { type Map as MlMap, type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { FeatureCollection, Geometry } from "geojson";

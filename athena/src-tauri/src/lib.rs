@@ -47,6 +47,12 @@ mod kiwix_serve;
 mod kiwix_tools;
 #[path = "domains/system/os.rs"]
 mod os;
+#[path = "domains/system/lan_bridge.rs"]
+mod lan_bridge;
+#[path = "domains/system/connectivity.rs"]
+mod connectivity;
+#[path = "domains/marketplace/marketplace.rs"]
+mod marketplace;
 #[path = "domains/mesh/lan_cluster.rs"]
 mod lan_cluster;
 #[path = "domains/mesh/lan_identity.rs"]
@@ -1998,6 +2004,7 @@ async fn export_athena_to_usb(
     device_path: Option<String>,
     expedition_budget_bytes: Option<u64>,
     selected_external_chat_model_path: Option<String>,
+    include_docker_volumes: Option<bool>,
 ) -> Result<(), String> {
     let db = Arc::clone(&state.db);
     let app_handle = app.clone();
@@ -2012,6 +2019,7 @@ async fn export_athena_to_usb(
             device_path,
             expedition_budget_bytes,
             selected_external_chat_model_path,
+            include_docker_volumes.unwrap_or(false),
         )
     })
     .await
@@ -2311,15 +2319,18 @@ struct UserAndInferenceSettings {
     /// Effective ONNX reranker folder under `models/rerankers`.
     active_reranker_model_folder: String,
     ai_inference_sleep: bool,
+    connectivity_mode: String,
+    connectivity_label: String,
+    internet_allowed: bool,
 }
 
-#[tauri::command]
-fn get_user_and_inference_settings(
-    app: tauri::AppHandle,
+fn user_and_inference_settings_for_app(
+    app: &tauri::AppHandle,
 ) -> Result<UserAndInferenceSettings, String> {
-    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(app)?;
     let c = load_config(&app_data_dir);
     let bd = c.user_birthdate_iso.as_deref();
+    let conn = connectivity::status_for_config(&c);
     Ok(UserAndInferenceSettings {
         user_display_name: c.user_display_name.clone(),
         user_birthdate_iso: c.user_birthdate_iso.clone(),
@@ -2346,7 +2357,24 @@ fn get_user_and_inference_settings(
         active_embedding_model_folder: effective_embedding_folder(&c),
         active_reranker_model_folder: effective_reranker_folder(&c),
         ai_inference_sleep: c.ai_inference_sleep.unwrap_or(false),
+        connectivity_mode: conn.mode,
+        connectivity_label: conn.label,
+        internet_allowed: conn.internet_allowed,
     })
+}
+
+#[tauri::command]
+fn get_user_and_inference_settings(
+    app: tauri::AppHandle,
+) -> Result<UserAndInferenceSettings, String> {
+    user_and_inference_settings_for_app(&app)
+}
+
+pub(crate) fn lan_get_user_and_inference_settings_value(
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let s = user_and_inference_settings_for_app(&app)?;
+    serde_json::to_value(s).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2440,6 +2468,67 @@ fn set_inference_backend(app: tauri::AppHandle, value: Option<String>) -> Result
     config.inference_backend = normalized;
     save_config(&app_data_dir, &config)?;
     Ok(())
+}
+
+#[tauri::command]
+fn get_connectivity_status(app: tauri::AppHandle) -> Result<connectivity::ConnectivityStatus, String> {
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let config = load_config(&app_data_dir);
+    Ok(connectivity::status_for_config(&config))
+}
+
+#[tauri::command]
+fn set_connectivity_mode(
+    app: tauri::AppHandle,
+    value: String,
+) -> Result<connectivity::ConnectivityStatus, String> {
+    let mode = connectivity::ConnectivityMode::parse(Some(value.trim()));
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut config = load_config(&app_data_dir);
+    config.connectivity_mode = Some(mode.as_str().to_string());
+    save_config(&app_data_dir, &config)?;
+    Ok(connectivity::status_for_config(&config))
+}
+
+#[tauri::command]
+fn marketplace_overview(app: tauri::AppHandle) -> Result<marketplace::MarketplaceOverview, String> {
+    marketplace::overview(&app)
+}
+
+#[tauri::command]
+fn marketplace_install(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    marketplace::install_async(&app, id.trim())
+}
+
+#[tauri::command]
+fn marketplace_start(app: tauri::AppHandle, id: String) -> Result<marketplace::InstalledItem, String> {
+    marketplace::start(&app, id.trim())
+}
+
+#[tauri::command]
+fn marketplace_stop(app: tauri::AppHandle, id: String) -> Result<marketplace::InstalledItem, String> {
+    marketplace::stop(&app, id.trim())
+}
+
+#[tauri::command]
+fn marketplace_open_url(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    marketplace::open_url_for(&app, id.trim())
+}
+
+#[tauri::command]
+fn marketplace_health(app: tauri::AppHandle, id: String) -> Result<bool, String> {
+    marketplace::health_check(&app, id.trim())
+}
+
+#[tauri::command]
+fn marketplace_docker_status() -> Result<marketplace::DockerAvailability, String> {
+    Ok(marketplace::docker_available())
+}
+
+#[tauri::command]
+fn marketplace_docker_volume_bytes(app: tauri::AppHandle) -> Result<u64, String> {
+    let app_data = crate::portable::resolved_app_data_dir(&app)?;
+    Ok(marketplace::estimate_volume_bytes(&app_data))
 }
 
 #[tauri::command]
@@ -5343,6 +5432,32 @@ fn send_message_stream(
     model_options: Option<ModelOptions>,
     model: Option<String>,
 ) -> Result<(), String> {
+    let session_user = auth::authenticated_user(&session)?;
+    start_send_message_stream_for_user(
+        app,
+        session_user,
+        message,
+        history,
+        user_lat,
+        user_lon,
+        chat_id,
+        model_options,
+        model,
+    )
+}
+
+/// Shared by desktop IPC and the LAN bridge (LAN supplies the authenticated user explicitly).
+pub(crate) fn start_send_message_stream_for_user(
+    app: tauri::AppHandle,
+    session_user: auth::AuthenticatedPersonnel,
+    message: String,
+    history: Option<Vec<HistoryMessage>>,
+    user_lat: Option<f64>,
+    user_lon: Option<f64>,
+    chat_id: Option<String>,
+    model_options: Option<ModelOptions>,
+    model: Option<String>,
+) -> Result<(), String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     if config.ai_inference_sleep.unwrap_or(false) {
@@ -5356,7 +5471,6 @@ fn send_message_stream(
     let models = load_models_for_inference(&config);
     ensure_inference_ready(&config, &models)?;
 
-    let session_user = auth::authenticated_user(&session)?;
     let session_user_id = session_user.id.clone();
     let is_guest = session_user.clearance_level <= 0;
     let state = app.state::<AppState>();
@@ -5758,6 +5872,56 @@ Critical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
         }
     });
     Ok(())
+}
+
+/// Parse LAN `/api/invoke` args for `send_message_stream` and start the same stream path as desktop.
+pub(crate) fn start_send_message_stream_from_lan_args(
+    app: tauri::AppHandle,
+    session_user: auth::AuthenticatedPersonnel,
+    args: &serde_json::Value,
+) -> Result<(), String> {
+    let message = args
+        .get("message")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "message required".to_string())?
+        .to_string();
+    let history = args
+        .get("history")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<Vec<HistoryMessage>>(v).ok());
+    let user_lat = args
+        .get("user_lat")
+        .or_else(|| args.get("userLat"))
+        .and_then(|v| v.as_f64());
+    let user_lon = args
+        .get("user_lon")
+        .or_else(|| args.get("userLon"))
+        .and_then(|v| v.as_f64());
+    let chat_id = args
+        .get("chat_id")
+        .or_else(|| args.get("chatId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let model_options = args
+        .get("model_options")
+        .or_else(|| args.get("modelOptions"))
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok());
+    let model = args
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    start_send_message_stream_for_user(
+        app,
+        session_user,
+        message,
+        history,
+        user_lat,
+        user_lon,
+        chat_id,
+        model_options,
+        model,
+    )
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -6279,6 +6443,16 @@ pub fn run() {
             set_calendar_region,
             set_calendar_quiet_hours,
             set_inference_backend,
+            get_connectivity_status,
+            set_connectivity_mode,
+            marketplace_overview,
+            marketplace_install,
+            marketplace_start,
+            marketplace_stop,
+            marketplace_open_url,
+            marketplace_health,
+            marketplace_docker_status,
+            marketplace_docker_volume_bytes,
             set_explicit_ollama_model,
             set_hive_mind_seed_url,
             get_hive_mind_route_status,
@@ -6429,6 +6603,8 @@ pub fn run() {
             cancel_aegis_export,
             aegis_export_preflight,
             start_aegis_export_preflight,
+            lan_bridge::get_lan_bridge_status,
+            lan_bridge::set_lan_bridge_enabled,
             usb::get_available_usbs,
             commands::library_source::open_library_source,
             send_mesh_message,

@@ -1,0 +1,33 @@
+---
+description: Conversation face image asset filenames for Yes Man–style UI
+alwaysApply: false
+globs: athena/src/domains/chat/**
+---
+
+# Conversation face assets (pending user art)
+
+When the user supplies face images, place them under:
+
+`athena/src/domains/chat/face-assets/`
+
+Use **these exact filenames** (PNG preferred, same canvas size e.g. 512×512 or 1024×1024):
+
+## Emotion stills
+- `idle.png`
+- `happy.png`
+- `sad.png`
+- `angry.png`
+- `concerned.png`
+- `surprised.png`
+- `thinking.png`
+- `listening.png`
+- `curious.png`
+- `neutral.png` (optional alias of idle)
+
+## Talking cycle (cycle while speaking)
+- `speaking-01.png`
+- `speaking-02.png`
+- `speaking-03.png`
+- (optional) `speaking-04.png` … `speaking-06.png`
+
+Wire via `YesManFace` / a future `ImageFace` mapper from `AthenaEmotion` → file; speaking emotions cycle `speaking-01…N`.

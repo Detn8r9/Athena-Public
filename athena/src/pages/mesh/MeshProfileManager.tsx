@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 
 export type MeshProfileRow = {
   id: string;
@@ -86,9 +86,9 @@ export function MeshProfileManager({ onClose, onSaved }: Props) {
           </button>
         </div>
         <p className="mesh-profile-manager-hint text-muted">
-          Add trusted handhelds by node number, display name, and a private counter-sign. If you enabled remote signup in
-          Settings → Mesh, new radios can also register themselves with your phrase and an ATHREG1 message—otherwise
-          unknown radios get instructions over the air.
+          <strong>Trusted radios:</strong> add each handheld by node ID, display name, and a private counter-sign. Prefer
+          this over remote signup when you know who should join. Remote signup (Settings → Mesh) lets strangers register
+          with one shared phrase — use only with people you trust.
         </p>
         {error ? <div className="mesh-profile-manager-error" role="alert">{error}</div> : null}
         <form className="mesh-profile-manager-form" onSubmit={handleAdd}>
@@ -130,7 +130,10 @@ export function MeshProfileManager({ onClose, onSaved }: Props) {
         </form>
         <ul className="mesh-profile-list">
           {profiles.length === 0 ? (
-            <li className="mesh-profile-list-empty text-muted">No saved profiles</li>
+            <li className="mesh-profile-list-empty text-muted">
+              No trusted radios yet. Add a node above, or turn on remote signup in Settings → Mesh if you want phrase-based
+              registration.
+            </li>
           ) : (
             profiles.map((p) => (
               <li key={p.id} className="mesh-profile-list-item">

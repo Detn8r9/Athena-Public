@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { ATHENA_ACRONYM_PARTS, ATHENA_FULL_NAME } from "../../shared/branding";
 import { useLexicon } from "../../shared/lexicon";
 

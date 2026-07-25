@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { Clapperboard } from "lucide-react";
 import { useDownloadQueueStore } from "../../stores/downloadQueueStore";
 import { leafArchivesFullyOnDisk, selectionToAcademyKiwixJobs } from "./academyCurriculumQueueJobs";

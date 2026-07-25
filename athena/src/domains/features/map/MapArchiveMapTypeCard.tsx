@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../../shared/ipc/athenaIpc";
+import { emit } from "@tauri-apps/api/event";
 import { AlertTriangle } from "lucide-react";
 import { estimatedDownloadMb, type MapType } from "../../../shared/lib/MapCatalogIndex";
 import { startSatelliteRegionDownload, listDownloadedOfflineMapIds } from "./offlineMapManagerCatalog";

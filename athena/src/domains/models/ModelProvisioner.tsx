@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import type { StagedDownloadJob } from "../../shared/dataAcquisition/stagedDownloadJobs";
 import { normalizePathSlashes } from "../../shared/lib/path";
 import { useDownloadQueueStore } from "../../stores/downloadQueueStore";

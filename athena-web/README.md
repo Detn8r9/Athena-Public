@@ -1,4 +1,6 @@
-# Athena Web
+# Athena Web (experimental)
+
+> **Not the primary Athena UI.** The dedicated desktop app — and the planned LAN host of that **same** UI — lives in [`../athena/`](../athena/). This folder is a **greenfield lab** dashboard (different look and stack) for Docker modules, voice sidecars, and peer experiments. Do not use `:8080` expecting the lock screen / themes / map shell from the Tauri app.
 
 Fully local, modular AI command center — containerized dashboard for LAN access.
 

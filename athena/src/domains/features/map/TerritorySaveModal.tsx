@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 
 const STATUS_PRESETS: { id: "friendly" | "enemy" | "disputed" | "unexplored"; label: string; color: string }[] = [
   { id: "friendly", label: "Friendly", color: "#3b82f6" },

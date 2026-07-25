@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../../shared/ipc/athenaIpc";
 import { useTauriListen } from "../../../shared/hooks/useTauriListen";
 import { Antenna, CheckCircle2, Clock, Radio, Signal } from "lucide-react";
 import { usePageVisible } from "../../../shared/hooks/usePageVisible";

@@ -1,5 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
+import { type UnlistenFn } from "@tauri-apps/api/event";
 import { StationAiOperatorConsole } from "../station/StationAiOperatorConsole";
 import { Antenna, Cpu, Mic, RefreshCw, Waves } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";

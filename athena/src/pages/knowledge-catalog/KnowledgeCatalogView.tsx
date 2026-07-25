@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type Event } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
+import { type Event } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FileText, Link2, Youtube } from "lucide-react";
 import { useTauriListen } from "../../shared/hooks/useTauriListen";

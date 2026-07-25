@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke, athenaListen as listen, canUseHostCapability } from "../../shared/ipc/athenaIpc";
 import { Antenna, MessageSquare, Settings } from "lucide-react";
 import { MeshChatView } from "./MeshChatView";
 import { MeshNetworkView } from "../../domains/mesh/MeshNetworkView";
@@ -101,7 +100,17 @@ export function MeshNetworkHubView({
           </div>
         )}
         <div className="mesh-network-hub-actions">
-          <button type="button" className="glass-action-btn" onClick={onOpenQuickSend} disabled={!connected}>
+          <button
+            type="button"
+            className="glass-action-btn"
+            onClick={onOpenQuickSend}
+            disabled={!connected || !canUseHostCapability("meshUsb")}
+            title={
+              !canUseHostCapability("meshUsb")
+                ? "Mesh USB send requires the Athena desktop host."
+                : undefined
+            }
+          >
             Quick test message
           </button>
           <button type="button" className="glass-action-btn" onClick={onOpenMeshSettings}>
@@ -121,8 +130,9 @@ export function MeshNetworkHubView({
       <section className="mesh-network-hub-chat glass-panel">
         <h2 className="mesh-network-hub-section-title">Conversations over the mesh</h2>
         <p className="text-muted small mesh-network-hub-chat-intro">
-          Choose a contact on the left, read the thread, or send from this computer. Use the gear to add trusted radios
-          manually, or turn on remote signup in settings so new radios can register with a phrase you choose.
+          Choose a contact on the left, read the thread, or send from this computer. Use the gear for{" "}
+          <strong>Trusted radios</strong> (manual node ID + counter-sign). Remote signup (Settings → Mesh) is optional and
+          should only use a phrase shared with people you trust.
         </p>
         <div className="mesh-network-hub-chat-frame">
           <MeshChatView />

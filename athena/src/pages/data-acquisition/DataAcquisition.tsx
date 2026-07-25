@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { KnowledgeCatalogView } from "../knowledge-catalog/KnowledgeCatalogView";
 import { DynamicLibraryInstaller } from "../../domains/features/library-installer/DynamicLibraryInstaller";
 import { ArchiveMapsTab, type ArchiveMapsTabProps } from "../../domains/features/library-installer/ArchiveMapsTab";

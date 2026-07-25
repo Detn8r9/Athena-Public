@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke, canUseHostCapability } from "../../shared/ipc/athenaIpc";
 
 export type UsbDriveInfo = {
   name: string;
@@ -81,6 +81,8 @@ export function UsbExportModal({
   const selected = usbs[selectedIdx];
   const noUsb = !loading && usbs.length === 0;
   const formatBlocked = formatFirst && isMac && selected && !String(selected.device_path || "").trim();
+  const hostFormat = canUseHostCapability("usbFormat");
+  const hostUsb = canUseHostCapability("usbExport");
 
   function handleStart() {
     if (!selected || busy || noUsb || formatBlocked) return;
@@ -149,6 +151,7 @@ export function UsbExportModal({
             </label>
           )}
 
+          {hostFormat ? (
           <label className="dev-toggle-row" style={{ alignItems: "flex-start", gap: "0.65rem", marginBottom: "0.65rem" }}>
             <input
               type="checkbox"
@@ -164,7 +167,9 @@ export function UsbExportModal({
               </p>
             </span>
           </label>
+          ) : null}
 
+          {hostUsb ? (
           <label className="dev-toggle-row" style={{ alignItems: "flex-start", gap: "0.65rem", marginBottom: "0.75rem" }}>
             <input
               type="checkbox"
@@ -179,6 +184,9 @@ export function UsbExportModal({
               </p>
             </span>
           </label>
+          ) : (
+            <p className="text-muted small">USB format and scorched-earth wipe are desktop-host only.</p>
+          )}
 
           {formatFirst && isMac && selected && !String(selected.device_path || "").trim() ? (
             <p className="text-muted small" role="alert">

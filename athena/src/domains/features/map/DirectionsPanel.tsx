@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, Navigation, Footprints, Bike, Truck, MapPin, Settings } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import type { Map as MlMap, GeoJSONSource } from "maplibre-gl";
 import type { Feature, FeatureCollection, LineString } from "geojson";
 import { SRC_ROUTE } from "./maplibreLayerIds";

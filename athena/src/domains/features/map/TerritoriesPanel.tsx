@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import { Hexagon, Lock, Plus, Trash2, Eye, EyeOff } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useAuth } from "../../../domains/auth/AuthContext";

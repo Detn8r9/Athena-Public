@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { ArrowLeft, Printer } from "lucide-react";
 
 const KIWIX_ORIGIN = "http://localhost:8080";
@@ -148,7 +148,10 @@ export function AcademyModule() {
       setStudentTitle(res.title);
       setStudentHtml(res.html);
     } catch (e) {
-      setLoadErr(e != null ? String(e) : "Could not load lesson.");
+      const msg = e != null ? String(e) : "Could not load lesson.";
+      setLoadErr(
+        `${msg} If the article is missing, install a knowledge ZIM from Library / Archive, then retry.`,
+      );
     } finally {
       setLoadingUnit(false);
     }

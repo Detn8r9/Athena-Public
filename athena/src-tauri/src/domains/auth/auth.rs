@@ -308,6 +308,10 @@ fn is_locked_status(st: &str) -> bool {
     t == "mia" || t == "kia"
 }
 
+pub(crate) fn status_is_locked(st: &str) -> bool {
+    is_locked_status(st)
+}
+
 fn enforce_rank4_cannot_touch_caesar(
     actor: &AuthenticatedPersonnel,
     target_rank_level: i32,
@@ -318,7 +322,7 @@ fn enforce_rank4_cannot_touch_caesar(
     Ok(())
 }
 
-fn session_personnel_from_row(row: &crate::db::PersonnelRow) -> AuthenticatedPersonnel {
+pub(crate) fn session_personnel_from_row(row: &crate::db::PersonnelRow) -> AuthenticatedPersonnel {
     AuthenticatedPersonnel {
         id: row.id.clone(),
         name: row.name.clone(),

@@ -132,6 +132,9 @@ export type Lexicon = {
   settingsPanelTroubleshooting: string;
   settingsPanelDeveloper: string;
   settingsNavAria: string;
+  settingsNavSearchPlaceholder: string;
+  settingsNavSearchAria: string;
+  settingsNavSearchNoMatch: string;
   settingsNavIntroLead: string;
   settingsNavMeshConnectedNote: string;
   settingsNavMeshDisconnectedNote: string;
@@ -547,6 +550,9 @@ const SURVIVAL_LEXICON: Lexicon = {
   settingsPanelTroubleshooting: "Troubleshooting",
   settingsPanelDeveloper: "Developer",
   settingsNavAria: "Settings sections",
+  settingsNavSearchPlaceholder: "Search settings…",
+  settingsNavSearchAria: "Search settings",
+  settingsNavSearchNoMatch: "No settings match that search.",
   settingsNavIntroLead:
     "Sections are grouped: account & calendar, AI, location & maps, radio & voice, look & feel, then backup & diagnostics. New here? Open Me for your operator account, then General for the ATHENA name and library folder.",
   settingsNavMeshConnectedNote: " The mesh radio button appears when a Meshtastic device is connected.",
@@ -585,7 +591,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   settingsNavMeshOk: "Meshtastic auto-reply and mesh traffic",
   settingsNavVoice: "Voice",
   settingsNavVoiceDesc: "Read-aloud (TTS)",
-  settingsNavVoiceHiddenNote: " · Hidden in this build",
+  settingsNavVoiceHiddenNote: "",
   settingsNavWindowDisplay: "Window & Display",
   settingsNavWindowDisplayDesc: "Fullscreen and night vision",
   settingsNavThemes: "Themes & Colors",
@@ -593,7 +599,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   settingsNavTroubleshooting: "Troubleshooting",
   settingsNavTroubleshootingDesc: "Error log, shortcuts to Library and Help",
   settingsNavUsbExport: "USB export",
-  settingsNavUsbExportDesc: "Aegis Protocol — tiered portable copy (optional format on macOS)",
+  settingsNavUsbExportDesc: "Aegis Protocol — Outpost (Fast Node) or Sister Server clone",
 
   helpModalTitle: "Help & features",
   helpCloseAria: "Close help",
@@ -970,6 +976,9 @@ const FALLOUT_LEXICON: Lexicon = {
   settingsPanelTroubleshooting: "Diagnostics",
   settingsPanelDeveloper: "Overseer",
   settingsNavAria: "Vault settings sections",
+  settingsNavSearchPlaceholder: "Search vault settings…",
+  settingsNavSearchAria: "Search vault settings",
+  settingsNavSearchNoMatch: "No vault settings match that search.",
   settingsNavIntroLead:
     "Sections are grouped: account & schedule, AI, location & maps, uplink & voice, look & feel, then holotapes & diagnostics. New here? Me is your dweller account; General explains ATHENA and your stash path.",
   settingsNavMeshConnectedNote: " The mesh uplink icon appears when a Meshtastic device is tethered.",
@@ -1006,7 +1015,7 @@ const FALLOUT_LEXICON: Lexicon = {
   settingsNavMeshOk: "Meshtastic auto-reply and mesh traffic",
   settingsNavVoice: "Voice",
   settingsNavVoiceDesc: "Read-aloud (TTS)",
-  settingsNavVoiceHiddenNote: " · Classified in this build",
+  settingsNavVoiceHiddenNote: "",
   settingsNavWindowDisplay: "Window & Display",
   settingsNavWindowDisplayDesc: "Fullscreen and night-ops tint",
   settingsNavThemes: "Themes & Colors",

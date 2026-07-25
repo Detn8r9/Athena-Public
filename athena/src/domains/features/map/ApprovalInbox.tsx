@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 
 type AiStagedChangeRow = {
   id: string;

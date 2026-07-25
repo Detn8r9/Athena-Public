@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../shared/ipc/athenaIpc";
 import App from "./App";
 import { AuthProvider } from "../domains/auth/AuthContext";
 import { ErrorBoundary } from "./ErrorBoundary";

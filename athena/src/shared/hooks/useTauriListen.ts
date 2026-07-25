@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { listen, type Event, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
+import type { Event, EventCallback, UnlistenFn } from "@tauri-apps/api/event";
+import { athenaListen } from "../ipc/athenaIpc";
 
 type Cleanup = void | (() => void) | Promise<void> | UnlistenFn;
 
@@ -11,7 +12,7 @@ type ListenOptions<T> = {
 };
 
 /**
- * Register a Tauri event listener with strict unmount cleanup.
+ * Register a Tauri (or LAN SSE) event listener with strict unmount cleanup.
  * Handles the race where `listen(...)` resolves after unmount.
  */
 export function useTauriListen<T>(
@@ -37,7 +38,7 @@ export function useTauriListen<T>(
       }
     };
 
-    void listen<T>(event, (ev: Event<T>) => handler(ev))
+    void athenaListen<T>(event, (ev: Event<T>) => handler(ev))
       .then((fn) => {
         if (cancelled) {
           void fn();
@@ -54,4 +55,3 @@ export function useTauriListen<T>(
     };
   }, [event, enabled, handler, onError, cleanup]);
 }
-

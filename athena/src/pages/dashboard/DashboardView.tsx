@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { usePageVisible } from "../../shared/hooks/usePageVisible";
 import type { AppView } from "../../app/appView";
 import type { ReactNode } from "react";
@@ -15,6 +15,7 @@ import {
   MessageSquare,
   Library,
   GraduationCap,
+  Store,
   Users,
 } from "lucide-react";
 import { CommsHubIcon } from "../../shared/CommsHubIcon";
@@ -159,6 +160,15 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     ),
   },
   {
+    key: "marketplace",
+    label: "Marketplace",
+    icon: (
+      <LauncherIcon>
+        <Store size={18} strokeWidth={2} aria-hidden />
+      </LauncherIcon>
+    ),
+  },
+  {
     key: "comms_hub",
     label: "Communications Hub",
     icon: (
@@ -202,7 +212,7 @@ type LauncherItem = { key: DashboardDestination; label: string; icon: ReactNode 
 /** Right column: grouped app launchers (order within sector is fixed for muscle memory). */
 const OPERATIONAL_SECTORS: Array<{ id: string; title: string; keys: DashboardDestination[] }> = [
   { id: "tactical", title: "Tactical Operations", keys: ["chat", "map", "comms_hub"] },
-  { id: "intel", title: "Intelligence & Data", keys: ["academy", "archive", "data_acquisition"] },
+  { id: "intel", title: "Intelligence & Data", keys: ["academy", "archive", "data_acquisition", "marketplace"] },
   { id: "command", title: "Command & Logistics", keys: ["logbook", "personnel", "calendar"] },
 ];
 

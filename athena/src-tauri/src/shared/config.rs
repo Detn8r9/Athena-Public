@@ -203,6 +203,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub mesh_registration_admin_password: Option<String>,
 
+    /// `auto` | `online` | `offline` — NOMAD dual-mode connectivity (default `auto`).
+    #[serde(default)]
+    pub connectivity_mode: Option<String>,
+
     /// Local Valhalla HTTP `valhalla_service` port (default 8002).
     #[serde(default)]
     pub valhalla_port: Option<u16>,

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { ClipboardList, Package } from "lucide-react";
 import { useAuth } from "../../domains/auth/AuthContext";
 import { DIRECTORATES, DIRECTORATE_LABELS, type Directorate } from "../../shared/orgStructure";
@@ -86,6 +86,7 @@ export function QuartermasterHub({
   const [logs, setLogs] = useState<InventoryLogRow[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [spotlightFilter, setSpotlightFilter] = useState<string | null>(null);
 
   const [addOpen, setAddOpen] = useState(false);
   /** Directorate key for new row — `add_inventory_item` `division` arg (and directorate column). */
@@ -108,17 +109,45 @@ export function QuartermasterHub({
     }
   }, [userDir]);
 
-  const visibleItems = useMemo(() => {
-    if (r >= 4) return items;
-    if (r === 3) {
-      if (!myOrgKey) return items;
-      return items.filter((it) => {
-        const rowKey = (it.directorate?.trim() || it.division?.trim() || "").toLowerCase();
-        return rowKey === myOrgKey;
-      });
+  useEffect(() => {
+    try {
+      const q = sessionStorage.getItem("athena-spotlight-inventory-query");
+      if (q?.trim()) {
+        setSpotlightFilter(q.trim());
+        sessionStorage.removeItem("athena-spotlight-inventory-query");
+        sessionStorage.removeItem("athena-spotlight-inventory-item");
+        setTab("inventory");
+      }
+    } catch {
+      /* ignore */
     }
-    return items;
-  }, [items, r, myOrgKey]);
+  }, [setTab]);
+
+  const visibleItems = useMemo(() => {
+    let rows = items;
+    if (r < 4) {
+      if (r === 3) {
+        if (myOrgKey) {
+          rows = items.filter((it) => {
+            const rowKey = (it.directorate?.trim() || it.division?.trim() || "").toLowerCase();
+            return rowKey === myOrgKey;
+          });
+        }
+      } else {
+        rows = items;
+      }
+    }
+    if (spotlightFilter) {
+      const q = spotlightFilter.toLowerCase();
+      rows = rows.filter(
+        (it) =>
+          it.item_name.toLowerCase().includes(q) ||
+          (it.category || "").toLowerCase().includes(q) ||
+          it.id === spotlightFilter,
+      );
+    }
+    return rows;
+  }, [items, r, myOrgKey, spotlightFilter]);
 
   /** Top-level directorate bucket */
   const bucketKey = (it: InventoryItemRow) => {
@@ -345,6 +374,14 @@ export function QuartermasterHub({
               </button>
             ) : null}
           </div>
+          {spotlightFilter ? (
+            <p className="text-muted small" style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+              Spotlight filter: <strong>{spotlightFilter}</strong>
+              <button type="button" className="secondary" onClick={() => setSpotlightFilter(null)}>
+                Clear
+              </button>
+            </p>
+          ) : null}
           <p className="text-muted small qm-inventory-lead">
             Stock is grouped by <strong>directorate</strong>, then supply category. Rows without a directorate land in
             &nbsp;<em>Uncategorized</em> until a Level 4+ operator re-buckets them.

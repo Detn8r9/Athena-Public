@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke, canUseHostCapability } from "../../shared/ipc/athenaIpc";
 
 export interface MeshRadioMessage {
   id: string;
@@ -25,6 +25,8 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
   const [wantAck, setWantAck] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const meshUsbOk = canUseHostCapability("meshUsb");
+
 
   const scrollLog = useCallback(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -139,6 +141,12 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
 
         <div className="mesh-radio-body">
           <section className="library-section mesh-radio-send-section" aria-label="Send mesh message">
+            {!meshUsbOk ? (
+              <p className="text-muted small" style={{ marginTop: 0 }}>
+                Mesh USB send is available on the desktop host only. Status and received logs may still appear when the
+                host is connected.
+              </p>
+            ) : null}
             {error != null && (
               <p className="mesh-radio-error" role="alert">
                 {error}
@@ -146,7 +154,12 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
             )}
             <div className="mesh-radio-options">
               <label className="mesh-radio-option">
-                <input type="checkbox" checked={wantAck} onChange={(e) => setWantAck(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={wantAck}
+                  onChange={(e) => setWantAck(e.target.checked)}
+                  disabled={!meshUsbOk}
+                />
                 Request ACK
               </label>
               <span className="mesh-radio-primary-badge" title="Broadcasts use channel 1 (General Operations)">
@@ -162,17 +175,26 @@ export function MeshRadioModal({ open, onClose, messages }: MeshRadioModalProps)
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  void handleSend();
+                  if (meshUsbOk) void handleSend();
                 }
               }}
-              disabled={sending}
+              disabled={sending || !meshUsbOk}
               aria-label="Meshtastic message text"
             />
             <div className="row mesh-radio-send-row mesh-radio-send-actions">
-              <button type="button" onClick={() => void handleSend()} disabled={sending || !input.trim()}>
+              <button
+                type="button"
+                onClick={() => void handleSend()}
+                disabled={sending || !input.trim() || !meshUsbOk}
+              >
                 {sending ? "Sending…" : "Send on mesh"}
               </button>
-              <button type="button" className="secondary" onClick={() => void handleSendTestPing()} disabled={sending}>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void handleSendTestPing()}
+                disabled={sending || !meshUsbOk}
+              >
                 Send test ping
               </button>
             </div>

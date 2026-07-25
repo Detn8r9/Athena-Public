@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
 import type { AppView } from "../../app/appView";
 import { ATHENA_FULL_NAME } from "../../shared/branding";
 import { substLexicon, useLexicon } from "../../shared/lexicon";
@@ -23,6 +23,8 @@ import {
 } from "lucide-react";
 import { CommsHubIcon } from "../../shared/CommsHubIcon";
 import { NotificationsCenter } from "./NotificationsCenter";
+import { AthenaSpotlight } from "./AthenaSpotlight";
+import type { SpotlightAction } from "../../shared/search/spotlightSearch";
 
 export type UniversalHeaderBatteryState = {
   percentage: number | null;
@@ -93,6 +95,10 @@ export interface UniversalHeaderProps {
   sessionModelRouting: UniversalHeaderSessionModelRouting | null;
   /** Ollama-only: shows whether traffic is using a remote Hive Mind host or the local sidecar. */
   ollamaHiveRoute?: "hive" | "local" | null;
+  /** Connectivity: when false, Spotlight stays local-only. */
+  internetAllowed?: boolean;
+  /** Spotlight navigate / open-detail / web. */
+  onSpotlightAction?: (action: SpotlightAction) => void;
 }
 
 function viewButtonClass(active: boolean): string {
@@ -224,6 +230,8 @@ export function UniversalHeader({
   onToggleAiInferenceSleep,
   sessionModelRouting,
   ollamaHiveRoute = null,
+  internetAllowed = true,
+  onSpotlightAction,
 }: UniversalHeaderProps) {
   const lx = useLexicon();
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
@@ -674,6 +682,9 @@ export function UniversalHeader({
 
   const mobileRow1Right = (
     <div className="universal-header-mobile-row1-right">
+      {onSpotlightAction ? (
+        <AthenaSpotlight internetAllowed={internetAllowed} onAction={onSpotlightAction} compact />
+      ) : null}
       <button
         type="button"
         className={`universal-header-clock-btn universal-header-calendar-merge universal-header-mobile-calendar${
@@ -767,6 +778,9 @@ export function UniversalHeader({
               {powerHomeCluster}
             </div>
             <div className="universal-header-toolbar-center" aria-label="Status and session">
+              {onSpotlightAction ? (
+                <AthenaSpotlight internetAllowed={internetAllowed} onAction={onSpotlightAction} />
+              ) : null}
               {statusStrip}
               {sessionModelRouting != null || ollamaHiveRoute != null ? (
                 <div className="universal-header-model-route-row">

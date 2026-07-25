@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import { open as openNativeFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   CircleDot,

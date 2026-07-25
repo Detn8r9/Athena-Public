@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import { motion } from "framer-motion";
 import { tilesIntersectingCircle, MAX_EXTRACT_RADIUS_MILES } from "../../../shared/lib/MapCatalogIndex";
 import { ErrorBoundary } from "../../../app/ErrorBoundary";

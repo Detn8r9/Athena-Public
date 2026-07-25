@@ -36,6 +36,7 @@ pub fn ensure_inference_ready(
     config: &AppConfig,
     ollama_models: &[ModelInfo],
 ) -> Result<(), String> {
+    crate::connectivity::ensure_cloud_llm_allowed(config)?;
     if is_openai_compatible_backend(config) {
         let base = effective_openai_base_url(config).ok_or_else(|| {
             "Set an OpenAI-compatible base URL (e.g. http://127.0.0.1:1234/v1) in Settings, or start the managed local llama server."

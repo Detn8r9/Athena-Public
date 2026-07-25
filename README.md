@@ -2,7 +2,12 @@
 
 Autonomous Tactical Heuristic Emergency Network Archive — a desktop application for offline-first knowledge, local AI assistance, maps, mesh radio workflows, and field operations tooling.
 
-The runnable app lives in the `athena/` directory (Tauri 2, React, Rust).
+The **primary product** is the dedicated desktop app in [`athena/`](athena/) (Tauri 2, React, Rust) — that is the UI operators use day to day.
+
+| Path | What it is |
+|------|------------|
+| **`athena/`** | **ATHENA desktop** — full UI (lock screen, themes, map, chat, settings). Run with `npm run tauri dev`. Optional **LAN web host** serves this **same** UI to phones/tablets on your Wi‑Fi (Settings → General → Allow LAN access). |
+| **`athena-web/`** | **Experimental** Docker dashboard (FastAPI + different React UI on port **8080**). Not a restyle of the desktop app; use only for lab / module experiments. |
 
 ## What it does (high level)
 
@@ -19,13 +24,14 @@ The runnable app lives in the `athena/` directory (Tauri 2, React, Rust).
 
 On startup, ATHENA performs a resilience check and can enter a non-destructive **Maintenance Mode** instead of crashing when required sidecars are missing or unhealthy (see backend diagnostics). SQLite uses **Write-Ahead Logging (WAL)** and an `integrity_check` on each start to reduce the risk of silent corruption after power loss.
 
-## Aegis Protocol (tiered USB export)
+## Aegis Protocol (USB clone: Outpost / Sister)
 
-Aegis Protocol supports three tiers:
+Two primary export buttons in the app (legacy aliases still accepted by the backend):
 
-- **Essentials**: small and fast — platform launchers from the bundled payload, a **25-mile PMTiles extract** centered on a **generic US interior reference point** (39.828°N, 98.580°W), and a copy of the local **`athena_index.db`** when it exists (personnel / roster / library index). Does not copy embedding or reranker models or full document mirrors.
-- **Recommended**: copies embedding and reranker models, then **priority-based** payload packs until free space would drop below a **500MB** reserve.
-- **Absolute**: copies the full bundled payload tree and mirrors watched library folders plus the index database (see in-app export notes for wipe / “scorched earth” options).
+- **Outpost** (Fast Node): slim field clone — platform launchers + slim app payload, **`data/athena_index.db`** (slim when source exists), **one small chat `.gguf`**, and a **minimal offline map** (25-mile PMTiles when the host has a basemap). No full library mirrors, no embedding/reranker tree. Mesh/radio stay in the app binary (no separate radio USB payload). Verify fails loudly if the host has no chat model or no map when required.
+- **Sister Server** (Citadel): full clone — complete app data, models tree, embeddings/rerankers when present on the host, library mirrors, and fuller map coverage. Optional “scorched earth” wipe after a successful Sister export. Preflight shows approximate size before you confirm.
+
+Secondary tiers (`bastion` / `expedition`) exist in the backend for space-aware packing but are not the primary UI buttons.
 
 ## Requirements
 
@@ -35,10 +41,28 @@ Aegis Protocol supports three tiers:
 
 ## Clone and run (development)
 
+**Desktop (primary UI):**
+
 ```bash
 cd athena
 npm install
 npm run tauri dev
+```
+
+**LAN access to the same UI** (after enabling in Settings → General): other devices open `http://<this-machine-lan-ip>:8787`. Build the web assets once so the bridge can serve them:
+
+```bash
+cd athena
+npm run build
+# Then start the desktop app and turn on “Allow LAN access”
+```
+
+**Experimental dashboard only** (different UI — do not confuse with desktop):
+
+```bash
+cd athena-web
+cp .env.example .env
+docker compose up --build -d   # http://localhost:8080
 ```
 
 Production-style UI build (no native shell):
@@ -55,8 +79,9 @@ npm run build
 | Path                                 | Role                                                |
 | ------------------------------------ | --------------------------------------------------- |
 | `athena/package.json`                | Frontend scripts and dependencies                   |
-| `athena/src/`                        | React / TypeScript UI                               |
-| `athena/src-tauri/`                  | Rust backend, Tauri config, assets                  |
+| `athena/src/`                        | React / TypeScript UI (desktop + LAN shell)         |
+| `athena/src-tauri/`                  | Rust backend, Tauri config, LAN HTTP bridge         |
+| `athena-web/`                        | Experimental Docker LAN dashboard (separate UI)     |
 | `athena/branding/`                   | Icon sources for `npm run icon`                     |
 | `docs/`                              | Additional documentation and notes                  |
 | `athena/ATHENA_PROJECT_REFERENCE.md` | In-app reference used by the `/athena` chat command |

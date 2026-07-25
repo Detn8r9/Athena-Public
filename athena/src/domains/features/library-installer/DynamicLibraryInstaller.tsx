@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
+import { athenaListen as listen } from "../../../shared/ipc/athenaIpc";
 import { AnimatePresence, motion } from "framer-motion";
 import manifestJson from "./manifest.json";
 import { normalizePathSlashes } from "../../../shared/lib/path";

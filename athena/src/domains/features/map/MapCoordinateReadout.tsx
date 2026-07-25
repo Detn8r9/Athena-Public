@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import type { Map } from "maplibre-gl";
 import type { CoordinateConversionResult } from "./mapViewTypes";
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
 
 interface AcademyLesson {
@@ -90,7 +90,10 @@ export function AcademyView() {
       setLessonTitle(res.title);
       setLessonHtml(res.html);
     } catch (e) {
-      setLoadErr(e != null ? String(e) : "Could not load lesson.");
+      const msg = e != null ? String(e) : "Could not load lesson.";
+      setLoadErr(
+        `${msg} If the article is missing, install a Wikipedia (or other) knowledge ZIM from Library / Archive, then retry.`,
+      );
     } finally {
       setLoadingLesson(false);
     }
@@ -173,7 +176,8 @@ export function AcademyView() {
     <div className="glass-panel app-view-placeholder" style={{ display: "grid", gap: "0.75rem", padding: "1rem" }}>
       <h2 className="app-view-placeholder-title">Academy</h2>
       <p className="text-muted" style={{ margin: 0 }}>
-        Offline lessons from your ZIM library. Complete a lesson to track progress locally.
+        Offline lessons for Outpost and home stations. Articles come from your ZIM library — if a lesson fails to open,
+        install a knowledge ZIM from Library / Archive first.
       </p>
 
       {nav.level === "ages" ? (
@@ -225,6 +229,12 @@ export function AcademyView() {
             {nav.age.label} · {nav.subject.label}
           </div>
           <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.5rem" }}>
+            {nav.subject.lessons.length === 0 ? (
+              <li className="text-muted small">
+                No lessons in this subject yet. Install knowledge ZIMs from Library / Archive, or pick Field basics
+                (Outpost).
+              </li>
+            ) : null}
             {nav.subject.lessons.map((les) => (
               <li key={les.id}>
                 <button
