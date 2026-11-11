@@ -49,6 +49,8 @@ mod kiwix;
 mod kiwix_serve;
 #[path = "domains/ingestion/kiwix_tools.rs"]
 mod kiwix_tools;
+#[path = "domains/system/watch_officer.rs"]
+mod watch_officer;
 #[path = "domains/system/os.rs"]
 mod os;
 #[path = "domains/system/lan_bridge.rs"]
@@ -6580,6 +6582,7 @@ pub fn run() {
             auth::ack_all_command_notifications,
             inventory::list_inventory,
             runway::get_supply_runway,
+            watch_officer::get_watch_brief,
             inventory::add_inventory_item,
             inventory::update_inventory_quantity,
             inventory::update_inventory_category,

@@ -49,7 +49,14 @@ Page numbers in citations only appear for PDFs added after the fix. To get them 
 - [ ] **Library answers with no AI model (S6).** Quit Ollama, then ask a library question in Chat. Expected: instead of an error, a reply headed "The AI model is not available" that quotes the closest passages with their titles. If Chat refuses to send at all while Ollama is down, tell me; the screen may be checking for the model before the backend gets the question.
 - [ ] **Supply runway (S5).** Open Logistics Hub. A new "Supply runway" section sits above the inventory table. It will say "No estimates yet" until items have been reduced at least twice. Lower one item's quantity twice, press Refresh, and check that it shows a days-remaining figure. Change "Plan for N people" and check the figure scales.
 
-## 8. Hive mind and watch officer decisions
+## 8. Test the watch officer
 
-- [ ] **Hive mind.** Approve the three-part plan in my last message (best-machine routing and job sharing first; pooled large model as an optional wired-only mode), or tell me what to change.
-- [ ] **Watch officer.** Approve the design (rules detect, AI explains and drafts, people approve), and tell me which actions, if any, it may take without asking.
+- [ ] Open the Dashboard. A new "Watch officer" card sits at the top with a one-line status and a list of items, most urgent first.
+- [ ] Quit Ollama and press "Check now". Expected: a "The AI model is not running" item appears.
+- [ ] With Ollama running and at least one item listed, press "Write me a brief". Expected: a short paragraph that mentions only what is in the list. If it adds facts that are not in the list, tell me which model you used.
+- [ ] Press "Open" on an item. Expected: it takes you to the matching screen.
+
+## 9. Still open
+
+- [ ] **Watch officer actions.** You approved the design. It currently takes no actions on its own. Tell me if there are any low-risk ones you want it to do without asking (for example, posting its brief to the logbook each morning).
+- [ ] **Hive mind testing.** Best-machine routing needs two computers on the same network to test. Tell me when you have a second machine available.

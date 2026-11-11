@@ -30,6 +30,14 @@ pub fn replace_global(embedder: Arc<NeuralEmbedder>) {
     }
 }
 
+/// True when the real embedding model is loaded rather than the hash-based placeholder.
+pub fn global_is_onnx_loaded() -> bool {
+    GLOBAL
+        .get()
+        .and_then(|lock| lock.read().ok().map(|g| g.is_onnx_loaded()))
+        .unwrap_or(false)
+}
+
 pub fn embed_query(text: &str) -> Result<Vec<f32>, String> {
     let lock = GLOBAL
         .get()

@@ -19,6 +19,7 @@ import {
   Users,
 } from "lucide-react";
 import { CommsHubIcon } from "../../shared/CommsHubIcon";
+import { WatchOfficerCard } from "./WatchOfficerCard";
 
 interface SystemStatsPayload {
   total_memory: number;
@@ -379,6 +380,9 @@ export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardV
   return (
     <div className="dashboard-operational-shell">
       <div className="dashboard-system-span">
+        <div style={{ marginBottom: "0.6rem" }}>
+          <WatchOfficerCard onNavigate={(view) => onNavigate(view)} />
+        </div>
         <section className="glass-panel dashboard-widget-sidebar__block" style={{ padding: "0.6rem 0.8rem" }}>
       {statsErr ? (
         <p className="error" role="alert" style={{ margin: 0 }}>
