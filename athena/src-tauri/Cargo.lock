@@ -383,6 +383,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "geoconvert",
+ "hmac",
  "hnsw_rs",
  "image",
  "keepawake",

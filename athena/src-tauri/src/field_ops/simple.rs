@@ -15,6 +15,8 @@ const ALLOWED: &[(&str, usize)] = &[
     ("pressure_reading", 400),
     ("time_check", 400),
     ("nav_route", 8_000),
+    ("fed_post", 1_500),
+    ("fed_person", 2_500),
 ];
 
 fn limit_for(kind: &str) -> Result<usize, String> {

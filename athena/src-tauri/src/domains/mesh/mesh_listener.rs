@@ -1140,6 +1140,20 @@ async fn mesh_radio_main_loop(
                                 let _ = reply.send(Err(reason));
                                 continue;
                             }
+                            // Sign free text with the group key when the station is set to.
+                            // Structured sync packets are parsed by exact format, so they are
+                            // left as they are.
+                            let text = if mesh_logbook::is_logbook_mesh_text(&text)
+                                || mesh_calendar::is_calendar_mesh_text(&text)
+                                || text.starts_with("ATHREG1:")
+                            {
+                                text
+                            } else {
+                                crate::field_ops::trust::sign_if_enabled(
+                                    text,
+                                    chrono::Utc::now().timestamp(),
+                                )
+                            };
                             let idx = channel.clamp(0, 7);
                             let mesh_ch =
                                 MeshChannel::new(idx).expect("channel index clamped to 0..=7");

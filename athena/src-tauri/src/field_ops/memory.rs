@@ -85,6 +85,15 @@ fn publish(db: &crate::db::Database, app_data_dir: &Path, rec: &Record<MemoryNot
     crate::vector_index::index_document(db, &path_str, &title, None, &text)
 }
 
+/// Publish every note into the library. Used after notes arrive from another station.
+pub fn republish_all(db: &crate::db::Database, app_data_dir: &Path) {
+    for rec in store::list::<MemoryNote>(db, KIND).unwrap_or_default() {
+        if let Err(e) = publish(db, app_data_dir, &rec) {
+            eprintln!("[athena] could not publish group memory note {}: {e}", rec.id);
+        }
+    }
+}
+
 #[tauri::command]
 pub fn list_memory_notes(
     app: State<'_, AppState>,

@@ -3,6 +3,7 @@
 //! layer, and typed records in the shared [`store`].
 
 pub mod checkins;
+pub mod courier;
 pub mod intake;
 pub mod ledger;
 pub mod memory;
@@ -15,6 +16,7 @@ pub mod roster;
 pub mod simple;
 pub mod skills;
 pub mod store;
+pub mod trust;
 
 use crate::auth::{AuthSession, AuthenticatedPersonnel};
 

@@ -198,8 +198,56 @@ pub fn spawn_network_job(
             Err(_) => return,
         };
 
-        let trimmed = text.trim();
+        // Group-key check and duress word, before anything acts on the message.
+        let incoming = crate::field_ops::trust::inspect_incoming(
+            text.trim(),
+            chrono::Utc::now().timestamp(),
+        );
+        let trimmed = incoming.body.trim();
         let node_i64 = i64::from(from);
+        if incoming.duress {
+            // Raise the alarm here and carry on as normal, so the reply gives nothing away.
+            if let Ok(g) = db.lock() {
+                let who = g
+                    .mesh_profile_get_by_node(node_i64)
+                    .ok()
+                    .flatten()
+                    .map(|p| p.username)
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| format!("Node {from}"));
+                if let Ok(n) = g.command_notification_insert(
+                    "duress",
+                    "high",
+                    &format!("Duress signal from {who}"),
+                    Some("Their last message contained the duress word. Treat anything they send as sent under pressure, and do not reveal that you know."),
+                    None,
+                ) {
+                    let _ = app.emit(crate::mesh_listener::ATHENA_COMMAND_NOTIFICATION, &n);
+                }
+            }
+        }
+        if incoming.authenticity == crate::field_ops::trust::Authenticity::Invalid {
+            // Signed, but not with our key (or the clocks are more than half an hour apart).
+            // Log it for the operator and act on nothing.
+            if let Ok(g) = db.lock() {
+                let _ = g.mesh_chat_insert(
+                    &Uuid::new_v4().to_string(),
+                    node_i64,
+                    "remote",
+                    "chat",
+                    &format!("[SIGNATURE CHECK FAILED] {trimmed}"),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0),
+                );
+            }
+            let _ = app.emit(
+                MESH_NETWORK_CHAT_UPDATED,
+                MeshNetworkChatUpdatedPayload { node_id: from },
+            );
+            return;
+        }
         let sos_st = {
             let g = match db.lock() {
                 Ok(g) => g,

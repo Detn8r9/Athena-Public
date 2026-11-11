@@ -681,6 +681,7 @@ pub fn spawn_background_watch(app: tauri::AppHandle) {
             // The radio thread reads the silence plan from memory; load it before anything sends.
             if let Ok(db) = app.state::<AppState>().db.lock() {
                 crate::field_ops::radio_discipline::refresh_from_db(&db);
+                crate::field_ops::trust::refresh_from_db(&db);
             }
             // Let startup, migrations and the first login finish before the first check.
             std::thread::sleep(std::time::Duration::from_secs(90));

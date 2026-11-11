@@ -75,6 +75,7 @@ base64 = "0.22"
 tauri-plugin-shell = "2"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+hmac = "0.12"
 rand = "0.8"
 socket2 = "0.5"
 geoconvert = "1.0"
