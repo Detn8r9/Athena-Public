@@ -110,8 +110,8 @@ const FEATURE_CATALOG: Array<{
   {
     id: "feat-field-ops",
     title: "Field Ops",
-    subtitle: "Check-ins, duty roster, skills, newcomers, group memory, decisions, ledger",
-    keywords: ["field ops", "check-in", "roll call", "roster", "watch", "duty", "skills", "intake", "quarantine", "memory", "decision", "vote", "ledger", "barter"],
+    subtitle: "Guided protocols, patient charts, check-ins, duty roster, skills, newcomers, group memory",
+    keywords: ["field ops", "protocol", "first aid", "bleeding", "patient", "chart", "vitals", "check-in", "roll call", "roster", "watch", "duty", "skills", "intake", "quarantine", "memory", "decision", "vote", "ledger", "barter"],
     action: { type: "view", view: "field_ops" },
   },
   {

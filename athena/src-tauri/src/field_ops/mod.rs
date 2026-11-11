@@ -6,6 +6,7 @@ pub mod checkins;
 pub mod intake;
 pub mod ledger;
 pub mod memory;
+pub mod patients;
 pub mod roster;
 pub mod skills;
 pub mod store;
