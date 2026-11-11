@@ -6,7 +6,7 @@ use crate::auth::{authenticated_user, AuthSession};
 use crate::db::{InventoryItemRow, InventoryLogRow};
 use crate::AppState;
 
-fn require_inventory_list(session: &AuthSession) -> Result<crate::auth::AuthenticatedPersonnel, String> {
+pub(crate) fn require_inventory_list(session: &AuthSession) -> Result<crate::auth::AuthenticatedPersonnel, String> {
     let u = authenticated_user(session)?;
     if u.rank_level <= 1 {
         return Err("Insufficient rank to view inventory.".to_string());

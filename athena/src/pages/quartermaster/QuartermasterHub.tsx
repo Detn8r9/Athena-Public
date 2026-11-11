@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { ClipboardList, Package } from "lucide-react";
 import { useAuth } from "../../domains/auth/AuthContext";
+import { RunwayPanel } from "./RunwayPanel";
 import { DIRECTORATES, DIRECTORATE_LABELS, type Directorate } from "../../shared/orgStructure";
 
 type InventoryItemRow = {
@@ -363,6 +364,8 @@ export function QuartermasterHub({
           {loadErr}
         </p>
       ) : null}
+
+      {tab === "inventory" && !embedded ? <RunwayPanel /> : null}
 
       {tab === "inventory" ? (
         <section className="library-section glass-panel quartermaster-inventory-master">

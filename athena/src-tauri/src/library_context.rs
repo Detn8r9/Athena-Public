@@ -271,6 +271,64 @@ pub fn assemble_library_context(
     }
 }
 
+/// Passages shown per reply when there is no model to write an answer.
+const LIBRARY_ONLY_MAX_PASSAGES: usize = 4;
+/// Characters of each passage shown in a library-only reply.
+const LIBRARY_ONLY_PASSAGE_CHARS: usize = 900;
+
+/// Reply for when no AI model can run: the best-matching library passages, quoted directly.
+///
+/// The station must stay useful on weak hardware, on low power, or when the model runtime is
+/// down. Search needs only the small embedding and reranker models, so the operator still gets
+/// the right pages of their own documents. Returns `None` when nothing relevant was found.
+pub fn format_library_only_answer(
+    hits: &[HybridSearchHit],
+    reason: &str,
+) -> Option<(String, Vec<StreamLibrarySource>)> {
+    let assembled = assemble_library_context(hits, usize::MAX / 2);
+    if hits.is_empty() || assembled.sources.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    out.push_str("**The AI model is not available, so this is a direct search of your library.**\n\n");
+    let reason = reason.trim();
+    if !reason.is_empty() {
+        out.push_str(&format!("_{reason}_\n\n"));
+    }
+    out.push_str("Closest passages:\n\n");
+    let mut shown = 0usize;
+    for hit in hits {
+        let text = hit.expanded_text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if text.is_empty() {
+            continue;
+        }
+        let cut = truncate_at_char_boundary(&text, LIBRARY_ONLY_PASSAGE_CHARS);
+        let ellipsis = if cut.len() < text.len() { "…" } else { "" };
+        let page = hit
+            .page_number
+            .map(|p| format!(", page {p}"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "**{}. {}{}**\n\n> {}{}\n\n",
+            shown + 1,
+            title_for(hit),
+            page,
+            cut,
+            ellipsis
+        ));
+        shown += 1;
+        if shown >= LIBRARY_ONLY_MAX_PASSAGES {
+            break;
+        }
+    }
+    if shown == 0 {
+        return None;
+    }
+    let mut sources = assembled.sources;
+    sources.truncate(LIBRARY_ONLY_MAX_PASSAGES);
+    Some((out, sources))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +452,27 @@ mod tests {
         assert_eq!(out.blocks, 1);
         assert!(out.body.contains("CHILD ONE"));
         assert!(!out.body.contains("ppppp"));
+    }
+
+    #[test]
+    fn library_only_answer_quotes_passages_with_titles_and_pages() {
+        let hits = vec![
+            hit("water.pdf", "Boil water for one minute.", Some(4), None),
+            hit("radio.pdf", "Check in at 0700.", None, None),
+        ];
+        let (text, sources) =
+            format_library_only_answer(&hits, "Ollama is not running.").expect("answer");
+        assert!(text.contains("AI model is not available"));
+        assert!(text.contains("Ollama is not running."));
+        assert!(text.contains("**1. water, page 4**"));
+        assert!(text.contains("> Boil water for one minute."));
+        assert!(text.contains("**2. radio**"));
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn library_only_answer_is_none_without_hits() {
+        assert!(format_library_only_answer(&[], "down").is_none());
     }
 
     #[test]

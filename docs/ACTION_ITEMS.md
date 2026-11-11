@@ -43,3 +43,13 @@ Page numbers in citations only appear for PDFs added after the fix. To get them 
 ## 6. Review the survival feature list
 
 - [ ] Read `docs/SURVIVAL_GAME_CHANGERS.md` (S1 to S27) and mark each approve or deny. My suggested first six are S1 to S6.
+
+## 7. Test the two new survival features
+
+- [ ] **Library answers with no AI model (S6).** Quit Ollama, then ask a library question in Chat. Expected: instead of an error, a reply headed "The AI model is not available" that quotes the closest passages with their titles. If Chat refuses to send at all while Ollama is down, tell me; the screen may be checking for the model before the backend gets the question.
+- [ ] **Supply runway (S5).** Open Logistics Hub. A new "Supply runway" section sits above the inventory table. It will say "No estimates yet" until items have been reduced at least twice. Lower one item's quantity twice, press Refresh, and check that it shows a days-remaining figure. Change "Plan for N people" and check the figure scales.
+
+## 8. Hive mind and watch officer decisions
+
+- [ ] **Hive mind.** Approve the three-part plan in my last message (best-machine routing and job sharing first; pooled large model as an optional wired-only mode), or tell me what to change.
+- [ ] **Watch officer.** Approve the design (rules detect, AI explains and drafts, people approve), and tell me which actions, if any, it may take without asking.

@@ -34,6 +34,8 @@ mod indexer;
 mod inference;
 #[path = "domains/inventory/inventory.rs"]
 mod inventory;
+#[path = "domains/inventory/runway.rs"]
+mod runway;
 #[path = "domains/inventory/logistics_ai.rs"]
 mod logistics_ai;
 #[path = "domains/inventory/logistics_apply.rs"]
@@ -5562,7 +5564,37 @@ pub(crate) fn start_send_message_stream_for_user(
         return Ok(());
     }
     let models = load_models_for_inference(&config);
-    ensure_inference_ready(&config, &models)?;
+    if let Err(reason) = ensure_inference_ready(&config, &models) {
+        // No model can run (runtime down, no model installed, weak hardware). The station still
+        // answers from the library: search needs only the small embedding and reranker models.
+        if session_user.clearance_level > 0 && !skip_library_rag {
+            let db_arc = Arc::clone(&app.state::<AppState>().db);
+            let app_emit = app.clone();
+            let question = user_question.clone();
+            std::thread::spawn(move || {
+                let answer = db_arc
+                    .lock()
+                    .ok()
+                    .and_then(|db| db.hybrid_search(&question).ok())
+                    .and_then(|hits| library_context::format_library_only_answer(&hits, &reason));
+                match answer {
+                    Some((text, sources)) => {
+                        let _ = app_emit.emit(STREAM_SOURCES_EVENT, &sources);
+                        let _ = app_emit.emit(STREAM_CHUNK_EVENT, text);
+                    }
+                    None => {
+                        let _ = app_emit.emit(
+                            STREAM_ERROR_EVENT,
+                            format!("{reason} Nothing in your library matched this question either."),
+                        );
+                    }
+                }
+                let _ = app_emit.emit(STREAM_DONE_EVENT, ());
+            });
+            return Ok(());
+        }
+        return Err(reason);
+    }
 
     let session_user_id = session_user.id.clone();
     let is_guest = session_user.clearance_level <= 0;
@@ -6547,6 +6579,7 @@ pub fn run() {
             auth::ack_command_notification,
             auth::ack_all_command_notifications,
             inventory::list_inventory,
+            runway::get_supply_runway,
             inventory::add_inventory_item,
             inventory::update_inventory_quantity,
             inventory::update_inventory_category,
