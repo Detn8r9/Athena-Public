@@ -161,6 +161,9 @@ const DashboardView = lazy(() =>
 const CalendarView = lazy(() =>
   import("../pages/calendar/CalendarView").then((m) => ({ default: m.CalendarView })),
 );
+const FieldOpsHub = lazy(() =>
+  import("../pages/field-ops/FieldOpsHub").then((m) => ({ default: m.FieldOpsHub })),
+);
 const AcademyModule = lazy(() =>
   import("../pages/academy/AcademyModule").then((m) => ({ default: m.AcademyModule })),
 );
@@ -7375,6 +7378,7 @@ ${tag}` : tag;
             </div>
           ) : null}
           {currentView === "academy" ? <AcademyModule /> : null}
+          {currentView === "field_ops" ? <FieldOpsHub /> : null}
           {currentView === "archive" ? <ArchiveHub libraryError={libraryError} /> : null}
           {currentView === "data_acquisition" ? (
             <div className="home-view-scroll" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>

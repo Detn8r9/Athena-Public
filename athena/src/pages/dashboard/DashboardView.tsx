@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronUp,
   ChevronRight,
+  ClipboardCheck,
   HardDriveDownload,
   Map as MapIcon,
   MessageSquare,
@@ -134,6 +135,15 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     ),
   },
   {
+    key: "field_ops",
+    label: "Field Ops",
+    icon: (
+      <LauncherIcon>
+        <ClipboardCheck size={18} strokeWidth={2} aria-hidden />
+      </LauncherIcon>
+    ),
+  },
+  {
     key: "academy",
     label: "Academy",
     icon: (
@@ -214,7 +224,7 @@ type LauncherItem = { key: DashboardDestination; label: string; icon: ReactNode 
 const OPERATIONAL_SECTORS: Array<{ id: string; title: string; keys: DashboardDestination[] }> = [
   { id: "tactical", title: "Tactical Operations", keys: ["chat", "map", "comms_hub"] },
   { id: "intel", title: "Intelligence & Data", keys: ["academy", "archive", "data_acquisition", "marketplace"] },
-  { id: "command", title: "Command & Logistics", keys: ["logbook", "personnel", "calendar"] },
+  { id: "command", title: "Command & Logistics", keys: ["field_ops", "logbook", "personnel", "calendar"] },
 ];
 
 function formatUptime(sec: number): string {

@@ -108,6 +108,13 @@ const FEATURE_CATALOG: Array<{
     action: { type: "view", view: "calendar" },
   },
   {
+    id: "feat-field-ops",
+    title: "Field Ops",
+    subtitle: "Check-ins, duty roster, skills, newcomers, group memory, decisions, ledger",
+    keywords: ["field ops", "check-in", "roll call", "roster", "watch", "duty", "skills", "intake", "quarantine", "memory", "decision", "vote", "ledger", "barter"],
+    action: { type: "view", view: "field_ops" },
+  },
+  {
     id: "feat-academy",
     title: "Academy",
     subtitle: "Training and curriculum",

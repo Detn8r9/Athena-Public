@@ -1,0 +1,248 @@
+/* Field Ops workspace. Colours come only from theme tokens so every theme applies. */
+
+.fo-hub {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1rem 1.25rem 2rem;
+  max-width: 1180px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.fo-header h1 {
+  margin: 0;
+  font-size: 1.45rem;
+  color: var(--text);
+}
+
+.fo-header p {
+  margin: 0.2rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.fo-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.4rem;
+}
+
+.fo-tab {
+  font: inherit;
+  font-size: 0.86rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.fo-tab:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-solid) 80%, transparent);
+}
+
+.fo-tab[aria-selected="true"] {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 82%, var(--primary) 14%);
+}
+
+.fo-tab:focus-visible,
+.fo-input:focus-visible,
+.fo-hub select:focus-visible,
+.fo-hub textarea:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.fo-panel {
+  padding: 0.9rem 1rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.fo-panel h2 {
+  margin: 0;
+  font-size: 1.02rem;
+  color: var(--text);
+}
+
+.fo-panel h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--text);
+}
+
+.fo-lead {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  max-width: 70ch;
+}
+
+.fo-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: flex-end;
+}
+
+.fo-field {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.fo-field--grow {
+  flex: 1 1 14rem;
+}
+
+.fo-input,
+.fo-hub select,
+.fo-hub textarea {
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-solid) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  border-radius: 10px;
+  padding: 0.45rem 0.6rem;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.fo-hub textarea {
+  width: 100%;
+  min-height: 6.5rem;
+  resize: vertical;
+}
+
+.fo-input--narrow {
+  width: 6rem;
+}
+
+.fo-table-wrap {
+  overflow-x: auto;
+}
+
+.fo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+.fo-table th {
+  text-align: left;
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  white-space: nowrap;
+}
+
+.fo-table td {
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  color: var(--text);
+  vertical-align: top;
+}
+
+.fo-table tr:last-child td {
+  border-bottom: none;
+}
+
+.fo-muted {
+  color: var(--text-muted);
+}
+
+.fo-small {
+  font-size: 0.8rem;
+}
+
+.fo-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.fo-badge--bad {
+  color: var(--tertiary);
+  border-color: color-mix(in srgb, var(--tertiary) 55%, transparent);
+  background: color-mix(in srgb, var(--tertiary) 12%, transparent);
+}
+
+.fo-badge--warn {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.fo-badge--good {
+  color: var(--text);
+}
+
+.fo-error {
+  margin: 0;
+  color: var(--tertiary);
+  font-size: 0.86rem;
+}
+
+.fo-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.fo-cards {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.fo-card {
+  padding: 0.7rem 0.8rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.fo-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.fo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.fo-prewrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .fo-hub {
+    padding: 0.75rem 0.75rem 1.5rem;
+  }
+}
