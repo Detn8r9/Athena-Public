@@ -347,24 +347,56 @@ pub struct ChunkEmbedding {
 /// One expanded context block for hybrid retrieval + reranking (Phase 3).
 #[derive(Debug, Clone, Serialize)]
 pub struct HybridSearchHit {
+    /// Child chunk text (the passage that matched).
     pub expanded_text: String,
     pub display_title: Option<String>,
     pub page_number: Option<i64>,
     pub file_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp_start: Option<f64>,
+    /// Cross-encoder relevance logit when the reranker model is loaded, fused rank score otherwise.
+    pub score: f32,
+    /// Parent section this chunk belongs to, when the document was indexed with parent/child chunks.
+    #[serde(skip)]
+    pub parent_id: Option<i64>,
+    /// Text of the parent section, for context expansion when the model's window has room.
+    #[serde(skip)]
+    pub parent_text: Option<String>,
 }
 
-/// Reranked child chunks (with parent context) passed to the LLM for library RAG (`hybrid_search`).
-pub const HYBRID_SEARCH_TOP_CHUNKS: usize = 15;
+/// A reranked candidate plus the retrieval pipeline's verdict on it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScoredHybridHit {
+    #[serde(flatten)]
+    pub hit: HybridSearchHit,
+    /// True when the chunk cleared the relevance cutoff and would be offered to the model.
+    pub relevant: bool,
+    /// True when `score` came from the cross-encoder rather than fused rank.
+    pub reranked: bool,
+}
+
+/// Upper bound on chunks `hybrid_search` returns. How many reach the model is decided by the
+/// context budget in `assemble_library_context`.
+pub const HYBRID_SEARCH_TOP_CHUNKS: usize = 12;
+/// Without a cross-encoder there is no relevance score to cut on, so keep fewer.
+pub const HYBRID_SEARCH_TOP_CHUNKS_NO_RERANKER: usize = 6;
+
+/// Cross-encoder logit below which a chunk is treated as not answering the question at all.
+pub const HYBRID_RERANK_MIN_LOGIT: f32 = -5.0;
+/// A chunk must also be within this many logits of the best chunk for the query.
+pub const HYBRID_RERANK_MAX_GAP: f32 = 6.0;
+
+/// Relevance cutoff for cross-encoder scores: an absolute floor plus a gap to the best hit, so a
+/// strong match suppresses weak ones while a query with only moderate matches still returns them.
+pub fn hybrid_rerank_score_is_relevant(score: f32, top_score: f32) -> bool {
+    score >= HYBRID_RERANK_MIN_LOGIT && score >= top_score - HYBRID_RERANK_MAX_GAP
+}
 
 /// Row bundle for hybrid RAG diversification.
 #[derive(Debug, Clone)]
 struct HybridChunkRow {
     retrieval_text: String,
     chunk_text: String,
-    /// Populated from SQL for future parent-context expansion in hybrid RAG.
-    #[allow(dead_code)]
     parent_id: Option<i64>,
     file_path: String,
     page_start: Option<i64>,
@@ -827,9 +859,12 @@ fn with_sql_connection_busy_retries<T>(
 }
 
 impl Database {
-    /// Minimum cosine similarity required for semantic chunk retrieval.
-    /// Below this, the best match is often unrelated “nearest neighbor” noise.
-    const RAG_MIN_SIMILARITY_SCORE: f32 = 0.65;
+    /// Minimum cosine similarity for a chunk to be a semantic *candidate*.
+    ///
+    /// MiniLM-class sentence embeddings score a question against a passage that answers it at
+    /// roughly 0.3–0.6, so the previous 0.65 floor discarded most genuine matches. This floor only
+    /// removes clear noise; relevance is decided afterwards by the cross-encoder in `hybrid_search`.
+    pub const RAG_MIN_SIMILARITY_SCORE: f32 = 0.30;
 
     pub fn new(db_path: &Path) -> Result<Self, String> {
         ensure_sqlite_vec_auto_extension();
@@ -6234,8 +6269,7 @@ LIMIT ?2
         Ok(map)
     }
 
-    /// Reserved for expanding child hits with parent `chunk_text` in hybrid RAG (not wired yet).
-    #[allow(dead_code)]
+    /// Parent section text keyed by parent chunk id, for context expansion in hybrid RAG.
     fn load_parent_chunk_texts(
         conn: &Connection,
         parent_ids: &[i64],
@@ -6317,162 +6351,171 @@ LIMIT ?2
         out
     }
 
-    /// BM25 + vector union (top 50 each), cross-encoder rerank, interleaved pools, top-K child chunks with parent + child context for the LLM.
+    /// Hybrid library retrieval: FTS5 (BM25) and vector candidates, fused, then scored by the
+    /// cross-encoder reranker and filtered by a relevance cutoff.
+    ///
+    /// Hits come back in descending relevance. Only chunks that clear the cutoff are returned, so an
+    /// empty result means "nothing in the library answers this", not "search failed". Callers decide
+    /// how many hits fit the model's context window (see `assemble_library_context` in `lib.rs`).
     pub fn hybrid_search(&self, query: &str) -> Result<Vec<HybridSearchHit>, String> {
-        const TOP_K: usize = 50;
-        const POOL: i64 = 150;
-        const MAX_PER_FILE_POOL: usize = 4;
-        let winners = HYBRID_SEARCH_TOP_CHUNKS;
-        let mut fts_query = query
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| w.len() > 3)
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        if fts_query.is_empty() {
-            fts_query = query
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|w| !w.is_empty())
-                .collect::<Vec<_>>()
-                .join(" OR ");
-        }
-        let fts_raw = self.fts_top_child_chunk_ids_for_match_string(&fts_query, POOL)?;
-        let fts_ids = {
-            let conn = self.conn.lock().map_err(|e| e.to_string())?;
-            Self::diversify_child_ids_by_file_path(&conn, &fts_raw, TOP_K, MAX_PER_FILE_POOL)?
-        };
-        let semantic = self
-            .search_similar_chunks(query, POOL as usize)
-            .unwrap_or_default();
-        let sem_ids = Self::diversify_semantic_chunk_ids(&semantic, TOP_K, MAX_PER_FILE_POOL);
-        let mut seen = std::collections::HashSet::<i64>::new();
-        let mut ordered_ids: Vec<i64> = Vec::new();
-        let max_len = fts_ids.len().max(sem_ids.len());
-        for i in 0..max_len {
-            if i < fts_ids.len() {
-                let id = fts_ids[i];
-                if seen.insert(id) {
-                    ordered_ids.push(id);
-                }
-            }
-            if i < sem_ids.len() {
-                let id = sem_ids[i];
-                if seen.insert(id) {
-                    ordered_ids.push(id);
-                }
-            }
-        }
-        if ordered_ids.is_empty() {
+        Ok(self
+            .hybrid_search_scored(query)?
+            .into_iter()
+            .filter(|h| h.relevant)
+            .map(|h| h.hit)
+            .collect())
+    }
+
+    /// Same pipeline as [`Self::hybrid_search`] but returns every reranked candidate with its
+    /// `relevant` verdict. Used by the library search test box and retrieval diagnostics.
+    pub fn hybrid_search_scored(&self, query: &str) -> Result<Vec<ScoredHybridHit>, String> {
+        /// Candidates pulled from each arm before fusion.
+        const ARM_POOL: i64 = 60;
+        /// Candidates sent to the cross-encoder. Each pair costs one CPU inference pass, so this
+        /// bounds retrieval latency.
+        const RERANK_POOL: usize = 28;
+        /// Cap per file inside the rerank pool so one long document cannot crowd out the rest
+        /// before the cross-encoder has seen them.
+        const MAX_PER_FILE_POOL: usize = 10;
+        const RRF_K: f32 = 60.0;
+
+        let query = query.trim();
+        if query.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let row_map = Self::load_hybrid_chunk_rows(&conn, &ordered_ids)?;
-        let passages: Vec<String> = ordered_ids
-            .iter()
-            .map(|id| {
-                row_map
-                    .get(id)
-                    .map(|r| r.retrieval_text.clone())
-                    .unwrap_or_default()
-            })
-            .collect();
-        drop(conn);
-        let scores = crate::rerank::score_pairs_global(query, &passages)?;
-        if scores.len() != ordered_ids.len() {
-            return Err("reranker score count mismatch".to_string());
+
+        // Keyword arm: stopword-filtered terms first, raw tokens as a fallback for short queries.
+        let mut fts_ids = self.fts_top_child_chunk_ids(query, ARM_POOL)?;
+        if fts_ids.is_empty() {
+            let raw = query
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.chars().count() >= 2)
+                .map(|w| format!("\"{}\"", w.to_lowercase()))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            fts_ids = self.fts_top_child_chunk_ids_for_match_string(&raw, ARM_POOL)?;
         }
-        let mut ranked: Vec<(f32, i64)> = scores
+
+        // Semantic arm.
+        let sem_ids: Vec<i64> = self
+            .search_similar_chunks(query, ARM_POOL as usize)
+            .unwrap_or_default()
             .into_iter()
-            .zip(ordered_ids.into_iter())
+            .map(|c| c.id)
             .collect();
+
+        // Reciprocal rank fusion decides which candidates are worth a cross-encoder pass.
+        let mut fused: std::collections::HashMap<i64, f32> = std::collections::HashMap::new();
+        for (rank, id) in fts_ids.iter().enumerate() {
+            *fused.entry(*id).or_insert(0.0) += 1.0 / (RRF_K + rank as f32 + 1.0);
+        }
+        for (rank, id) in sem_ids.iter().enumerate() {
+            *fused.entry(*id).or_insert(0.0) += 1.0 / (RRF_K + rank as f32 + 1.0);
+        }
+        if fused.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut fused_order: Vec<(i64, f32)> = fused.into_iter().collect();
+        fused_order.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        let fused_ids: Vec<i64> = fused_order.iter().map(|(id, _)| *id).collect();
+        let fused_score: std::collections::HashMap<i64, f32> = fused_order.into_iter().collect();
+
+        let (pool_ids, row_map, parent_texts) = {
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            let pool_ids = Self::diversify_child_ids_by_file_path(
+                &conn,
+                &fused_ids,
+                RERANK_POOL,
+                MAX_PER_FILE_POOL,
+            )?;
+            let row_map = Self::load_hybrid_chunk_rows(&conn, &pool_ids)?;
+            let mut parent_ids: Vec<i64> = row_map.values().filter_map(|r| r.parent_id).collect();
+            parent_ids.sort_unstable();
+            parent_ids.dedup();
+            let parent_texts = Self::load_parent_chunk_texts(&conn, &parent_ids)?;
+            (pool_ids, row_map, parent_texts)
+        };
+        if pool_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Score. With the real cross-encoder the score is a relevance logit; without it we keep the
+        // fused rank so results are still ordered sensibly instead of by a hash.
+        let reranked = crate::rerank::global_is_onnx_loaded();
+        let scores: Vec<f32> = if reranked {
+            let passages: Vec<String> = pool_ids
+                .iter()
+                .map(|id| {
+                    row_map
+                        .get(id)
+                        .map(|r| r.retrieval_text.clone())
+                        .unwrap_or_default()
+                })
+                .collect();
+            let s = crate::rerank::score_pairs_global(query, &passages)?;
+            if s.len() != pool_ids.len() {
+                return Err("reranker score count mismatch".to_string());
+            }
+            s
+        } else {
+            pool_ids
+                .iter()
+                .map(|id| fused_score.get(id).copied().unwrap_or(0.0))
+                .collect()
+        };
+
+        let mut ranked: Vec<(f32, i64)> = scores.into_iter().zip(pool_ids.into_iter()).collect();
         ranked.sort_by(|a, b| {
             b.0.partial_cmp(&a.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        use std::collections::HashMap;
-        // Round-robin across files in rank order so one very strong document cannot occupy every slot
-        // after rerank (common when prior chat biased the query toward that file).
-        let mut by_file: Vec<(String, Vec<i64>)> = Vec::new();
-        let mut file_index: HashMap<String, usize> = HashMap::new();
-        for (_score, id) in &ranked {
-            let Some(row) = row_map.get(id) else {
-                continue;
-            };
-            let fp = row.file_path.clone();
-            if let Some(&idx) = file_index.get(&fp) {
-                by_file[idx].1.push(*id);
-            } else {
-                file_index.insert(fp.clone(), by_file.len());
-                by_file.push((fp, vec![*id]));
-            }
-        }
-        let mut top_ids: Vec<i64> = Vec::new();
-        let mut round: usize = 0;
-        while top_ids.len() < winners {
-            let mut any = false;
-            for (_, ids) in &by_file {
-                if let Some(id) = ids.get(round) {
-                    if !top_ids.contains(id) {
-                        top_ids.push(*id);
-                        any = true;
-                    }
-                    if top_ids.len() >= winners {
-                        break;
-                    }
-                }
-            }
-            if !any {
-                break;
-            }
-            round += 1;
-        }
-        if top_ids.len() < winners {
-            for (_score, id) in &ranked {
-                if top_ids.len() >= winners {
-                    break;
-                }
-                if top_ids.contains(id) {
-                    continue;
-                }
-                top_ids.push(*id);
-            }
-        }
-        if top_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut hits = Vec::new();
-        let mut seen_expanded: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for id in top_ids {
+        let top_score = ranked.first().map(|r| r.0).unwrap_or(f32::MIN);
+
+        let mut out: Vec<ScoredHybridHit> = Vec::new();
+        let mut seen_text: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (position, (score, id)) in ranked.into_iter().enumerate() {
             let Some(row) = row_map.get(&id) else {
                 continue;
             };
-            // Bypass parent expansion: send the raw child chunk text only.
-            let expanded_text = row.chunk_text.clone();
-            let preview_key = expanded_text
-                .chars()
-                .take(100)
-                .collect::<String>()
-                .to_lowercase()
+            // Near-duplicate chunks (same opening text) add nothing to the prompt.
+            let key: String = row
+                .chunk_text
                 .chars()
                 .filter(|c| !c.is_whitespace())
-                .collect::<String>();
-            if !seen_expanded.insert(preview_key) {
+                .take(120)
+                .flat_map(|c| c.to_lowercase())
+                .collect();
+            if !seen_text.insert(key) {
                 continue;
             }
-            let ts = row.timestamp_start;
-            hits.push(HybridSearchHit {
-                expanded_text,
-                display_title: row.display_title.clone(),
-                page_number: row.page_start,
-                file_path: row.file_path.clone(),
-                timestamp_start: ts,
+            let relevant = out.iter().filter(|h| h.relevant).count() < HYBRID_SEARCH_TOP_CHUNKS
+                && if reranked {
+                    hybrid_rerank_score_is_relevant(score, top_score)
+                } else {
+                    position < HYBRID_SEARCH_TOP_CHUNKS_NO_RERANKER
+                };
+            out.push(ScoredHybridHit {
+                hit: HybridSearchHit {
+                    expanded_text: row.chunk_text.clone(),
+                    display_title: row.display_title.clone(),
+                    page_number: row.page_start,
+                    file_path: row.file_path.clone(),
+                    timestamp_start: row.timestamp_start,
+                    score,
+                    parent_id: row.parent_id,
+                    parent_text: row
+                        .parent_id
+                        .and_then(|pid| parent_texts.get(&pid).cloned()),
+                },
+                relevant,
+                reranked,
             });
         }
-        for (i, h) in hits.iter().enumerate() {
-            let preview: String = h.expanded_text.chars().take(200).collect();
-            println!("[athena] Retrieved Chunk {}: {}", i + 1, preview);
-        }
-        Ok(hits)
+        Ok(out)
     }
 
     /// Distinct library file paths surfaced by BM25 (in order) then vector search, for source pills / multi-doc awareness.

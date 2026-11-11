@@ -157,6 +157,9 @@ mod radio_manager;
 #[path = "domains/vector/rag_indexer.rs"]
 mod rag_indexer;
 mod library_rag_gate;
+mod library_context;
+#[cfg(test)]
+mod library_eval;
 #[path = "domains/queue/remote_queue.rs"]
 mod remote_queue;
 #[path = "domains/ingestion/satellite_region_download.rs"]
@@ -239,7 +242,7 @@ use config::{
 };
 use db::{
     extract_keywords, AcademyProgressRow, ArchiveWatchRootRow, CalendarEvent, ChunkEmbedding,
-    HybridSearchHit, IndexStats, IndexedFile, LogbookEntry, RagCounts, TacticalMeshNodeLocation,
+    IndexStats, IndexedFile, LogbookEntry, RagCounts, TacticalMeshNodeLocation,
     TacticalPointOfInterest,
 };
 use inference::{
@@ -4219,33 +4222,6 @@ fn build_context_from_docs(docs: &[IndexedFile], query: &str, max_chars: usize) 
     out
 }
 
-/// Short snippet from each doc (for fallback when keyword/semantic return nothing).
-fn build_recent_docs_context(
-    docs: &[IndexedFile],
-    max_chars_per_doc: usize,
-    max_total: usize,
-) -> String {
-    let mut out = String::new();
-    let mut total = 0;
-    for d in docs {
-        let Some(ref t) = d.text_content else {
-            continue;
-        };
-        let snippet = if t.len() <= max_chars_per_doc {
-            t.as_str()
-        } else {
-            &t[..max_chars_per_doc]
-        };
-        let block = format!("\n--- From: {} ---\n{}...\n", d.name, snippet);
-        if total + block.len() > max_total {
-            break;
-        }
-        out.push_str(&block);
-        total += block.len();
-    }
-    out
-}
-
 /// Build context string from semantically similar chunks (vector search results).
 fn build_semantic_context(chunks: &[ChunkEmbedding], max_chars: usize) -> String {
     let mut out = String::new();
@@ -4376,69 +4352,6 @@ fn build_context_rrf(
         }
     }
     (out, source_names)
-}
-
-fn format_hybrid_library_context(hits: &[HybridSearchHit]) -> String {
-    let mut out = String::new();
-    for (i, h) in hits.iter().enumerate() {
-        let title = h.display_title.as_deref().unwrap_or("Untitled");
-        let page = h
-            .page_number
-            .map(|p| format!(" (page {p})"))
-            .unwrap_or_default();
-        let ts = h
-            .timestamp_start
-            .filter(|t| t.is_finite() && *t >= 0.0)
-            .map(|t| format!(" [~{:.1}s]", t))
-            .unwrap_or_default();
-        out.push_str(&format!(
-            "--- Source {}: {}{}{} ---\n{}\n\n",
-            i + 1,
-            title,
-            page,
-            ts,
-            h.expanded_text
-        ));
-    }
-    out
-}
-
-/// Single-turn RAG text for chat console: same RRF keyword + semantic merge as main chat (no history).
-pub(crate) fn console_chat_library_context(db: &Database, query: &str) -> String {
-    if library_rag_gate::should_skip_library_rag(query, false) {
-        return String::new();
-    }
-    if let Ok(hits) = db.hybrid_search(query) {
-        if !hits.is_empty() {
-            return format!(
-                "Relevant excerpts from the user's library (addresses and property details are from the user's files):\n{}",
-                format_hybrid_library_context(&hits)
-            );
-        }
-    }
-    let mut docs = db
-        .search_text_content(query, RRF_KEYWORD_LIMIT)
-        .unwrap_or_default();
-    sort_docs_learned_first(&mut docs);
-    let chunks = db
-        .search_similar_chunks(query, RRF_SEMANTIC_LIMIT)
-        .unwrap_or_default();
-    let (rrf, _) = build_context_rrf(&docs, &chunks, query, false);
-    if !rrf.is_empty() {
-        return format!(
-            "Relevant excerpts from the user's library (addresses and property details are from the user's files):\n{}",
-            rrf
-        );
-    }
-        let recent = db.get_recent_text_files(5).unwrap_or_default();
-    let fallback = build_recent_docs_context(&recent, 600, 4000);
-    if !fallback.is_empty() {
-        return format!(
-            "Recent library documents (use if the question might be answered here):\n{}",
-            fallback
-        );
-    }
-    "No relevant chunks found in the local library.".to_string()
 }
 
 /// Previous conversation turns (user + assistant) for context. Omit the current user message.
@@ -4644,25 +4557,23 @@ fn build_retrieval_from_combined_text(combined: &str, message: &str) -> (String,
         .iter()
         .any(|tok| m.contains(tok));
         let msg_kw = keywords(message);
-        if referential || msg_kw.len() < 3 || message.trim().len() < 28 {
-            return true;
-        }
-        let ctx_kw = keywords(combined);
-        let overlap = msg_kw.iter().filter(|w| ctx_kw.contains(*w)).count();
-        // Topic shift: if overlap is low, don't drag in stale keywords/titles.
-        overlap >= 2
+        // A self-contained question searches best on its own words. Earlier turns are only added
+        // when the question cannot stand alone ("what about it?", "and the second one?").
+        let _ = combined;
+        referential || msg_kw.len() < 3 || message.trim().len() < 28
     }
 
     let words: Vec<&str> = combined
         .split_whitespace()
         .filter(|w| w.len() >= 3 && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '\''))
-        .take(80)
+        .take(40)
         .collect();
     let context = words.join(" ");
     if context.is_empty() || !should_include_prior_context(&context, message) {
         (message.to_string(), String::new())
     } else {
-        let retrieval_query = format!("{} {}", context, message);
+        // Current question first so it dominates keyword, embedding and reranker scoring.
+        let retrieval_query = format!("{} {}", message, context);
         let conversation_context_prompt = format!(
             "\n\nConversation context (use to resolve \"it\"/\"that\" and what the user is referring to): {}",
             context
@@ -4768,12 +4679,24 @@ fn send_message(
                 )
             };
 
+            let excerpt_budget = library_context::library_context_char_budget(
+                model_options.map(|o| o.num_ctx),
+                message_for_model.len() + mentioned_section.len(),
+            );
             let keyword_semantic_section = match db.hybrid_search(retrieval_query) {
-                Ok(hits) if !hits.is_empty() => format!(
-                    "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below):\n{}",
-                    format_hybrid_library_context(&hits)
-                ),
-                _ => {
+                Ok(hits) => {
+                    let assembled = library_context::assemble_library_context(&hits, excerpt_budget);
+                    if assembled.body.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below, and name the source you used):\n{}",
+                            assembled.body
+                        )
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[athena] hybrid_search failed, using rank-fusion fallback: {e}");
                     let mut docs = db
                         .search_text_content(retrieval_query, RRF_KEYWORD_LIMIT)
                         .unwrap_or_default();
@@ -4784,16 +4707,7 @@ fn send_message(
                     let (rrf_context, _source_names) =
                         build_context_rrf(&docs, &semantic_chunks, retrieval_query, false);
                     if rrf_context.is_empty() {
-                        let recent = db.get_recent_text_files(3).unwrap_or_default();
-                        let fallback = build_recent_docs_context(&recent, 600, 2000);
-                        if fallback.is_empty() {
-                            String::new()
-                        } else {
-                            format!(
-                                "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
-                                fallback
-                            )
-                        }
+                        String::new()
                     } else {
                         format!(
                             "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below):\n{}",
@@ -4859,26 +4773,12 @@ pub(crate) const STREAM_SOURCES_EVENT: &str = "athena:stream-sources";
 /// Emitted when `ai_inference_sleep` toggles (lock screen or header power control).
 pub const AI_INFERENCE_SLEEP_EVENT: &str = "athena:ai-inference-sleep-changed";
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamLibrarySource {
     pub file_path: String,
     pub display_title: String,
     pub page_number: Option<u32>,
-}
-
-pub(crate) fn hybrid_hit_to_stream_source(h: &db::HybridSearchHit) -> StreamLibrarySource {
-    StreamLibrarySource {
-        file_path: h.file_path.clone(),
-        display_title: h.display_title.clone().unwrap_or_else(|| {
-            std::path::Path::new(&h.file_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Library")
-                .to_string()
-        }),
-        page_number: h.page_number.and_then(|p| u32::try_from(p).ok()),
-    }
 }
 
 fn stream_sources_from_rrf(
@@ -5606,6 +5506,7 @@ fn send_message_stream(
     images: Option<Vec<String>>,
     skip_library_rag: Option<bool>,
     conversation_mode: Option<bool>,
+    retrieval_text: Option<String>,
 ) -> Result<(), String> {
     let session_user = auth::authenticated_user(&session)?;
     start_send_message_stream_for_user(
@@ -5621,6 +5522,7 @@ fn send_message_stream(
         images,
         skip_library_rag.unwrap_or(false),
         conversation_mode.unwrap_or(false),
+        retrieval_text,
     )
 }
 
@@ -5638,10 +5540,17 @@ pub(crate) fn start_send_message_stream_for_user(
     images: Option<Vec<String>>,
     skip_library_rag: bool,
     conversation_mode: bool,
+    retrieval_text: Option<String>,
 ) -> Result<(), String> {
+    // What the user typed, without the instructions and context the client wraps around it.
+    // Library search, the chitchat gate and `/athena` detection all run on this, never on `message`.
+    let user_question = retrieval_text
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| library_context::strip_client_prompt_wrapping(&message));
     // Client hint OR heuristic gate (greetings / chitchat / short voice turns).
     let skip_library_rag = skip_library_rag
-        || library_rag_gate::should_skip_library_rag(&message, conversation_mode);
+        || library_rag_gate::should_skip_library_rag(&user_question, conversation_mode);
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     if config.ai_inference_sleep.unwrap_or(false) {
@@ -5757,6 +5666,10 @@ pub(crate) fn start_send_message_stream_for_user(
         let message = enrich_with_vision(&message);
 
         let (message_for_model, athena_ref_mode) = parse_athena_ref_message(&message);
+        // `/athena` is typed at the start of the question; the wrapped `message` starts with the
+        // mode prefix, so detect it on the clean question as well.
+        let (user_question, athena_from_question) = parse_athena_ref_message(&user_question);
+        let athena_ref_mode = athena_ref_mode || athena_from_question;
 
         // Build retrieval query and conversation prompt. Prefer full saved messages over context_summary
         // so we get maximum keyword signal (exact address, names) for follow-ups.
@@ -5772,32 +5685,32 @@ pub(crate) fn start_send_message_stream_for_user(
                 if let Some(chat) = chat_opt {
                     if chat.messages.len() >= 2 {
                         let (rq, cp) =
-                            build_retrieval_from_saved_messages(&chat.messages, &message_for_model);
+                            build_retrieval_from_saved_messages(&chat.messages, &user_question);
                         let lq = rq.clone();
                         (rq, cp, lq)
                     } else {
                         let summary = chat.context_summary.unwrap_or_default();
                         if !summary.trim().is_empty() {
-                            let retrieval_query = format!("{} {}", summary, message_for_model);
+                            let retrieval_query = format!("{} {}", summary, user_question);
                             let conversation_context_prompt = format!(
                                 "\n\nConversation context (use to resolve \"it\"/\"that\" and what the user is referring to): {}",
                                 summary
                             );
                             let library_lookup_query =
-                                format!("{} {}", message_for_model, summary);
+                                format!("{} {}", user_question, summary);
                             (retrieval_query, conversation_context_prompt, library_lookup_query)
                         } else {
-                            let m = message_for_model.clone();
+                            let m = user_question.clone();
                             (m.clone(), String::new(), m)
                         }
                     }
                 } else {
-                    let (rq, cp) = build_retrieval_from_history(history_ref, &message_for_model);
+                    let (rq, cp) = build_retrieval_from_history(history_ref, &user_question);
                     let lq = rq.clone();
                     (rq, cp, lq)
                 }
             } else {
-                let (rq, cp) = build_retrieval_from_history(history_ref, &message_for_model);
+                let (rq, cp) = build_retrieval_from_history(history_ref, &user_question);
                 let lq = rq.clone();
                 (rq, cp, lq)
             };
@@ -5829,23 +5742,42 @@ pub(crate) fn start_send_message_stream_for_user(
                     (String::new(), rule, Vec::<StreamLibrarySource>::new())
                 }
             } else {
+                // Everything that competes with library excerpts for the context window.
+                let memory_window = config.memory_messages.unwrap_or(20) as usize;
+                let committed_chars: usize = history_ref
+                    .iter()
+                    .rev()
+                    .take(memory_window.max(1))
+                    .map(|h| h.content.len())
+                    .sum::<usize>()
+                    + message_for_model.len()
+                    + conversation_context_prompt.len();
+                let library_budget = library_context::library_context_char_budget(
+                    model_opts_for_stream.map(|o| o.num_ctx),
+                    committed_chars,
+                );
+
                 let mentioned = db
                     .get_indexed_files_by_name_mentioned(&format!(
                         "{} {}",
-                        retrieval_query, message_for_model
+                        retrieval_query, user_question
                     ))
                     .unwrap_or_default();
                 let mentioned_section = if mentioned.is_empty() {
                     String::new()
                 } else {
-                    let ctx = build_context_from_docs(&mentioned, &retrieval_query, 4000);
+                    let ctx = build_context_from_docs(
+                        &mentioned,
+                        &retrieval_query,
+                        (library_budget / 2).min(4000),
+                    );
                     format!(
                         "\n\nThe user referred to or asked about the following document(s); use them to answer:\n{}\n\n",
                         ctx
                     )
                 };
 
-                let has_conversation_context = retrieval_query != message_for_model;
+                let has_conversation_context = retrieval_query != user_question;
                 let keyword_limit = if has_conversation_context {
                     RRF_KEYWORD_LIMIT_WITH_CONTEXT
                 } else {
@@ -5857,101 +5789,33 @@ pub(crate) fn start_send_message_stream_for_user(
                     RRF_SEMANTIC_LIMIT
                 };
 
+                const LIBRARY_EXCERPTS_HEADER: &str = "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below, and name the source you used). Addresses and property details here are from the user's Library—cite them as such. The \"current location\" line elsewhere is from Settings for general area only.\n";
+                let excerpt_budget = library_budget.saturating_sub(mentioned_section.len());
                 let (keyword_semantic_section, library_citations) =
                     match db.hybrid_search(&library_lookup_query) {
-                        Ok(hits) if !hits.is_empty() => {
-                            let mut cites: Vec<StreamLibrarySource> = hits
-                                .iter()
-                                .map(hybrid_hit_to_stream_source)
-                                .collect();
-                            let mut cite_paths: std::collections::HashSet<String> =
-                                cites.iter().map(|c| c.file_path.clone()).collect();
-                            if let Ok(extra) =
-                                db.distinct_library_source_paths(&library_lookup_query, 12)
-                            {
-                                for (path, title) in extra {
-                                    if cites.len() >= 12 {
-                                        break;
-                                    }
-                                    if !cite_paths.insert(path.clone()) {
-                                        continue;
-                                    }
-                                    cites.push(StreamLibrarySource {
-                                        file_path: path.clone(),
-                                        display_title: title.unwrap_or_else(|| {
-                                            std::path::Path::new(&path)
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or("Library")
-                                                .to_string()
-                                        }),
-                                        page_number: None,
-                                    });
-                                }
+                        Ok(hits) => {
+                            // Hits are relevance-filtered and ranked; keep what fits the model's
+                            // context window. Sources are exactly the documents that made it in.
+                            let assembled =
+                                library_context::assemble_library_context(&hits, excerpt_budget);
+                            eprintln!(
+                                "[athena] library retrieval: {} relevant chunk(s), {} block(s) in prompt, budget {} chars",
+                                hits.len(),
+                                assembled.blocks,
+                                excerpt_budget
+                            );
+                            if assembled.body.is_empty() {
+                                (String::new(), Vec::new())
+                            } else {
+                                (
+                                    format!("{LIBRARY_EXCERPTS_HEADER}{}", assembled.body),
+                                    assembled.sources,
+                                )
                             }
-                            if cite_paths.len() < 3 && cites.len() < 12 {
-                                if let Ok(more) = db.distinct_child_chunk_file_paths_breadth(
-                                    &cite_paths,
-                                    (12 - cites.len()).min(8),
-                                ) {
-                                    for (path, title) in more {
-                                        if cites.len() >= 12 {
-                                            break;
-                                        }
-                                        if !cite_paths.insert(path.clone()) {
-                                            continue;
-                                        }
-                                        cites.push(StreamLibrarySource {
-                                            file_path: path.clone(),
-                                            display_title: title.unwrap_or_else(|| {
-                                                std::path::Path::new(&path)
-                                                    .file_name()
-                                                    .and_then(|n| n.to_str())
-                                                    .unwrap_or("Library")
-                                                    .to_string()
-                                            }),
-                                            page_number: None,
-                                        });
-                                    }
-                                }
-                            }
-                            let mut body = format_hybrid_library_context(&hits);
-                            let distinct_hit_files: std::collections::HashSet<&str> =
-                                hits.iter().map(|h| h.file_path.as_str()).collect();
-                            if distinct_hit_files.len() == 1 {
-                                let exclude: std::collections::HashSet<String> =
-                                    hits.iter().map(|h| h.file_path.clone()).collect();
-                                if let Ok(others) = db.distinct_child_chunk_file_paths_breadth(&exclude, 2)
-                                {
-                                    for (path, title) in others {
-                                        match db.first_child_chunk_text_preview(&path, 650) {
-                                            Ok(snip) if !snip.trim().is_empty() => {
-                                                let label = title.unwrap_or_else(|| {
-                                                    std::path::Path::new(&path)
-                                                        .file_name()
-                                                        .and_then(|n| n.to_str())
-                                                        .unwrap_or("Document")
-                                                        .to_string()
-                                                });
-                                                body.push_str(&format!(
-                                                    "\n---\nOther indexed library document: {}.\nExcerpt:\n{}\n",
-                                                    label, snip
-                                                ));
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-                            (
-                                format!(
-                                    "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below). Addresses and property details here are from the user's Library—cite them as such. The \"current location\" line elsewhere is from Settings for general area only.\n{}",
-                                    body
-                                ),
-                                cites,
-                            )
                         }
-                        _ => {
+                        Err(e) => {
+                            // Reranker or index failure: fall back to keyword + vector rank fusion.
+                            eprintln!("[athena] hybrid_search failed, using rank-fusion fallback: {e}");
                             let mut docs = db
                                 .search_text_content(&library_lookup_query, keyword_limit)
                                 .unwrap_or_default();
@@ -5966,24 +5830,16 @@ pub(crate) fn start_send_message_stream_for_user(
                                 has_conversation_context,
                             );
                             let cites = stream_sources_from_rrf(&docs, &semantic_chunks, &source_names);
-                            let section = if rrf_context.is_empty() {
-                                let recent = db.get_recent_text_files(3).unwrap_or_default();
-                                let fallback = build_recent_docs_context(&recent, 600, 2000);
-                                if fallback.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(
-                                        "\n\nRecent library documents (use if the user's question might be answered here):\n{}",
-                                        fallback
-                                    )
-                                }
+                            if rrf_context.is_empty() {
+                                (String::new(), Vec::new())
                             } else {
-                                format!(
-                                    "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below). Addresses and property details here are from the user's Library—cite them as such. The \"current location\" line elsewhere is from Settings for general area only.\n{}",
-                                    rrf_context
-                                )
-                            };
-                            (section, cites)
+                                let cut = rrf_context
+                                    .char_indices()
+                                    .nth(excerpt_budget)
+                                    .map(|(i, _)| &rrf_context[..i])
+                                    .unwrap_or(rrf_context.as_str());
+                                (format!("{LIBRARY_EXCERPTS_HEADER}{cut}"), cites)
+                            }
                         }
                     };
 
@@ -6181,6 +6037,11 @@ pub(crate) fn start_send_message_stream_from_lan_args(
         .or_else(|| args.get("conversationMode"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let retrieval_text = args
+        .get("retrieval_text")
+        .or_else(|| args.get("retrievalText"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     start_send_message_stream_for_user(
         app,
         session_user,
@@ -6194,6 +6055,7 @@ pub(crate) fn start_send_message_stream_from_lan_args(
         images,
         skip_library_rag,
         conversation_mode,
+        retrieval_text,
     )
 }
 

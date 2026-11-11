@@ -397,6 +397,25 @@ pub async fn ingest_local_document(
         return Ok(document_id);
     }
 
+    // PDFs: keep the page each passage came from so citations can say "page 12".
+    let pdf_pages: Option<Vec<(u32, String)>> = if ext_plain.as_deref() == Some("pdf") {
+        let path_for_pages = source_path.to_path_buf();
+        tokio::task::spawn_blocking(move || pdf_extract::extract_text_by_pages(&path_for_pages).ok())
+            .await
+            .ok()
+            .flatten()
+            .map(|pages| {
+                pages
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, text)| ((i + 1) as u32, text))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|pages| pages.len() > 1 && pages.iter().any(|(_, t)| !t.trim().is_empty()))
+    } else {
+        None
+    };
+
     let (text_for_preview, total_chunks, skip_vector_index) = if uses_chunk_worker {
         let path_for_read = source_path.to_path_buf();
         let title = doc_title.clone();
@@ -419,6 +438,16 @@ pub async fn ingest_local_document(
                 return Err(msg);
             }
         }
+    } else if let Some(pages) = pdf_pages.as_ref() {
+        let text = pages
+            .iter()
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let words = chunking::words_from_page_map(pages);
+        let plan = chunking::build_parent_child_plan(&words, &doc_title);
+        let n: usize = plan.iter().map(|p| 1 + p.children.len()).sum();
+        (text, n, false)
     } else {
         let path_for_read = source_path.to_path_buf();
         let text = match tokio::task::spawn_blocking(move || read_document_to_text(&path_for_read)).await {
@@ -472,7 +501,7 @@ pub async fn ingest_local_document(
             Arc::clone(&state.db),
             path_for_db.clone(),
             doc_title.clone(),
-            None,
+            pdf_pages,
             text_for_preview.clone(),
         )
         .await?;
@@ -632,7 +661,7 @@ pub fn search_rag_chunks_blocking(
     query: &str,
     limit: usize,
 ) -> Result<Vec<RagSearchResult>, String> {
-    const MIN_SCORE: f32 = 0.65;
+    const MIN_SCORE: f32 = crate::Database::RAG_MIN_SIMILARITY_SCORE;
     let cap = limit.clamp(1, 50);
     let query_embedding = embeddings::embed_text(query);
     let hits = db.search_similar_chunks(query, cap)?;

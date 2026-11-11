@@ -28,6 +28,15 @@ pub fn replace_global(reranker: Arc<Reranker>) {
     }
 }
 
+/// True when the real cross-encoder model is loaded. When false, `score_pairs_global` returns
+/// hash-based placeholder scores that must not be used for ranking.
+pub fn global_is_onnx_loaded() -> bool {
+    GLOBAL
+        .get()
+        .and_then(|lock| lock.read().ok().map(|g| g.is_onnx_loaded()))
+        .unwrap_or(false)
+}
+
 pub fn score_pairs_global(query: &str, passages: &[String]) -> Result<Vec<f32>, String> {
     if passages.is_empty() {
         return Ok(Vec::new());

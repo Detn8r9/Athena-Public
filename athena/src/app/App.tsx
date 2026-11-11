@@ -558,23 +558,6 @@ interface ChatMessage {
   sources?: LibraryStreamSource[];
 }
 
-interface RagSearchChunk {
-  chunk_id: string;
-  document_id: string;
-  chunk_index: number;
-  content: string;
-  score: number;
-  source?: string;
-  content_type?: string;
-}
-
-interface RagSearchFilters {
-  file_types?: string[];
-  source_contains?: string;
-  content_type?: string;
-  tags?: string[];
-}
-
 interface RadioLogEntry {
   id: string;
   direction: string;
@@ -5398,50 +5381,8 @@ ${tag}` : tag;
     } else {
       setVisionIdentifying(false);
     }
-    let ragContextString = "";
-    let ragSources: string[] = [];
-    // Quick Conversation skips library lookup for latency. Deep Conversation may use a short retrieval.
-    // Greetings / chitchat still skip even in Deep.
-    if ((!inConversation || thinkMode === "deep") && !skipLibraryRag) {
-      try {
-        let ragFilters: RagSearchFilters | undefined;
-        try {
-          const raw = window.localStorage.getItem("athena-rag-search-filters-v1");
-          if (raw) {
-            ragFilters = JSON.parse(raw) as RagSearchFilters;
-          }
-        } catch {
-          ragFilters = undefined;
-        }
-        const ragResults = await invoke<RagSearchChunk[]>("search_rag_chunks", {
-          query: text,
-          limit: inConversation ? 2 : 3,
-          filters: ragFilters,
-        });
-        if (Array.isArray(ragResults) && ragResults.length > 0) {
-          ragContextString = ragResults
-            .map((r) => (typeof r.content === "string" ? r.content.trim() : ""))
-            .filter((s) => s.length > 0)
-            .join("\n\n");
-          ragSources = Array.from(
-            new Set(
-              ragResults
-                .map((r) =>
-                  typeof r.source === "string" && r.source.trim().length > 0
-                    ? r.source.trim()
-                    : typeof r.document_id === "string"
-                      ? r.document_id.trim()
-                      : "",
-                )
-                .filter((s) => s.length > 0),
-            ),
-          );
-        }
-      } catch (_) {
-        // Graceful fallback: continue without RAG context.
-      }
-    }
-
+    // Library retrieval happens once, in the backend, on the user's own words (`retrievalText`
+    // below). The client no longer runs its own search or pastes excerpts into the prompt.
     let spatialContextString = "";
     if (!inConversation) {
       try {
@@ -5471,23 +5412,23 @@ ${tag}` : tag;
       }
     }
 
+    // Question first, background after: the model weighs the question most and the backend can
+    // always recover it. The background is only useful for map / radio questions.
+    const backgroundParts: string[] = [];
+    if (spatialContextString) backgroundParts.push(`Map context:\n${spatialContextString}`);
+    if (radioTrafficContextString) {
+      backgroundParts.push(`Recent radio traffic:\n${radioTrafficContextString}`);
+    }
     const promptForModel =
-      (ragContextString || spatialContextString || radioTrafficContextString
-        ? `Use the following document context, spatial map context, and recent radio traffic context to answer the user's question.\n\nDocument Context: ${ragContextString || "(none)"}\n\nSpatial Map Context: ${spatialContextString || "(none)"}\n\nRecent Radio Traffic Context: ${radioTrafficContextString || "(none)"}\n\nQuestion: ${text}`
-        : text);
+      backgroundParts.length > 0
+        ? `${text}\n\n[Background attached automatically by ATHENA. Use it only if the question is about the map or radio traffic.]\n${backgroundParts.join("\n\n")}`
+        : text;
     const promptWithMode = `${modelPromptPrefix}${promptForModel}${visionNote}`;
 
-    const localSourcesLabel: LibraryStreamSource[] =
-      ragSources.length > 0
-        ? ragSources.map((s) => ({ filePath: "", displayTitle: s, pageNumber: null }))
-        : ragContextString || spatialContextString || radioTrafficContextString
-          ? [{ filePath: "", displayTitle: "Local Library", pageNumber: null }]
-          : [];
     const userMessage: ChatMessage = {
       role: "user",
       content: userFacingText + attachNote + (visionImages.length > 0 ? " 📷" : ""),
       timestamp: Date.now(),
-      ...(localSourcesLabel.length > 0 ? { sources: localSourcesLabel } : {}),
     };
     const currentMessages = messagesRef.current;
     if (text.toLowerCase() === "/rag-count") {
@@ -5556,7 +5497,6 @@ ${tag}` : tag;
         role: "assistant",
         content: "",
         timestamp: Date.now(),
-        ...(localSourcesLabel.length > 0 ? { sources: localSourcesLabel } : {}),
       },
     ]);
     setAttachments([]);
@@ -5584,6 +5524,7 @@ ${tag}` : tag;
         images: visionImages.length > 0 ? visionImages : null,
         skipLibraryRag,
         conversationMode: inConversation,
+        retrievalText: text,
       }).catch((e) => {
         const errMsg = e != null ? String(e) : "Send failed";
         logError(errMsg);

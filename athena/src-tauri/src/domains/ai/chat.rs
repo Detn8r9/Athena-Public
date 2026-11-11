@@ -1,4 +1,4 @@
-//! Console chat: RAG via [`crate::rag_indexer::search_rag_chunks_blocking`], then streaming inference
+//! Console chat: library retrieval via [`crate::Database::hybrid_search`], then streaming inference
 //! with Tauri events. Orchestration uses `tokio` + `spawn_blocking` so the async runtime is not used
 //! for blocking SQLite, embeddings, or HTTP stream reads.
 
@@ -24,26 +24,6 @@ pub const CONSOLE_STREAM_ERROR_EVENT: &str = "athena:console-stream-error";
 #[serde(rename_all = "camelCase")]
 pub struct ConsoleStreamPhasePayload {
     pub phase: String,
-}
-
-fn format_rag_context(results: &[crate::rag_indexer::RagSearchResult]) -> String {
-    if results.is_empty() {
-        return "No semantic RAG chunks matched the query in the vector index.".to_string();
-    }
-    let mut out =
-        String::from("Retrieved chunks (embedding + sqlite-vec retrieval; use as primary evidence):\n");
-    for (i, r) in results.iter().enumerate() {
-        let body: String = r.content.chars().take(8000).collect();
-        out.push_str(&format!(
-            "--- Source {} score={:.4} doc={} chunk={} ---\n{}\n\n",
-            i + 1,
-            r.score,
-            r.document_id,
-            r.chunk_index,
-            body
-        ));
-    }
-    out
 }
 
 /// Fire-and-forget console stream: validates input, then schedules async work.
@@ -107,25 +87,12 @@ pub fn start_chat_console_stream(app: tauri::AppHandle, message: String) -> Resu
                 return Ok::<_, String>((String::new(), Vec::<crate::StreamLibrarySource>::new()));
             }
             let db = db_bg.lock().map_err(|e| e.to_string())?;
-            let rag_hits = crate::rag_indexer::search_rag_chunks_blocking(&*db, &q_bg, 12)?;
-            let rag_text = format_rag_context(&rag_hits);
-            let hybrid_block = crate::console_chat_library_context(&*db, &q_bg);
-            let rag_block = format!(
-                "{}\n\nKeyword_and_hybrid_library_context:\n{}",
-                rag_text, hybrid_block
-            );
-            // Only emit sources when the semantic RAG thresholding produced at least one usable chunk.
-            let cites: Vec<crate::StreamLibrarySource> = if rag_hits.is_empty() {
-                Vec::new()
-            } else {
-                match db.hybrid_search(&q_bg) {
-                    Ok(hits) if !hits.is_empty() => hits
-                        .iter()
-                        .map(crate::hybrid_hit_to_stream_source)
-                        .collect(),
-                    _ => Vec::new(),
-                }
-            };
+            // One retrieval pass: reranked, relevance-filtered, sized to the default context window.
+            let hits = db.hybrid_search(&q_bg)?;
+            let budget = crate::library_context::library_context_char_budget(None, q_bg.len());
+            let assembled = crate::library_context::assemble_library_context(&hits, budget);
+            let rag_block = assembled.body;
+            let cites = assembled.sources;
             Ok::<_, String>((rag_block, cites))
         })
         .await;
@@ -157,7 +124,7 @@ If you are not using local sources, do NOT thank, cite, or credit the provided c
         );
 
         let user_prompt = format!(
-            "Semantic_RAG_context:\n{}\n\nUser_query:\n{}",
+            "Library excerpts (may be empty):\n{}\n\nUser question:\n{}",
             rag_context, q_string
         );
 

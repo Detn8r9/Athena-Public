@@ -22,14 +22,18 @@ pub fn index_document(
     index_pages: Option<&[(u32, String)]>,
     full_text: &str,
 ) -> Result<(), String> {
-    let words: Vec<WordPage> = if let Some(pages) = index_pages {
-        if pages.is_empty() {
-            words_from_plain_text(full_text)
-        } else {
-            words_from_page_map(pages)
+    let words: Vec<WordPage> = match index_pages {
+        // A single "page" means the extractor could not split the document (or it really is one
+        // page). Either way a page number would be noise: every citation would read "page 1".
+        Some([(_, only)]) => {
+            if full_text.trim().is_empty() {
+                words_from_plain_text(only)
+            } else {
+                words_from_plain_text(full_text)
+            }
         }
-    } else {
-        words_from_plain_text(full_text)
+        Some(pages) if !pages.is_empty() => words_from_page_map(pages),
+        _ => words_from_plain_text(full_text),
     };
 
     let plan = build_parent_child_plan(&words, document_title);
