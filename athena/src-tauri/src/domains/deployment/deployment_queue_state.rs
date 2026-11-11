@@ -68,7 +68,12 @@ pub async fn save_queue_state(path: &Path, state: &DeploymentQueuePersistence) -
             .await
             .map_err(|e| e.to_string())?;
     }
-    let tmp = path.with_extension("json.tmp");
+    // Each write gets its own temp file. The background persister and an explicit `flush()` can
+    // run at the same time; with one shared temp name, the second writer truncated the first
+    // writer's file before it was renamed into place, leaving empty or missing state on disk.
+    static WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
     let data = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
     let mut f = tokio::fs::File::create(&tmp).await.map_err(|e| e.to_string())?;
     use tokio::io::AsyncWriteExt;
@@ -76,7 +81,10 @@ pub async fn save_queue_state(path: &Path, state: &DeploymentQueuePersistence) -
     f.flush().await.map_err(|e| e.to_string())?;
     f.sync_all().await.map_err(|e| e.to_string())?;
     drop(f);
-    tokio::fs::rename(&tmp, path).await.map_err(|e| e.to_string())?;
+    if let Err(e) = tokio::fs::rename(&tmp, path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.to_string());
+    }
     Ok(())
 }
 
