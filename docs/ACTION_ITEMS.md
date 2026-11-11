@@ -39,3 +39,7 @@ Page numbers in citations only appear for PDFs added after the fix. To get them 
 ## 5. Review the new proposals
 
 - [ ] Read `docs/IMPROVEMENT_PROPOSALS.md` and mark each item approve or deny.
+
+## 6. Review the survival feature list
+
+- [ ] Read `docs/SURVIVAL_GAME_CHANGERS.md` (S1 to S27) and mark each approve or deny. My suggested first six are S1 to S6.
