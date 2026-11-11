@@ -5,9 +5,11 @@
 pub mod checkins;
 pub mod courier;
 pub mod intake;
+pub mod intel;
 pub mod ledger;
 pub mod memory;
 pub mod mesh_query;
+pub mod modem;
 pub mod needs;
 pub mod patients;
 pub mod picture;
@@ -43,6 +45,7 @@ pub fn watch_findings(db: &crate::db::Database, now: i64) -> Vec<crate::watch_of
     out.extend(intake::findings(&intake::load(db), now));
     out.extend(needs::findings(&needs::report_from_db(db)));
     out.extend(sensors::findings(&sensors::load_with_latest(db), now));
+    out.extend(intel::findings(&intel::load(db), now));
     if let Some(budget) = power::budget_from_db(db) {
         out.extend(power::findings(&budget));
     }

@@ -325,6 +325,19 @@ fn resolve_model(base_url: &str, preferred: Option<&str>) -> String {
     picked
 }
 
+/// Transcribe already-recorded audio (any sample rate, mono) with the local Whisper service.
+/// Used for radio intercepts recorded to a file.
+pub fn transcribe_samples(
+    whisper_base_url: &str,
+    model: Option<&str>,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<String, String> {
+    let (wav, _peak, _duration_ms) = samples_to_wav_16k(samples, sample_rate)?;
+    let model_id = resolve_model(whisper_base_url, model);
+    whisper_http_transcribe(whisper_base_url, &model_id, wav)
+}
+
 #[tauri::command]
 pub fn start_ptt_recording(state: State<'_, Arc<PttRecordState>>) -> Result<(), String> {
     {
