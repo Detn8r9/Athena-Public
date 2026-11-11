@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { athenaInvoke } from "../shared/ipc/athenaIpc";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -26,6 +27,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("[ErrorBoundary]", error, errorInfo.componentStack);
+    // Record it where Settings → Troubleshooting can show it; never let logging itself throw.
+    const where = this.props.sectionLabel ? ` (${this.props.sectionLabel})` : "";
+    const stack = (errorInfo.componentStack ?? "").split("\n").slice(0, 6).join(" ").trim();
+    void athenaInvoke("append_error_log", {
+      message: `[render crash${where}] ${error.message} ${stack}`.slice(0, 1200),
+    }).catch(() => {});
   }
 
   private handleReload = () => {
@@ -36,17 +43,20 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     if (this.state.hasError) {
       return (
         <div className="error-boundary-fallback" role="alert">
-          <p className="error-boundary-title">Component crashed</p>
-          {this.props.sectionLabel ? (
-            <p className="error-boundary-detail">This part of the UI failed ({this.props.sectionLabel}).</p>
-          ) : (
-            <p className="error-boundary-detail">This part of the UI failed to render.</p>
-          )}
+          <p className="error-boundary-title">
+            {this.props.sectionLabel
+              ? `${this.props.sectionLabel} ran into a problem`
+              : "This screen ran into a problem"}
+          </p>
+          <p className="error-boundary-detail">
+            The rest of ATHENA is still running and your data is safe. Try again, or switch to
+            another screen. The details were saved to the error log in Settings → Troubleshooting.
+          </p>
           {this.state.error ? (
             <pre className="error-boundary-message">{this.state.error.message}</pre>
           ) : null}
           <button type="button" className="error-boundary-reload" onClick={this.handleReload}>
-            Reload
+            Try again
           </button>
         </div>
       );

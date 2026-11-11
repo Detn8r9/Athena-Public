@@ -6249,6 +6249,9 @@ ${tag}` : tag;
             document.body
           )}
         <div className="app-content-stage">
+          {/* Keyed by view: a crash in one workspace shows a recoverable message there while the
+              header and navigation keep working, and switching views clears it. */}
+          <ErrorBoundary key={currentView} sectionLabel={APP_VIEW_LABELS[currentView]}>
           <Suspense fallback={<ViewChunkFallback />}>
           {currentView === "home" ? (
             <div className="home-view-scroll">
@@ -7479,6 +7482,7 @@ ${tag}` : tag;
             />
           ) : null}
           </Suspense>
+          </ErrorBoundary>
         </div>
       </div>
       <Suspense fallback={null}>
