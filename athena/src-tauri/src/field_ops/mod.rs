@@ -6,7 +6,9 @@ pub mod checkins;
 pub mod intake;
 pub mod ledger;
 pub mod memory;
+pub mod needs;
 pub mod patients;
+pub mod power;
 pub mod roster;
 pub mod skills;
 pub mod store;
@@ -32,5 +34,9 @@ pub fn watch_findings(db: &crate::db::Database, now: i64) -> Vec<crate::watch_of
     out.extend(checkins::findings(&plans, now));
     out.extend(skills::findings(&skills::load(db)));
     out.extend(intake::findings(&intake::load(db), now));
+    out.extend(needs::findings(&needs::report_from_db(db)));
+    if let Some(budget) = power::budget_from_db(db) {
+        out.extend(power::findings(&budget));
+    }
     out
 }

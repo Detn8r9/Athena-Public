@@ -3,6 +3,7 @@ import "./fieldOps.css";
 
 const ProtocolsTab = lazy(() => import("./ProtocolsTab").then((m) => ({ default: m.ProtocolsTab })));
 const PatientsTab = lazy(() => import("./PatientsTab").then((m) => ({ default: m.PatientsTab })));
+const SuppliesTab = lazy(() => import("./SuppliesTab").then((m) => ({ default: m.SuppliesTab })));
 const CheckinsTab = lazy(() => import("./CheckinsTab").then((m) => ({ default: m.CheckinsTab })));
 const RosterTab = lazy(() => import("./RosterTab").then((m) => ({ default: m.RosterTab })));
 const SkillsTab = lazy(() => import("./SkillsTab").then((m) => ({ default: m.SkillsTab })));
@@ -14,6 +15,7 @@ const LedgerTab = lazy(() => import("./LedgerTab").then((m) => ({ default: m.Led
 const TABS = [
   { id: "protocols", label: "Protocols", Component: ProtocolsTab },
   { id: "patients", label: "Patients", Component: PatientsTab },
+  { id: "supplies", label: "Supplies & power", Component: SuppliesTab },
   { id: "checkins", label: "Check-ins", Component: CheckinsTab },
   { id: "roster", label: "Duty roster", Component: RosterTab },
   { id: "skills", label: "Skills", Component: SkillsTab },
