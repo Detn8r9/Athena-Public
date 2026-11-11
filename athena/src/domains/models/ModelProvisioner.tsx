@@ -81,7 +81,7 @@ export function ModelProvisioner({ hubActiveTab }: ModelProvisionerProps) {
       if (!tier) return;
       if (tierOnDisk(tier)) return;
       addToQueue([tierToJob(tier)]);
-      showToast(`Queued ${tier.label} for models/chat.`);
+      showToast(`Queued ${tier.label} for user/models/chat.`);
     },
     [addToQueue, showToast, tierOnDisk],
   );
@@ -92,11 +92,11 @@ export function ModelProvisioner({ hubActiveTab }: ModelProvisionerProps) {
       if (!family?.tiers.length) return;
       const fresh = family.tiers.filter((t) => !tierOnDisk(t));
       if (fresh.length === 0) {
-        showToast("Every tier for this family is already in models/chat.");
+        showToast("Every tier for this family is already in user/models/chat.");
         return;
       }
       addToQueue(fresh.map(tierToJob));
-      showToast(`Queued ${fresh.length} GGUF file${fresh.length === 1 ? "" : "s"} for models/chat.`);
+      showToast(`Queued ${fresh.length} GGUF file${fresh.length === 1 ? "" : "s"} for user/models/chat.`);
     },
     [addToQueue, showToast, tierOnDisk],
   );
@@ -110,7 +110,7 @@ export function ModelProvisioner({ hubActiveTab }: ModelProvisionerProps) {
       ) : null}
       <p className="model-provisioner__intro">
         <strong>Click a tier</strong> to add it to the download queue. Files use raw HTTP into{" "}
-        <code>models/chat/</code> (same machinery as tactical packages). Tiers that already exist on disk are grayed
+        <code>user/models/chat/</code> (same machinery as tactical packages). Tiers that already exist on disk are grayed
         out and cannot be queued again.
       </p>
 
@@ -152,7 +152,7 @@ export function ModelProvisioner({ hubActiveTab }: ModelProvisionerProps) {
                         tierBandClass(badge.band) +
                         (installed ? " model-provisioner__tier-box--installed" : "")
                       }
-                      title={installed ? "Already in models/chat" : "Add to download queue"}
+                      title={installed ? "Already in user/models/chat" : "Add to download queue"}
                       onClick={() => queueTier(family.id, index)}
                       disabled={installed}
                     >

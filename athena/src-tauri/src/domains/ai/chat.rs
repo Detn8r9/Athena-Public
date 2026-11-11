@@ -90,16 +90,22 @@ pub fn start_chat_console_stream(app: tauri::AppHandle, message: String) -> Resu
             return;
         }
 
-        let _ = app_emit.emit(
-            CONSOLE_STREAM_PHASE_EVENT,
-            ConsoleStreamPhasePayload {
-                phase: "searching".to_string(),
-            },
-        );
+        let skip_rag = crate::library_rag_gate::should_skip_library_rag(&q_string, false);
+        if !skip_rag {
+            let _ = app_emit.emit(
+                CONSOLE_STREAM_PHASE_EVENT,
+                ConsoleStreamPhasePayload {
+                    phase: "searching".to_string(),
+                },
+            );
+        }
 
         let db_bg = Arc::clone(&db_arc);
         let q_bg = q_string.clone();
         let rag_prepare = tokio::task::spawn_blocking(move || {
+            if crate::library_rag_gate::should_skip_library_rag(&q_bg, false) {
+                return Ok::<_, String>((String::new(), Vec::<crate::StreamLibrarySource>::new()));
+            }
             let db = db_bg.lock().map_err(|e| e.to_string())?;
             let rag_hits = crate::rag_indexer::search_rag_chunks_blocking(&*db, &q_bg, 12)?;
             let rag_text = format_rag_context(&rag_hits);
@@ -159,10 +165,12 @@ If you are not using local sources, do NOT thank, cite, or credit the provided c
             ChatMessage {
                 role: "system".to_string(),
                 content: system_prompt,
+            images: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: user_prompt,
+            images: None,
             },
         ];
 

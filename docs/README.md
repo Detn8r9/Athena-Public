@@ -6,6 +6,7 @@ All paths below are relative to the **repository root** (parent of `athena/`).
 
 | Document | Contents |
 |----------|----------|
+| [`FEATURE_PROGRESS.md`](FEATURE_PROGRESS.md) | Paused / incomplete features (Conversation voice, etc.) — resume notes |
 | [`product/PLATFORM_COMPATIBILITY.md`](product/PLATFORM_COMPATIBILITY.md) | OS-specific behavior (device metrics, fullscreen, etc.) |
 | [`plans/omnibus-usb-export-plan.md`](plans/omnibus-usb-export-plan.md) | Planned encrypted USB backup notes (separate from shipped **Aegis Protocol** tiered export) |
 

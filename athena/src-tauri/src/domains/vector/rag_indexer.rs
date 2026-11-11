@@ -13,7 +13,6 @@ use crate::AppState;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
-use tauri::Manager;
 use tauri::State;
 use uuid::Uuid;
 
@@ -526,11 +525,11 @@ pub async fn download_knowledge_package(
     }
 
     let total_bytes = response.content_length().unwrap_or(0);
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Could not resolve app data directory: {e}"))?;
-    let packages_dir = app_data_dir.join("knowledge_packages");
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app_handle)
+        .map_err(|e| format!("Could not resolve Athena data directory: {e}"))?;
+    let packages_dir = crate::athena_paths::AthenaPaths::new(&app_data_dir)
+        .user_library_dir()
+        .join("knowledge_packages");
     fs::create_dir_all(&packages_dir)
         .map_err(|e| format!("Failed to create package directory: {e}"))?;
 
@@ -684,11 +683,8 @@ pub async fn search_rag_chunks(
 pub async fn list_rag_documents(
     app_handle: tauri::AppHandle,
 ) -> Result<Vec<RagDocumentSummary>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    let db_path = app_data_dir.join("athena_index.db");
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app_handle).map_err(|e| e.to_string())?;
+    let db_path = crate::athena_paths::AthenaPaths::new(&app_data_dir).resolve_db_path();
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(

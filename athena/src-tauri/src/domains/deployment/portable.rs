@@ -23,6 +23,7 @@ use crate::config::{effective_embedding_folder, effective_reranker_folder, load_
 use crate::db::Database;
 use crate::map_manager_download;
 use crate::{compute_watcher_folders, kiwix_downloads_dir};
+use crate::athena_paths::AthenaPaths;
 
 /// Aegis Protocol manual export sizes (Roman field theme).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +160,43 @@ pub struct AegisPreflightProgressEvent {
 }
 
 fn chat_models_dir(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join("models").join("chat")
+    AthenaPaths::new(app_data_dir).user_chat_models_dir()
+}
+
+fn host_db_path(app_data_dir: &Path) -> PathBuf {
+    AthenaPaths::new(app_data_dir).resolve_db_path()
+}
+
+/// Prefer `user/models/<kind>/<name>`, then `app/models/<kind>/<name>`, then legacy flat `models/…`.
+fn resolve_model_pack_dir(paths: &AthenaPaths, kind: &str, name: &str) -> PathBuf {
+    let user = paths.user_models_dir().join(kind).join(name);
+    if user.is_dir() {
+        return user;
+    }
+    let app = paths.app_models_dir().join(kind).join(name);
+    if app.is_dir() {
+        return app;
+    }
+    let legacy = paths.root.join("models").join(kind).join(name);
+    if legacy.is_dir() {
+        return legacy;
+    }
+    user
+}
+
+fn usb_athena_paths(dest_root: &Path) -> AthenaPaths {
+    AthenaPaths::new(dest_root.join("data"))
+}
+
+/// Copy host `AthenaData/app` (bundled defaults, including default Ollama seed) onto the USB data root.
+fn copy_host_app_tree_to_usb(app_data_dir: &Path, usb_data: &Path) -> Result<(), String> {
+    let _ = crate::athena_paths::ensure_layout(usb_data);
+    let src = AthenaPaths::new(app_data_dir).app_dir();
+    let dst = AthenaPaths::new(usb_data).app_dir();
+    if src.is_dir() {
+        crate::athena_paths::copy_tree(&src, &dst)?;
+    }
+    Ok(())
 }
 
 fn pick_smallest_chat_model(chat_dir: &Path) -> Result<Option<(PathBuf, u64)>, String> {
@@ -196,7 +233,7 @@ fn copy_single_chat_model_to_usb(
     io: &mut ExportIoReporter,
     frac: f32,
 ) -> Result<(), String> {
-    let dst_dir = usb_data.join("models").join("chat");
+    let dst_dir = usb_data.join("user").join("models").join("chat");
     fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
     let name = src
         .file_name()
@@ -224,7 +261,7 @@ fn copy_chat_models_dir_to_usb(
     if !src.is_dir() {
         return Err(format!("Chat model folder not found: {}", src.display()));
     }
-    let dst = usb_data.join("models").join("chat");
+    let dst = usb_data.join("user").join("models").join("chat");
     fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
     let total = tree_file_bytes(src)?.max(1);
     let mut done = 0u64;
@@ -715,7 +752,7 @@ fn ensure_example_region_proximity_pmtiles(
     let (min_lon, min_lat, max_lon, max_lat) =
         approx_bbox_for_radius_miles(center_lon, center_lat, radius_miles);
 
-    let out_dir = dest_root.join("data").join("maps");
+    let out_dir = dest_root.join("data").join("user").join("maps");
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out = out_dir.join("example_region_25mi.pmtiles");
 
@@ -724,7 +761,7 @@ fn ensure_example_region_proximity_pmtiles(
         Some(s) => s,
         None if require_local_basemap => {
             return Err(
-                "No local offline basemap (.pmtiles) found under data/maps. Download a small basemap first, then retry Outpost export."
+                "No local offline basemap (.pmtiles) found under data/user/maps (or legacy data/maps). Download a small basemap first, then retry Outpost export."
                     .to_string(),
             );
         }
@@ -768,7 +805,7 @@ fn dir_contains_extension(dir: &Path, ext_lc: &str) -> bool {
 }
 
 fn usb_has_offline_map_artifact(usb_data: &Path) -> bool {
-    let maps = usb_data.join("maps");
+    let maps = usb_data.join("user").join("maps");
     dir_contains_extension(&maps, "pmtiles") || dir_contains_extension(&maps, "mbtiles")
 }
 
@@ -1655,10 +1692,14 @@ fn verify_usb_export(
     rr_name: &str,
 ) -> Result<(), String> {
     let usb_data = dest_root.join("data");
-    let emb_src = app_data_dir.join("models").join("embeddings").join(emb_name);
-    let rr_src = app_data_dir.join("models").join("rerankers").join(rr_name);
-    let emb_dst = usb_data.join("models").join("embeddings").join(emb_name);
-    let rr_dst = usb_data.join("models").join("rerankers").join(rr_name);
+    let emb_src = AthenaPaths::new(app_data_dir).user_embeddings_dir().join(emb_name);
+    let rr_src = AthenaPaths::new(app_data_dir).user_rerankers_dir().join(rr_name);
+    let emb_dst = usb_athena_paths(dest_root)
+        .user_embeddings_dir()
+        .join(emb_name);
+    let rr_dst = usb_athena_paths(dest_root)
+        .user_rerankers_dir()
+        .join(rr_name);
 
     let is_outpost = export_type == "outpost"
         || export_type == "essentials"
@@ -1719,8 +1760,8 @@ fn verify_usb_export(
         }
     }
 
-    let db_src = app_data_dir.join("athena_index.db");
-    let db_dst = usb_data.join("athena_index.db");
+    let db_src = host_db_path(app_data_dir);
+    let db_dst = usb_data.join("user").join("db").join("athena_index.db");
 
     if export_type == "citadel" || export_type == "complete" || export_type == "absolute" {
         if db_src.is_file() {
@@ -1770,17 +1811,20 @@ fn verify_usb_export(
                 );
             }
         }
-        // Outpost checklist: one chat model + minimal offline map (app/launchers checked below).
-        let chat_dst = usb_data.join("models").join("chat");
-        if !dir_contains_extension(&chat_dst, "gguf") {
+        // Outpost checklist: bundled app Ollama seed and/or one chat .gguf + minimal offline map.
+        let chat_dst = usb_data.join("user").join("models").join("chat");
+        let app_ollama = usb_data.join("app").join("models").join("ollama");
+        let has_gguf = dir_contains_extension(&chat_dst, "gguf");
+        let has_app_ollama = crate::athena_paths::ollama_store_has_model_blobs(&app_ollama);
+        if !has_gguf && !has_app_ollama {
             return Err(
-                "Verification failed: Outpost USB has no chat .gguf under data/models/chat. Download a chat model on the host and re-export."
+                "Verification failed: Outpost USB has neither a chat .gguf under data/user/models/chat nor a bundled Ollama seed under data/app/models/ollama. Download a chat model or seed app/models/ollama on the host, then re-export."
                     .to_string(),
             );
         }
         if !usb_has_offline_map_artifact(&usb_data) {
             return Err(
-                "Verification failed: Outpost USB has no offline map (.pmtiles/.mbtiles) under data/maps. Download a small basemap first, then re-export."
+                "Verification failed: Outpost USB has no offline map (.pmtiles/.mbtiles) under data/user/maps. Download a small basemap first, then re-export."
                     .to_string(),
             );
         }
@@ -1791,11 +1835,11 @@ fn verify_usb_export(
         || export_type == "absolute";
     if is_citadel {
         // Sister Server checklist: models tree, library mirrors when host had watch folders.
-        let chat_src = app_data_dir.join("models").join("chat");
-        let chat_dst = usb_data.join("models").join("chat");
+        let chat_src = chat_models_dir(app_data_dir);
+        let chat_dst = usb_data.join("user").join("models").join("chat");
         if dir_contains_extension(&chat_src, "gguf") && !dir_contains_extension(&chat_dst, "gguf") {
             return Err(
-                "Verification failed: Sister Server USB is missing chat models under data/models/chat."
+                "Verification failed: Sister Server USB is missing chat models under data/user/models/chat."
                     .to_string(),
             );
         }
@@ -1820,7 +1864,7 @@ fn verify_usb_export(
         }
         if usb_has_offline_map_artifact(app_data_dir) && !usb_has_offline_map_artifact(&usb_data) {
             return Err(
-                "Verification failed: Sister Server USB has no offline map artifacts under data/maps."
+                "Verification failed: Sister Server USB has no offline map artifacts under data/user/maps."
                     .to_string(),
             );
         }
@@ -1878,7 +1922,7 @@ fn execute_scorched_wipe(
 
     close_db_for_disk_wipe(db)?;
 
-    let db_path = app_data_dir.join("athena_index.db");
+    let db_path = host_db_path(app_data_dir);
     remove_sqlite_sidecar_files(&db_path);
 
     let app_data_canon = fs::canonicalize(app_data_dir).ok();
@@ -2655,20 +2699,15 @@ pub fn aegis_export_preflight(
     let cfg = load_config(&app_data_dir);
     let emb_name = effective_embedding_folder(&cfg);
     let rr_name = effective_reranker_folder(&cfg);
-    let emb_src = app_data_dir
-        .join("models")
-        .join("embeddings")
-        .join(&emb_name);
-    let rr_src = app_data_dir
-        .join("models")
-        .join("rerankers")
-        .join(&rr_name);
+    let host = AthenaPaths::new(&app_data_dir);
+    let emb_src = resolve_model_pack_dir(&host, "embeddings", &emb_name);
+    let rr_src = resolve_model_pack_dir(&host, "rerankers", &rr_name);
     let chat_dir = chat_models_dir(&app_data_dir);
 
     let launch_m = bundled_payload_launchers_bytes(app);
     let bundled_launchers_bytes = launch_m.bytes;
     let slim_sqlite_bytes = compute_slim_db_export_bytes(db)?;
-    let db_path = app_data_dir.join("athena_index.db");
+    let db_path = host_db_path(&app_data_dir);
     let example_region_extract_estimate_bytes = EXAMPLE_REGION_USB_EXTRACT_ESTIMATE_BYTES;
     let example_region_r = example_region_reserved_bytes();
     let kiwix_str = kiwix_downloads_dir(&app_data_dir)
@@ -3145,7 +3184,7 @@ fn copy_offline_maps_to_usb(
     if !src.is_dir() {
         return Ok(());
     }
-    let dst = usb_data.join("maps");
+    let dst = usb_data.join("user").join("maps");
     fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
     let skip_ref: &dyn Fn(&Path) -> bool = if skip_satellite {
         &skip_satellite_map_file
@@ -3262,7 +3301,7 @@ fn copy_full_database_to_usb(
     io: &mut ExportIoReporter,
     phase_frac: f32,
 ) -> Result<(), String> {
-    let db_src = app_data_dir.join("athena_index.db");
+    let db_src = host_db_path(app_data_dir);
     if !db_src.is_file() {
         eprintln!(
             "[athena] usb export: database missing at {}",
@@ -3271,7 +3310,7 @@ fn copy_full_database_to_usb(
         return Ok(());
     }
     io.emit_phase(app, "Copying full database…", phase_frac);
-    let db_dst = usb_data.join("athena_index.db");
+    let db_dst = usb_data.join("user").join("db").join("athena_index.db");
     let len = fs::metadata(&db_src).map_err(|e| e.to_string())?.len();
     fs::copy(&db_src, &db_dst).map_err(|e| e.to_string())?;
     io.note_file_bytes(app, "Copying full database…", phase_frac + 0.02, len);
@@ -3448,7 +3487,9 @@ fn export_expedition_to_usb(
 ) -> Result<(), String> {
     let usb_data = dest_root.join("data");
     fs::create_dir_all(&usb_data).map_err(|e| e.to_string())?;
-    let models_root = usb_data.join("models");
+    let _ = crate::athena_paths::ensure_layout(&usb_data);
+    copy_host_app_tree_to_usb(app_data_dir, &usb_data)?;
+    let models_root = usb_data.join("user").join("models");
     let emb_dst = models_root.join("embeddings").join(emb_name);
     let rr_dst = models_root.join("rerankers").join(rr_name);
     if let Some(p) = emb_dst.parent() {
@@ -3533,7 +3574,7 @@ fn export_expedition_to_usb(
         );
     }
 
-    let db_src = app_data_dir.join("athena_index.db");
+    let db_src = host_db_path(app_data_dir);
     if db_src.is_file() {
         let db_sz = fs::metadata(&db_src).map_err(|e| e.to_string())?.len();
         if db_sz <= expedition_remaining_bytes(budget_bytes, io) {
@@ -3659,7 +3700,7 @@ fn export_expedition_to_usb(
     let cap = expedition_remaining_bytes(budget_bytes, io);
     tier2_copy_payload_priority_fill_within_budget(app, dest_root, io, cap)?;
 
-    let usb_maps = usb_data.join("maps");
+    let usb_maps = usb_data.join("user").join("maps");
     fs::create_dir_all(&usb_maps).map_err(|e| e.to_string())?;
     copy_satellite_map_archives_greedy(app_data_dir, &usb_maps, app, io, budget_bytes)?;
 
@@ -3710,8 +3751,9 @@ pub fn export_athena_to_usb(
     }
 
     io.emit_phase(app, "Preparing USB folders…", 0.04);
-    fs::create_dir_all(dest_root.join("data")).map_err(|e| e.to_string())?;
-    fs::create_dir_all(dest_root.join("models")).map_err(|e| e.to_string())?;
+    let usb_data_prep = dest_root.join("data");
+    fs::create_dir_all(&usb_data_prep).map_err(|e| e.to_string())?;
+    let _ = crate::athena_paths::ensure_layout(&usb_data_prep);
     fs::create_dir_all(dest_root.join("documents")).map_err(|e| e.to_string())?;
 
     eprintln!(
@@ -3762,14 +3804,9 @@ pub fn export_athena_to_usb(
     let cfg = load_config(&app_data_dir);
     let emb_name = effective_embedding_folder(&cfg);
     let rr_name = effective_reranker_folder(&cfg);
-    let emb_src = app_data_dir
-        .join("models")
-        .join("embeddings")
-        .join(&emb_name);
-    let rr_src = app_data_dir
-        .join("models")
-        .join("rerankers")
-        .join(&rr_name);
+    let host = AthenaPaths::new(&app_data_dir);
+    let emb_src = resolve_model_pack_dir(&host, "embeddings", &emb_name);
+    let rr_src = resolve_model_pack_dir(&host, "rerankers", &rr_name);
     let chat_src = chat_models_dir(&app_data_dir);
 
     let strip_non_launcher_payload_packs = matches!(
@@ -3790,6 +3827,9 @@ pub fn export_athena_to_usb(
 
     let usb_data = dest_root.join("data");
     fs::create_dir_all(&usb_data).map_err(|e| e.to_string())?;
+    let _ = crate::athena_paths::ensure_layout(&usb_data);
+    io.emit_phase(app, "Copying AthenaData/app (bundled defaults)…", 0.28);
+    copy_host_app_tree_to_usb(&app_data_dir, &usb_data)?;
     // Inject a minimal default config for Hive Mind behavior.
     // Fast Node: join a seed/coordinator; Sister Server: broadcast resources.
     let mut injected_cfg = AppConfig::default();
@@ -3835,7 +3875,7 @@ pub fn export_athena_to_usb(
             io.emit_phase(app, "Chat model copied.", 0.56);
 
             io.emit_phase(app, "Copying local index database…", 0.58);
-            let db_dst = usb_data.join("athena_index.db");
+            let db_dst = usb_data.join("user").join("db").join("athena_index.db");
             copy_slim_index_database_to_usb(db, &db_dst, app, &mut io)?;
             io.emit_phase(app, "Index database stage complete.", 0.64);
         }
@@ -3860,7 +3900,7 @@ pub fn export_athena_to_usb(
                 ));
             }
 
-            let models_root = usb_data.join("models");
+            let models_root = usb_data.join("user").join("models");
             let emb_dst = models_root.join("embeddings").join(&emb_name);
             let rr_dst = models_root.join("rerankers").join(&rr_name);
             if let Some(p) = emb_dst.parent() {
@@ -3935,7 +3975,7 @@ pub fn export_athena_to_usb(
             )?;
         }
         ParsedUsbExport::Manual(AegisManualTier::Citadel) => {
-            let db_src = app_data_dir.join("athena_index.db");
+            let db_src = host_db_path(&app_data_dir);
             if wipe_after && !db_src.is_file() {
                 return Err(
                     "Citadel export with scorched earth requires a local athena_index.db.".to_string(),
@@ -3960,7 +4000,7 @@ pub fn export_athena_to_usb(
                 ));
             }
 
-            let models_root = usb_data.join("models");
+            let models_root = usb_data.join("user").join("models");
             let emb_dst = models_root.join("embeddings").join(&emb_name);
             let rr_dst = models_root.join("rerankers").join(&rr_name);
             if let Some(p) = emb_dst.parent() {

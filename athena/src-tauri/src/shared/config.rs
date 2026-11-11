@@ -13,10 +13,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::user_profile;
+use crate::athena_paths::{self, AthenaPaths};
 
-const CONFIG_FILENAME: &str = "athena_config.json";
-
-/// Resolved ONNX / chat model directories under the host app data folder (`models/...`).
+/// Resolved ONNX / chat model directories under the host user data folder (`user/models/...`).
 #[derive(Debug, Clone)]
 pub struct ModelDirectoryPaths {
     pub models_root: PathBuf,
@@ -27,7 +26,7 @@ pub struct ModelDirectoryPaths {
     pub reranker_ms_marco: PathBuf,
 }
 
-/// Ensures `models/chat`, `models/embeddings/all-MiniLM-L6-v2`, and `models/rerankers/ms-marco-MiniLM-L-6-v2` exist.
+/// Ensures `user/models/chat`, embeddings, rerankers (and vision/voice/ollama) exist.
 /// Default embedding subfolder (matches bootstrap download target).
 pub const DEFAULT_EMBEDDING_FOLDER: &str = "all-MiniLM-L6-v2";
 /// Default reranker subfolder (matches bootstrap download target).
@@ -53,14 +52,24 @@ pub fn effective_reranker_folder(config: &AppConfig) -> String {
         .to_string()
 }
 
+/// Create writable model dirs under `user/models` (layout v2). `app_data_dir` is the AthenaData root.
 pub fn ensure_model_directories(app_data_dir: &Path) -> Result<ModelDirectoryPaths, String> {
-    let models_root = app_data_dir.join("models");
-    let chat_models = models_root.join("chat");
-    let embeddings_root = models_root.join("embeddings");
+    let paths = AthenaPaths::new(app_data_dir);
+    let _ = athena_paths::ensure_layout(app_data_dir);
+    let models_root = paths.user_models_dir();
+    let chat_models = paths.user_chat_models_dir();
+    let embeddings_root = paths.user_embeddings_dir();
     let embedding_all_minilm = embeddings_root.join("all-MiniLM-L6-v2");
-    let rerankers_root = models_root.join("rerankers");
+    let rerankers_root = paths.user_rerankers_dir();
     let reranker_ms_marco = rerankers_root.join("ms-marco-MiniLM-L-6-v2");
-    for p in [&chat_models, &embedding_all_minilm, &reranker_ms_marco] {
+    for p in [
+        &chat_models,
+        &embedding_all_minilm,
+        &reranker_ms_marco,
+        &paths.user_vision_models_dir(),
+        &paths.user_voice_models_dir(),
+        &paths.user_ollama_models_dir(),
+    ] {
         fs::create_dir_all(p).map_err(|e| e.to_string())?;
     }
     Ok(ModelDirectoryPaths {
@@ -103,6 +112,9 @@ pub struct AppConfig {
     /// Optional explicit personality id; if None, the active theme determines personality.
     #[serde(default)]
     pub personality_id: Option<String>,
+    /// Fruit (and dual-mode packages) appearance: `light`, `dark`, or `auto` (time of day).
+    #[serde(default)]
+    pub theme_appearance: Option<String>,
     /// User-defined custom themes persisted in config.
     #[serde(default)]
     pub custom_themes: Vec<CustomTheme>,
@@ -263,7 +275,7 @@ pub struct CustomTheme {
 }
 
 pub fn config_path(app_data_dir: &Path) -> std::path::PathBuf {
-    app_data_dir.join(CONFIG_FILENAME)
+    AthenaPaths::new(app_data_dir).resolve_config_path()
 }
 
 fn normalize_age_gate(mut c: AppConfig) -> AppConfig {
@@ -309,7 +321,7 @@ fn normalize_age_gate(mut c: AppConfig) -> AppConfig {
 }
 
 pub fn load_config(app_data_dir: &Path) -> AppConfig {
-    let path = config_path(app_data_dir);
+    let path = AthenaPaths::new(app_data_dir).resolve_config_path();
     if path.exists() {
         if let Ok(s) = fs::read_to_string(&path) {
             if let Ok(c) = serde_json::from_str::<AppConfig>(&s) {
@@ -321,7 +333,8 @@ pub fn load_config(app_data_dir: &Path) -> AppConfig {
 }
 
 pub fn save_config(app_data_dir: &Path, config: &AppConfig) -> Result<(), String> {
-    let path = config_path(app_data_dir);
+    let paths = AthenaPaths::new(app_data_dir);
+    let path = paths.config_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

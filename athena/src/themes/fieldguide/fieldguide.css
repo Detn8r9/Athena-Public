@@ -1,0 +1,6 @@
+/* Package-owned chrome for field guide / survival manual.
+ * Visual rules currently live in App.css under body.theme-survival-manual /
+ * [data-persona="fieldguide"] for zero intentional visual change. */
+[data-athena-theme="fieldguide"] {
+  /* Ownership hook — paper styles apply via persona + optional survival-manual body class. */
+}

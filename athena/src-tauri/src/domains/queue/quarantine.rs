@@ -6,7 +6,9 @@ const QUARANTINE_DIR: &str = "quarantine";
 
 /// Path to the quarantine directory under app data. Caller must create it if needed.
 pub fn quarantine_dir(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join(QUARANTINE_DIR)
+    crate::athena_paths::AthenaPaths::new(app_data_dir)
+        .user_dir()
+        .join(QUARANTINE_DIR)
 }
 
 /// Ensure the quarantine directory exists.

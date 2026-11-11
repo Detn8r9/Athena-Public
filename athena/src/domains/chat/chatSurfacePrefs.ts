@@ -81,20 +81,26 @@ export function thinkModeModelOptions(
   mode: ConversationThinkMode,
   baseTemp: number,
   baseCtx: number,
-): { temperature: number; num_ctx: number; promptPrefix: string } {
+  surface: "chat" | "conversation" = "chat",
+): { temperature: number; num_ctx: number; numPredict: number | null; promptPrefix: string } {
+  const spoken = surface === "conversation";
   if (mode === "deep") {
     return {
-      temperature: Math.min(baseTemp, 0.45),
-      num_ctx: Math.max(baseCtx, 8192),
-      promptPrefix:
-        "[Deep analysis mode] Take your time. Prefer thorough, technical, step-by-step answers with caveats when uncertain.\n\n",
+      temperature: Math.min(baseTemp, 0.4),
+      num_ctx: Math.min(Math.max(baseCtx, 6144), 8192),
+      numPredict: spoken ? 720 : null,
+      promptPrefix: spoken
+        ? "[Deep voice mode] You are speaking with someone. Be thorough and technical when the question needs it: steps, caveats, edge cases. Stay organized and speakable (short paragraphs, not a wall of markdown). If a camera frame is attached, identify objects or the scene and use that to answer.\n\n"
+        : "[Deep technical mode] Prefer thorough, precise, step-by-step answers with caveats when uncertain. Cover edge cases when relevant. Still stay organized and readable. If an image is attached, identify what is shown and use it.\n\n",
     };
   }
   return {
-    temperature: Math.max(baseTemp, 0.55),
-    num_ctx: Math.min(baseCtx, 4096),
-    promptPrefix:
-      "[Quick response mode] Answer briefly and clearly. Prefer actionable steps over long essays.\n\n",
+    temperature: Math.min(Math.max(baseTemp, 0.5), 0.65),
+    num_ctx: Math.min(baseCtx, spoken ? 3072 : 4096),
+    numPredict: spoken ? 220 : null,
+    promptPrefix: spoken
+      ? "[Quick voice mode] Live conversation. Be fast, natural, and still accurate — usually 2–4 spoken sentences with the useful facts, not a one-liner and not an essay. No markdown, no 'Sure' preamble. If a camera frame is attached, name what you see (person or object) only as it helps the question, then answer.\n\n"
+      : "[Quick mode] Be concise and useful. Lead with the answer, then the key facts. Use lists only when they help. If an image is attached, identify it and answer from what you see.\n\n",
   };
 }
 

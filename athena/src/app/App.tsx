@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -10,26 +10,19 @@ import {
   isAthenaDesktopRuntime,
 } from "../shared/ipc/athenaIpc";
 import "./App.css";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { TRIAGE_ITEMS, getTriageItem, TriageId } from "../shared/lib/triageData";
-import { HelpModal } from "../ui/modals/HelpModal";
-import { MeshRadioModal, type MeshRadioMessage } from "../pages/mesh/MeshRadioModal";
-import { MeshChatView } from "../pages/mesh/MeshChatView";
-import { MeshNetworkHubView } from "../pages/mesh/MeshNetworkHubView";
 import { ExportModal, type ExportTier } from "../ui/modals/ExportModal";
 import type { AegisExportProgress, AegisIoHistories } from "../pages/export/AegisExportIoPanel";
-import { MapView, type MapBasemap, type TacticalMapMeshNodeLocation, type TacticalMapPointOfInterest } from "../domains/features/map/MapView";
+import type { MapBasemap, TacticalMapMeshNodeLocation, TacticalMapPointOfInterest } from "../domains/features/map/MapView";
 import {
   defaultTacticalLayerVisibilityState,
   mergeTacticalLayerVisibility,
   type TacticalLayerVisibilityState,
 } from "../domains/features/map/TacticalSidebar";
-import { GuestDashboard } from "../ui/components/GuestDashboard";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { registerPmtilesMaplibreProtocolOnce } from "../shared/lib/maplibrePmtilesProtocolRegistration";
 import { evaluateMainChatWatchdog } from "../shared/lib/streamWatchdog";
 import { appendMeshMessageCapped } from "../shared/lib/meshMessageLog";
-import { PhotoshopColorPicker } from "../ui/components/PhotoshopColorPicker";
 import { hexToRgbCsv } from "../shared/lib/colorUtils";
 import type { AppView } from "./appView";
 import { APP_VIEW_LABELS, APP_VIEWS, readStartupView, saveStartupView } from "./appView";
@@ -39,35 +32,24 @@ import {
   type UniversalHeaderSessionModelRouting,
 } from "../ui/components/UniversalHeader";
 import { useAuth } from "../domains/auth/AuthContext";
-import { LockScreen } from "../pages/lockscreen/LockScreen";
-import { LogisticsLogbookHub } from "../pages/logistics/LogisticsLogbookHub";
-import { PersonnelHub } from "../pages/personnel/PersonnelHub";
-import { OrgChart } from "../ui/components/OrgChart";
-import { PersonnelProfileModal } from "../ui/components/PersonnelProfileModal";
-import { DashboardView, type DashboardDestination } from "../pages/dashboard/DashboardView";
 import { useArchiveExtractionListen } from "../shared/hooks/useArchiveExtractionListen";
 import { usePageVisible } from "../shared/hooks/usePageVisible";
-import { CalendarView } from "../pages/calendar/CalendarView";
 import { RankAvatar } from "../ui/components/RankAvatar";
 import { RANK_DESCRIPTIONS, formatRomanRank } from "../shared/lib/romanRanks";
-import { AiModelManager } from "../pages/ai/AiModelManager";
-import { AcademyModule } from "../pages/academy/AcademyModule";
-import { ArchiveHub } from "../domains/features/library-installer/ArchiveHub";
-import { DataAcquisition, type DataAcquisitionTabId } from "../pages/data-acquisition/DataAcquisition";
 import { getLexicon, LexiconProvider, type LexiconThemeId } from "../shared/lexicon";
+import {
+  applyTheme,
+  experiencePresetOptions,
+  getThemePackage,
+  isBuiltInThemeId,
+  type AppearanceMode,
+} from "../themes";
 import { OobeFirstAccount } from "../domains/auth/OobeFirstAccount";
-import { CommunicationsHub } from "../pages/comms/CommunicationsHub";
-import { RadioView } from "../domains/features/radio/RadioView";
-import { RadioSettingsView } from "../domains/features/radio/RadioSettingsView";
 import { CommsHubIcon } from "../shared/CommsHubIcon";
-import { ColorsAndThemes } from "../pages/Settings/ColorsAndThemes";
-import { AIAndKnowledgeSystemModelRouting } from "../pages/Settings/AIAndKnowledge";
 import { SettingsShell } from "../pages/Settings/SettingsShell";
 import { SettingsGroup } from "../pages/Settings/SettingsGroup";
 import { SettingsRow } from "../pages/Settings/SettingsRow";
 import { PillToggle } from "../pages/Settings/PillToggle";
-import { MarketplacePanel } from "../pages/marketplace/MarketplacePanel";
-import { MarketplaceView } from "../pages/marketplace/MarketplaceView";
 import type { SettingsPanelId } from "../pages/Settings/settingsSearchIndex";
 import type { SettingsSearchEntry } from "../pages/Settings/settingsSearchIndex";
 import {
@@ -75,14 +57,34 @@ import {
   type SpotlightAction,
 } from "../shared/search/spotlightSearch";
 import {
+  ATHENA_OFFLINE_TTS_VOICE,
+  getPreferredKokoroVoice,
+  listKokoroVoices,
   probeDuplexCapability,
   releaseMicPipeline,
+  setPreferredKokoroVoice,
   startBargeInMonitor,
-  startWhisperListen,
   synthesizeWithKokoro,
+  warmWhisper,
+  clearWhisperModelCache,
   withTimeout,
   type DuplexCapability,
+  type KokoroVoiceInfo,
 } from "../domains/voice/duplexVoice";
+import {
+  SpokenSentenceBuffer,
+  cleanTextForSpeech,
+  isJunkTranscript,
+  pickConversationalSpeakText,
+} from "../domains/voice/conversationSpeech";
+import { createNativePushToTalk, type PushToTalkSession } from "../domains/voice/pushToTalk";
+import { shouldSkipLibraryRag } from "../domains/chat/libraryRagGate";
+import {
+  isVoiceDebugEnabled,
+  setVoiceDebugEnabled,
+  voiceDebug,
+  voiceDebugPreview,
+} from "../domains/voice/voiceDebug";
 import { ConversationFaceStage, usePersistedThinkMode } from "../domains/chat/ConversationFaceStage";
 import {
   readChatSurfaceDefault,
@@ -90,12 +92,107 @@ import {
   thinkModeModelOptions,
   type ChatSurfaceDefault,
 } from "../domains/chat/chatSurfacePrefs";
+import { ChatMarkdown } from "../domains/chat/ChatMarkdown";
+import { buildFollowUpSuggestions } from "../domains/chat/followUpSuggestions";
 import {
   MODEL_ROUTING_AUTO,
   SESSION_MODEL_FOLLOW_SETTINGS,
   ensureInferenceModelForRequest,
   resolveInferenceModelForView,
 } from "../domains/models/modelCatalog";
+import {
+  buildChatModelOptions,
+  explicitModelValueFromSelection,
+  isInstalledChatModelId,
+} from "../domains/models/activeChatModels";
+import type { MarketplaceInitialTab } from "../pages/marketplace/MarketplaceView";
+import type { DataAcquisitionTabId } from "../pages/data-acquisition/DataAcquisition";
+import type { MeshRadioMessage } from "../pages/mesh/MeshRadioModal";
+import type { DashboardDestination } from "../pages/dashboard/DashboardView";
+
+/** Lightweight placeholder while a lazy route/modal chunk loads. */
+function ViewChunkFallback({ label = "Loading…" }: { label?: string }) {
+  return (
+    <div className="glass-panel app-view-placeholder" role="status" aria-live="polite">
+      <p className="text-muted app-view-placeholder-body">{label}</p>
+    </div>
+  );
+}
+
+const HelpModal = lazy(() =>
+  import("../ui/modals/HelpModal").then((m) => ({ default: m.HelpModal })),
+);
+const MeshRadioModal = lazy(() =>
+  import("../pages/mesh/MeshRadioModal").then((m) => ({ default: m.MeshRadioModal })),
+);
+const MeshChatView = lazy(() =>
+  import("../pages/mesh/MeshChatView").then((m) => ({ default: m.MeshChatView })),
+);
+const MeshNetworkHubView = lazy(() =>
+  import("../pages/mesh/MeshNetworkHubView").then((m) => ({ default: m.MeshNetworkHubView })),
+);
+const MapView = lazy(() =>
+  import("../domains/features/map/MapView").then((m) => ({ default: m.MapView })),
+);
+const GuestDashboard = lazy(() =>
+  import("../ui/components/GuestDashboard").then((m) => ({ default: m.GuestDashboard })),
+);
+const PhotoshopColorPicker = lazy(() =>
+  import("../ui/components/PhotoshopColorPicker").then((m) => ({ default: m.PhotoshopColorPicker })),
+);
+const LockScreen = lazy(() =>
+  import("../pages/lockscreen/LockScreen").then((m) => ({ default: m.LockScreen })),
+);
+const LogisticsLogbookHub = lazy(() =>
+  import("../pages/logistics/LogisticsLogbookHub").then((m) => ({ default: m.LogisticsLogbookHub })),
+);
+const PersonnelHub = lazy(() =>
+  import("../pages/personnel/PersonnelHub").then((m) => ({ default: m.PersonnelHub })),
+);
+const OrgChart = lazy(() =>
+  import("../ui/components/OrgChart").then((m) => ({ default: m.OrgChart })),
+);
+const PersonnelProfileModal = lazy(() =>
+  import("../ui/components/PersonnelProfileModal").then((m) => ({ default: m.PersonnelProfileModal })),
+);
+const DashboardView = lazy(() =>
+  import("../pages/dashboard/DashboardView").then((m) => ({ default: m.DashboardView })),
+);
+const CalendarView = lazy(() =>
+  import("../pages/calendar/CalendarView").then((m) => ({ default: m.CalendarView })),
+);
+const AcademyModule = lazy(() =>
+  import("../pages/academy/AcademyModule").then((m) => ({ default: m.AcademyModule })),
+);
+const ArchiveHub = lazy(() =>
+  import("../domains/features/library-installer/ArchiveHub").then((m) => ({ default: m.ArchiveHub })),
+);
+const DataAcquisition = lazy(() =>
+  import("../pages/data-acquisition/DataAcquisition").then((m) => ({ default: m.DataAcquisition })),
+);
+const CommunicationsHub = lazy(() =>
+  import("../pages/comms/CommunicationsHub").then((m) => ({ default: m.CommunicationsHub })),
+);
+const RadioView = lazy(() =>
+  import("../domains/features/radio/RadioView").then((m) => ({ default: m.RadioView })),
+);
+const RadioSettingsView = lazy(() =>
+  import("../domains/features/radio/RadioSettingsView").then((m) => ({ default: m.RadioSettingsView })),
+);
+const ColorsAndThemes = lazy(() =>
+  import("../pages/Settings/ColorsAndThemes").then((m) => ({ default: m.ColorsAndThemes })),
+);
+const AIAndKnowledgeSystemModelRouting = lazy(() =>
+  import("../pages/Settings/AIAndKnowledge").then((m) => ({
+    default: m.AIAndKnowledgeSystemModelRouting,
+  })),
+);
+const MarketplacePanel = lazy(() =>
+  import("../pages/marketplace/MarketplacePanel").then((m) => ({ default: m.MarketplacePanel })),
+);
+const MarketplaceView = lazy(() =>
+  import("../pages/marketplace/MarketplaceView").then((m) => ({ default: m.MarketplaceView })),
+);
 
 type UserAndInferenceSettings = {
   user_display_name: string | null;
@@ -125,8 +222,6 @@ interface HiveMindRouteStatus {
   mode: string;
   baseUrl: string;
 }
-
-registerPmtilesMaplibreProtocolOnce();
 
 /** Local calendar YYYY-MM-DD — must match Rust `chrono::Local` for birthday + dismiss key. */
 function localDateYYYYMMDD(): string {
@@ -547,14 +642,19 @@ interface SunTimes {
 
 type NightVisionMode = "auto" | "on" | "off";
 
-const PERSONAS = ["default", "fallout", "fieldguide"] as const;
+const PERSONAS = ["default", "fallout", "fieldguide", "fruit"] as const;
 type PersonalityId = (typeof PERSONAS)[number];
 
 const PERSONALITY_LABELS: Record<PersonalityId, string> = {
   default: "Calm survival guide",
   fallout: "Fallout terminal (dry, retro)",
   fieldguide: "Old survival manual (terse, instructional)",
+  fruit: "Fruit (calm, modern assistant)",
 };
+
+function isPersonalityId(value: string | null | undefined): value is PersonalityId {
+  return value === "default" || value === "fallout" || value === "fieldguide" || value === "fruit";
+}
 
 const VOICE_PRESETS = ["default", "fallout", "ultron"] as const;
 type VoicePresetId = (typeof VOICE_PRESETS)[number];
@@ -568,75 +668,34 @@ const VOICE_PRESET_LABELS: Record<VoicePresetId, string> = {
 /** Voice pack v1: browser STT/TTS. Set true only to hide mic/conversation UI in a build. */
 const VOICE_AND_MIC_FEATURES_HIDDEN = false;
 
-/** Renders basic markdown in message text: **bold**, *italic*, `code` */
-function formatMessageText(text: string): React.ReactNode {
-  const formatCode = (s: string, keyPrefix: string): React.ReactNode[] => {
-    const parts = s.split(/(`[^`]*`)/g);
-    return parts.map((p, i) =>
-      p.startsWith("`") && p.endsWith("`") ? (
-        <code key={`${keyPrefix}-c-${i}`} className="message-inline-code">{p.slice(1, -1)}</code>
-      ) : (
-        <React.Fragment key={`${keyPrefix}-c-${i}`}>{p}</React.Fragment>
-      )
-    );
-  };
-  const formatItalic = (s: string, keyPrefix: string): React.ReactNode[] => {
-    const parts = s.split(/(\*[^*]*\*)/g);
-    const out: React.ReactNode[] = [];
-    for (let i = 0; i < parts.length; i++) {
-      const p = parts[i];
-      if (p.startsWith("*") && p.endsWith("*") && p.length > 1) {
-        out.push(<em key={`${keyPrefix}-i-${i}`}>{formatCode(p.slice(1, -1), `${keyPrefix}-i-${i}`)}</em>);
-      } else {
-        out.push(...formatCode(p, `${keyPrefix}-i-${i}`));
-      }
-    }
-    return out;
-  };
-  const formatBold = (s: string, keyPrefix: string): React.ReactNode[] => {
-    const parts = s.split(/(\*\*[\s\S]*?\*\*)/g);
-    const out: React.ReactNode[] = [];
-    for (let i = 0; i < parts.length; i++) {
-      const p = parts[i];
-      if (p.startsWith("**") && p.endsWith("**")) {
-        out.push(<strong key={`${keyPrefix}-b-${i}`}>{formatItalic(p.slice(2, -2), `${keyPrefix}-b-${i}`)}</strong>);
-      } else {
-        out.push(...formatItalic(p, `${keyPrefix}-b-${i}`));
-      }
-    }
-    return out;
-  };
-  const nodes = formatBold(text, "0");
-  return nodes.length === 1 ? nodes[0] : <>{nodes}</>;
-}
-
-/** Renders message content with optional search term highlighted. */
-function formatMessageTextWithHighlight(content: string, query: string): React.ReactNode {
-  if (!query.trim()) return formatMessageText(content);
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(escaped, "gi");
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let key = 0;
-  let match;
-  while ((match = re.exec(content)) !== null) {
-    parts.push(<React.Fragment key={`h-${key++}`}>{formatMessageText(content.slice(lastIndex, match.index))}</React.Fragment>);
-    parts.push(<mark key={`h-${key++}`} className="find-in-chat-highlight">{match[0]}</mark>);
-    lastIndex = match.index + match[0].length;
-  }
-  parts.push(<React.Fragment key={`h-${key++}`}>{formatMessageText(content.slice(lastIndex))}</React.Fragment>);
-  return <>{parts}</>;
-}
-
 const STORAGE_KEY_THEME = "athena-theme";
 const STORAGE_KEY_CUSTOM_BG = "athena-custom-bg";
 const STORAGE_KEY_CUSTOM_PRIMARY = "athena-custom-primary";
 const STORAGE_KEY_CUSTOM_TEXT = "athena-custom-text";
 const STORAGE_KEY_NIGHT_VISION_MODE = "athena-night-vision-mode";
+const STORAGE_KEY_FRUIT_APPEARANCE = "athena-fruit-appearance";
 const STORAGE_KEY_DEBUG_MODE = "athena-debug-mode";
 const STORAGE_KEY_DEVICE_OVERLAY = "athena-device-overlay";
 const STORAGE_KEY_PINNED_CHATS = "athena-pinned-chats";
 const STORAGE_KEY_LAST_OPENED_CHATS = "athena-last-opened-chats";
+
+function loadFruitAppearance(): AppearanceMode {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_FRUIT_APPEARANCE);
+    if (raw === "light" || raw === "dark" || raw === "auto") return raw;
+  } catch {
+    /* ignore */
+  }
+  return "auto";
+}
+
+function saveFruitAppearance(mode: AppearanceMode) {
+  try {
+    localStorage.setItem(STORAGE_KEY_FRUIT_APPEARANCE, mode);
+  } catch {
+    /* ignore */
+  }
+}
 
 function loadLastOpenedMap(): Record<string, number> {
   try {
@@ -835,23 +894,7 @@ const THEME_LABELS: Record<Theme, string> = {
   navy: "Navy",
 };
 
-const EXPERIENCE_PRESETS = [
-  {
-    id: "default" as const,
-    title: "Survival Guide (Default)",
-    description: "Calm, practical instructor.",
-  },
-  {
-    id: "fallout" as const,
-    title: "Fallout terminal (Default)",
-    description: "CRT / Pip-Boy style; uses your color palette below.",
-  },
-  {
-    id: "fieldguide" as const,
-    title: "Old survival manual (Default)",
-    description: "Paper field-guide look (warm paper tones).",
-  },
-];
+const EXPERIENCE_PRESETS = experiencePresetOptions();
 
 function normalizeCustomThemeForSave(t: BackendCustomTheme): BackendCustomTheme {
   return {
@@ -874,6 +917,12 @@ function App() {
   useEffect(() => {
     setLoginNameDraft(user?.name ?? "");
   }, [user?.id, user?.name]);
+
+  // Apply Marketplace catalog pins when auto-update is enabled (Whisper/Kokoro, etc.).
+  useEffect(() => {
+    if (!user) return;
+    void invoke<number>("marketplace_tick_auto_updates").catch(() => {});
+  }, [user?.id]);
 
   useEffect(() => {
     const u = listen<{ reason: string; currentRoot: string; hint?: string }>("athena:oobe-required", (ev) => {
@@ -982,6 +1031,7 @@ function App() {
   const [connectivityLabel, setConnectivityLabel] = useState("Online");
   const [internetAllowed, setInternetAllowed] = useState(true);
   const [marketplaceFocusAppId, setMarketplaceFocusAppId] = useState<string | null>(null);
+  const [marketplaceFocusTab, setMarketplaceFocusTab] = useState<MarketplaceInitialTab | null>(null);
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState("http://127.0.0.1:1234/v1");
   const [openaiModelId, setOpenaiModelId] = useState("");
   const [openaiApiKeyLocal, setOpenaiApiKeyLocal] = useState("");
@@ -996,6 +1046,7 @@ function App() {
   /** Header hot-swap: basename `.gguf` or null to follow Settings routing for the active view. */
   const [activeSessionOverride, setActiveSessionOverride] = useState<string | null>(null);
   const [availableChatModels, setAvailableChatModels] = useState<string[]>([]);
+  const [availableOllamaModels, setAvailableOllamaModels] = useState<string[]>([]);
   const [availableEmbeddingModels, setAvailableEmbeddingModels] = useState<string[]>([]);
   const [availableRerankerModels, setAvailableRerankerModels] = useState<string[]>([]);
   const [modelScannerPathsLoading, setModelScannerPathsLoading] = useState(true);
@@ -1170,6 +1221,7 @@ function App() {
   const [settingsTitleClickCount, setSettingsTitleClickCount] = useState(0);
   const [activeThemeId, setActiveThemeId] = useState<string>("default");
   const [activePersonalityId, setActivePersonalityId] = useState<PersonalityId>("default");
+  const [fruitAppearance, setFruitAppearance] = useState<AppearanceMode>(() => loadFruitAppearance());
   const [customThemes, setCustomThemes] = useState<BackendCustomTheme[]>([]);
   const [debugMode, setDebugMode] = useState(() => {
     try {
@@ -1318,6 +1370,12 @@ function App() {
   }, [tacticalMapLayerVisibility]);
 
   const resolveGpsForChatPayload = useCallback(async (): Promise<{ userLat: number | null; userLon: number | null }> => {
+    // Live voice turns must not wait on geolocation (browser timeout can be multi-second).
+    if (conversationModeRef.current) {
+      const last = lastKnownGpsRef.current;
+      if (last) return { userLat: last.lat, userLon: last.lon };
+      return { userLat: null, userLon: null };
+    }
     if (typeof navigator !== "undefined" && navigator.geolocation) {
       const fresh = await new Promise<{ lat: number; lon: number } | null>((resolve) => {
         navigator.geolocation.getCurrentPosition(
@@ -1426,6 +1484,8 @@ function App() {
 
   const [attachments, setAttachments] = useState<Array<{ id: string; kind: "image" | "file"; name: string; path: string }>>([]);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [thinkMenuOpen, setThinkMenuOpen] = useState(false);
+  const composerMenusRef = useRef<HTMLDivElement>(null);
   const [batteryState, setBatteryState] = useState<BatteryState | null>(null);
   const [showLowBatteryBanner, setShowLowBatteryBanner] = useState(false);
   const [lowBatteryDismissed, setLowBatteryDismissed] = useState(false);
@@ -1504,15 +1564,52 @@ function App() {
   const [chatSurface, setChatSurface] = useState<ChatSurfaceDefault>(() => readChatSurfaceDefault());
   const [thinkMode, setThinkMode] = usePersistedThinkMode();
   const [voiceEnergyRms, setVoiceEnergyRms] = useState(0);
+  const conversationCaptureFrameRef = useRef<(() => string | null) | null>(null);
+  const registerConversationCaptureFrame = useCallback((fn: (() => string | null) | null) => {
+    conversationCaptureFrameRef.current = fn;
+  }, []);
+  const [visionIdentifying, setVisionIdentifying] = useState(false);
   const sendingRef = useRef(false);
   const [duplexCapability, setDuplexCapability] = useState<DuplexCapability | null>(null);
   const duplexCapabilityRef = useRef<DuplexCapability | null>(null);
+  const [kokoroVoice, setKokoroVoice] = useState<string>(() => getPreferredKokoroVoice());
+  const kokoroVoiceRef = useRef(kokoroVoice);
+  const [kokoroVoices, setKokoroVoices] = useState<KokoroVoiceInfo[]>([]);
+  const [kokoroVoicePreviewBusy, setKokoroVoicePreviewBusy] = useState(false);
+  const [voiceDebugLogs, setVoiceDebugLogs] = useState(() => isVoiceDebugEnabled());
   const conversationMicStreamRef = useRef<MediaStream | null>(null);
   const whisperListenSessionRef = useRef<{ stop: () => void; setPaused: (p: boolean) => void } | null>(null);
+  const pttSessionRef = useRef<PushToTalkSession | null>(null);
+  const pttBusyRef = useRef(false);
+  /** True while the talk button is physically held (survives async mic start). */
+  const pttHoldActiveRef = useRef(false);
+  /** Skip repeated macOS permission prompts on every hold. */
+  const micPermissionReadyRef = useRef(false);
   const bargeInStopRef = useRef<(() => void) | null>(null);
   const speakGenerationRef = useRef(0);
   const speakMessageAtIndexRef = useRef<(index: number, onAfterSpeak?: () => void) => void>(() => {});
+  const speakConversationTextRef = useRef<(text: string, onAfterSpeak?: () => void) => void>(() => {});
   const startConversationListeningRef = useRef<() => void>(() => {});
+  const resumeConversationListeningRef = useRef<() => void>(() => {});
+  /** Conversation duplex floor — patterns from voice2 + nix-vox sentence streaming. */
+  const conversationTtsGateRef = useRef({
+    expectSpeak: false,
+    streamDone: false,
+    resumeScheduled: false,
+    interrupted: false,
+    speaking: false,
+    spokenCount: 0,
+    maxSentences: 2,
+    buffer: new SpokenSentenceBuffer(12),
+    queue: [] as string[],
+    /** Next sentence synthesizing while current audio plays. */
+    prefetch: null as null | { text: string; promise: Promise<Blob | null> },
+  });
+  const scheduleConversationResumeRef = useRef<() => void>(() => {});
+  const kickConversationSpeakQueueRef = useRef<() => void>(() => {});
+  const enqueueConversationSentencesRef = useRef<(sentences: string[]) => void>(() => {});
+  const speechListeningRef = useRef(false);
+  const ttsSpeakingRef = useRef(false);
   const logErrorRef = useRef<(msg: string) => void>(() => {});
   const mapStreamContentRef = useRef("");
   const mapStreamActiveRef = useRef(false);
@@ -1561,8 +1658,9 @@ function App() {
           });
           sendingRef.current = false;
           setSending(false);
+          setVisionIdentifying(false);
           if (conversationModeRef.current) {
-            setTimeout(() => startConversationListeningRef.current?.(), 500);
+            setTimeout(() => resumeConversationListeningRef.current?.(), 80);
           }
         }
       }
@@ -1595,8 +1693,61 @@ function App() {
   }, [conversationModeActive]);
 
   useEffect(() => {
+    speechListeningRef.current = speechListening;
+  }, [speechListening]);
+
+  useEffect(() => {
+    ttsSpeakingRef.current = ttsSpeakingIndex != null;
+  }, [ttsSpeakingIndex]);
+
+  /* Push-to-talk: no continuous VAD re-arm. Idle waits for Hold to talk. */
+
+  useEffect(() => {
     duplexCapabilityRef.current = duplexCapability;
   }, [duplexCapability]);
+
+  useEffect(() => {
+    kokoroVoiceRef.current = kokoroVoice;
+  }, [kokoroVoice]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const url = duplexCapability?.kokoro ? duplexCapability.kokoroBaseUrl : null;
+    if (!url) {
+      setKokoroVoices([]);
+      return;
+    }
+    void listKokoroVoices(url)
+      .then((voices) => {
+        if (cancelled) return;
+        setKokoroVoices(voices);
+        if (voices.length > 0 && !voices.some((v) => v.id === kokoroVoiceRef.current)) {
+          const next = voices.find((v) => v.id === ATHENA_OFFLINE_TTS_VOICE)?.id ?? voices[0].id;
+          setKokoroVoice(next);
+          setPreferredKokoroVoice(next);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setKokoroVoices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [duplexCapability?.kokoro, duplexCapability?.kokoroBaseUrl]);
+
+  useEffect(() => {
+    if (!toolsOpen && !thinkMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node | null;
+      if (!t) return;
+      if (composerMenusRef.current && !composerMenusRef.current.contains(t)) {
+        setToolsOpen(false);
+        setThinkMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [toolsOpen, thinkMenuOpen]);
 
   useEffect(() => {
     if (!conversationModeActive) return;
@@ -1619,12 +1770,22 @@ function App() {
     whisperListenSessionRef.current = null;
     bargeInStopRef.current?.();
     bargeInStopRef.current = null;
+    // Free WebKit getUserMedia only — do NOT touch PTT hold flags here.
+    // beginConversationPushToTalk used to call this and wipe pttHoldActiveRef,
+    // which aborted every press before native recording could start.
     const stream = conversationMicStreamRef.current;
     if (stream) {
       releaseMicPipeline(stream);
       stream.getTracks().forEach((t) => t.stop());
       conversationMicStreamRef.current = null;
     }
+  }
+
+  function cancelConversationPushToTalk() {
+    pttSessionRef.current?.cancel();
+    pttSessionRef.current = null;
+    pttBusyRef.current = false;
+    pttHoldActiveRef.current = false;
   }
   const appRef = useRef<HTMLDivElement>(null);
   const triageMenuRef = useRef<HTMLDivElement>(null);
@@ -1665,6 +1826,9 @@ function App() {
     }
     if (persona === "fieldguide") {
       return '"Georgia", "Times New Roman", Times, serif';
+    }
+    if (persona === "fruit") {
+      return '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif';
     }
     return null;
   }
@@ -1707,16 +1871,39 @@ function App() {
     }
   }
 
+  function persistThemeConfig(
+    themeId: string,
+    personalityId: PersonalityId,
+    customs: BackendCustomTheme[] = customThemes,
+    appearance: AppearanceMode = fruitAppearance,
+  ) {
+    invoke("set_theme_config", {
+      themeId,
+      personalityId,
+      customThemes: customs,
+      themeAppearance: appearance,
+    }).catch((e) => logError(String(e)));
+  }
+
   function applyThemePreset(id: string) {
     setActiveThemeId(id);
     setSelectedCustomThemeId(null);
-    const persona: PersonalityId = (id === "fallout" || id === "fieldguide" || id === "default" ? id : "default") as PersonalityId;
+    const pkg = getThemePackage(id);
+    const persona: PersonalityId = pkg?.personaId ?? (isPersonalityId(id) ? id : "default");
     setActivePersonalityId(persona);
     setMasterThemeProfile(id === "fallout" ? "fallout" : "tactical");
     if (id === "fieldguide") {
       setTheme("amber");
       saveTheme("amber");
       const c = PRESET_COLORS.amber;
+      setCustomBg(c.bg);
+      setCustomPrimary(c.primary);
+      setCustomText(c.text);
+      saveCustomColors(c);
+    } else if (id === "fruit") {
+      setTheme("silver");
+      saveTheme("silver");
+      const c = PRESET_COLORS.silver;
       setCustomBg(c.bg);
       setCustomPrimary(c.primary);
       setCustomText(c.text);
@@ -1739,11 +1926,13 @@ function App() {
       setCustomText(c.text);
       saveCustomColors(c);
     }
-    invoke("set_theme_config", {
-      themeId: id,
-      personalityId: persona,
-      customThemes,
-    }).catch((e) => logError(String(e)));
+    persistThemeConfig(id, persona);
+  }
+
+  function handleFruitAppearanceChange(mode: AppearanceMode) {
+    setFruitAppearance(mode);
+    saveFruitAppearance(mode);
+    persistThemeConfig(activeThemeId, activePersonalityId, customThemes, mode);
   }
 
   function applyNightVisionPreset() {
@@ -1759,11 +1948,7 @@ function App() {
     setCustomPrimary(c.primary);
     setCustomText(c.text);
     saveCustomColors(c);
-    invoke("set_theme_config", {
-      themeId: "default",
-      personalityId: "default",
-      customThemes,
-    }).catch((e) => logError(String(e)));
+    persistThemeConfig("default", "default");
   }
 
   function applyMasterThemeProfile(next: MasterThemeProfile) {
@@ -1783,10 +1968,9 @@ function App() {
     if (!themeDef) return;
     setActiveThemeId(id);
     setSelectedCustomThemeId(id);
-    const persona: PersonalityId =
-      (themeDef.personality_id === "fallout" || themeDef.personality_id === "fieldguide" || themeDef.personality_id === "default"
-        ? (themeDef.personality_id as PersonalityId)
-        : "default");
+    const persona: PersonalityId = isPersonalityId(themeDef.personality_id)
+      ? themeDef.personality_id
+      : "default";
     setActivePersonalityId(persona);
     setMasterThemeProfile(persona === "fallout" ? "fallout" : "tactical");
     const baseColors = resolveBaseColors(themeDef.base);
@@ -1799,11 +1983,7 @@ function App() {
     setCustomPrimary(primary);
     setCustomText(text);
     saveCustomColors({ bg, primary, text });
-    invoke("set_theme_config", {
-      themeId: id,
-      personalityId: persona,
-      customThemes,
-    }).catch((e) => logError(String(e)));
+    persistThemeConfig(id, persona);
   }
 
   function handlePersonalityChange(next: PersonalityId) {
@@ -1811,6 +1991,11 @@ function App() {
     if (!selectedCustomThemeId && next === "fieldguide") {
       setTheme("amber");
       saveTheme("amber");
+    }
+    if (!selectedCustomThemeId && next === "fruit") {
+      setActiveThemeId("fruit");
+      setTheme("silver");
+      saveTheme("silver");
     }
     const updatedCustomThemes =
       selectedCustomThemeId && customThemes.length
@@ -1826,11 +2011,9 @@ function App() {
     if (updatedCustomThemes !== customThemes) {
       setCustomThemes(updatedCustomThemes);
     }
-    invoke("set_theme_config", {
-      themeId: activeThemeId,
-      personalityId: next,
-      customThemes: updatedCustomThemes,
-    }).catch((e) => logError(String(e)));
+    const themeIdForPersist =
+      !selectedCustomThemeId && next === "fruit" ? "fruit" : activeThemeId;
+    persistThemeConfig(themeIdForPersist, next, updatedCustomThemes);
   }
 
   function openThemeStudioNew() {
@@ -1842,7 +2025,10 @@ function App() {
       normalizeCustomThemeForSave({
         id,
         name: "My theme",
-        base: baseId === "default" || baseId === "fallout" || baseId === "fieldguide" ? baseId : "default",
+        base:
+          baseId === "default" || baseId === "fallout" || baseId === "fieldguide" || baseId === "fruit"
+            ? baseId
+            : "default",
         bg_color: baseColors.bg,
         primary_color: baseColors.primary,
         text_color: baseColors.text,
@@ -1876,10 +2062,9 @@ function App() {
     setCustomThemes(nextThemes);
     setActiveThemeId(normalized.id);
     setSelectedCustomThemeId(normalized.id);
-    const persona: PersonalityId =
-      normalized.personality_id === "fallout" || normalized.personality_id === "fieldguide" || normalized.personality_id === "default"
-        ? (normalized.personality_id as PersonalityId)
-        : "default";
+    const persona: PersonalityId = isPersonalityId(normalized.personality_id)
+      ? normalized.personality_id
+      : "default";
     setActivePersonalityId(persona);
     setTheme("custom");
     saveTheme("custom");
@@ -1890,11 +2075,7 @@ function App() {
     setCustomPrimary(primary);
     setCustomText(text);
     saveCustomColors({ bg, primary, text });
-    invoke("set_theme_config", {
-      themeId: normalized.id,
-      personalityId: persona,
-      customThemes: nextThemes,
-    }).catch((e) => logError(String(e)));
+    persistThemeConfig(normalized.id, persona, nextThemes);
     setStudioDraft(null);
     setThemesSubView("main");
   }
@@ -1922,11 +2103,7 @@ function App() {
       setTheme("blue");
       saveTheme("blue");
     }
-    invoke("set_theme_config", {
-      themeId: nextThemeId,
-      personalityId: activePersonalityId,
-      customThemes: nextThemes,
-    }).catch((e) => logError(String(e)));
+    persistThemeConfig(nextThemeId, activePersonalityId, nextThemes);
   }
 
   function scrollToBottom() {
@@ -2098,48 +2275,104 @@ function App() {
     if (!stream || !conversationModeRef.current) return;
     bargeInStopRef.current = startBargeInMonitor(stream, () => {
       if (!conversationModeRef.current) return;
+      const gate = conversationTtsGateRef.current;
+      // voice2 floor rule: user always wins — clear TTS queue and hand the floor back.
+      gate.interrupted = true;
+      gate.queue.length = 0;
+      gate.prefetch = null;
+      gate.speaking = false;
+      gate.resumeScheduled = true;
       stopTts();
-      startConversationListeningRef.current?.();
+      resumeConversationListeningRef.current?.();
     }).stop;
   }
 
-  function speakMessageAtIndex(index: number, onAfterSpeak?: () => void) {
-    // Face Conversation always speaks back so the loop does not die when TTS is off in Chat settings.
-    const shouldSpeak = ttsEnabled || conversationModeRef.current;
-    if (!shouldSpeak) {
+  function synthesizeConversationKokoroBlob(text: string): Promise<Blob | null> {
+    const cap = duplexCapabilityRef.current;
+    if (!cap?.kokoro || !cap.kokoroBaseUrl) return Promise.resolve(null);
+    const kokoroMs = conversationModeRef.current ? 10_000 : 25_000;
+    const kokoroSpeed = conversationModeRef.current ? 1.2 : 1.0;
+    const voice = kokoroVoiceRef.current || getPreferredKokoroVoice();
+    const t0 = performance.now();
+    return withTimeout(
+      synthesizeWithKokoro(cap.kokoroBaseUrl, text, voice, kokoroSpeed),
+      kokoroMs,
+      "Kokoro TTS timed out",
+    )
+      .then((blob) => {
+        voiceDebug("tts.synth_ok", {
+          ms: Math.round(performance.now() - t0),
+          voice,
+          preview: voiceDebugPreview(text),
+          bytes: blob.size,
+        });
+        return blob;
+      })
+      .catch((e) => {
+        voiceDebug("tts.synth_fail", {
+          ms: Math.round(performance.now() - t0),
+          voice,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return null;
+      });
+  }
+
+  /** Core TTS path used by Conversation early-speak and full message speak. */
+  function speakUtteranceText(
+    speakText: string,
+    speakingIndex: number | null,
+    onAfterSpeak?: () => void,
+    prefetchedBlob?: Blob | null,
+  ) {
+    const text = speakText.trim();
+    if (!text) {
       onAfterSpeak?.();
       return;
     }
-    const msg = messagesRef.current[index] ?? messages[index];
-    if (!msg || msg.role !== "assistant" || !msg.content.trim()) {
-      onAfterSpeak?.();
-      return;
-    }
-    // Cap spoken length so Kokoro/browser TTS cannot hang the Conversation loop.
-    const speakText = msg.content.length > 1200 ? `${msg.content.slice(0, 1200).trim()}…` : msg.content;
 
     stopTts();
     const gen = ++speakGenerationRef.current;
-    setTtsSpeakingIndex(index);
+    if (speakingIndex != null) setTtsSpeakingIndex(speakingIndex);
+    else setTtsSpeakingIndex(-1);
     setTtsPaused(false);
 
+    let ended = false;
+    // Conversation safety must outlast real Kokoro playback — short timers cut mid-sentence
+    // and reopen the mic into speaker echo (feels like a freeze).
+    const safetyMs = conversationModeRef.current
+      ? Math.min(40_000, Math.max(10_000, text.length * 75))
+      : Math.min(30_000, Math.max(8_000, text.length * 55));
+    let safetyTimer = 0;
+
     const applyEnd = () => {
-      if (speakGenerationRef.current !== gen) return;
+      window.clearTimeout(safetyTimer);
+      if (ended || speakGenerationRef.current !== gen) return;
+      ended = true;
       bargeInStopRef.current?.();
       bargeInStopRef.current = null;
       stopFalloutStatic();
       ttsUtteranceRef.current = null;
       ttsAudioRef.current = null;
-      setTtsSpeakingIndex((current) => (current === index ? null : current));
+      setTtsSpeakingIndex(null);
       setTtsPaused(false);
       onAfterSpeak?.();
     };
+
+    safetyTimer = window.setTimeout(() => applyEnd(), safetyMs);
 
     const playBlob = (blob: Blob) => {
       if (speakGenerationRef.current !== gen) return;
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       ttsAudioRef.current = audio;
+      const armSafetyFromDuration = () => {
+        const dur = audio.duration;
+        if (!Number.isFinite(dur) || dur <= 0) return;
+        window.clearTimeout(safetyTimer);
+        safetyTimer = window.setTimeout(() => applyEnd(), dur * 1000 + 2000);
+      };
+      audio.onloadedmetadata = armSafetyFromDuration;
       audio.onended = () => {
         URL.revokeObjectURL(url);
         applyEnd();
@@ -2156,8 +2389,8 @@ function App() {
       if (speakGenerationRef.current !== gen) return;
       if ((voicePreset === "fallout" || voicePreset === "ultron") && typeof invoke !== "undefined") {
         void withTimeout(
-          invoke<string>("synthesize_speech", { text: speakText, voiceId: voicePreset }),
-          20_000,
+          invoke<string>("synthesize_speech", { text, voiceId: voicePreset }),
+          conversationModeRef.current ? 10_000 : 20_000,
           "Piper TTS timed out",
         )
           .then((base64Wav) => {
@@ -2170,18 +2403,30 @@ function App() {
           .catch(() => {
             if (speakGenerationRef.current !== gen) return;
             setTtsSpeakingIndex(null);
-            speakWithSystemTts(index, speakText, applyEnd);
+            speakWithSystemTts(text, applyEnd);
             attachBargeInWhileSpeaking();
           });
         return;
       }
-      speakWithSystemTts(index, speakText, applyEnd);
+      speakWithSystemTts(text, applyEnd);
       attachBargeInWhileSpeaking();
     };
 
+    if (prefetchedBlob && prefetchedBlob.size > 0) {
+      playBlob(prefetchedBlob);
+      return;
+    }
+
     const cap = duplexCapabilityRef.current;
+    const kokoroMs = conversationModeRef.current ? 10_000 : 25_000;
+    const kokoroSpeed = conversationModeRef.current ? 1.2 : 1.0;
+    const voice = kokoroVoiceRef.current || getPreferredKokoroVoice();
     if (cap?.kokoro && cap.kokoroBaseUrl) {
-      void withTimeout(synthesizeWithKokoro(cap.kokoroBaseUrl, speakText), 25_000, "Kokoro TTS timed out")
+      void withTimeout(
+        synthesizeWithKokoro(cap.kokoroBaseUrl, text, voice, kokoroSpeed),
+        kokoroMs,
+        "Kokoro TTS timed out",
+      )
         .then((blob) => {
           if (speakGenerationRef.current !== gen) return;
           playBlob(blob);
@@ -2193,11 +2438,134 @@ function App() {
     fallBackToPiperOrSystem();
   }
 
-  function speakWithSystemTts(
-    _index: number,
-    text: string,
-    onEnd: () => void
-  ) {
+  function scheduleConversationResumeAfterSpeak() {
+    const gate = conversationTtsGateRef.current;
+    if (gate.resumeScheduled) return;
+    // Mic stays closed until stream done AND speak queue drained (nix-vox / logica pattern).
+    if (gate.expectSpeak && (!gate.streamDone || gate.speaking || gate.queue.length > 0)) return;
+    gate.resumeScheduled = true;
+    if (conversationModeRef.current) {
+      window.setTimeout(() => resumeConversationListeningRef.current?.(), 120);
+    }
+  }
+
+  function enqueueConversationSentences(rawSentences: string[]) {
+    const gate = conversationTtsGateRef.current;
+    if (!gate.expectSpeak || gate.interrupted || gate.resumeScheduled) return;
+    for (const raw of rawSentences) {
+      if (gate.spokenCount + gate.queue.length >= gate.maxSentences) break;
+      const cleaned = cleanTextForSpeech(raw);
+      if (cleaned.length < 4) continue;
+      const capped = cleaned.length > 220 ? `${cleaned.slice(0, 220).trim()}…` : cleaned;
+      gate.queue.push(capped);
+    }
+    // While sentence N plays, start synthesizing N+1 as soon as it lands in the queue.
+    if (
+      gate.speaking &&
+      !gate.prefetch &&
+      gate.queue[0] &&
+      duplexCapabilityRef.current?.kokoro
+    ) {
+      const following = gate.queue[0];
+      voiceDebug("tts.prefetch_start", { preview: voiceDebugPreview(following), via: "enqueue" });
+      gate.prefetch = {
+        text: following,
+        promise: synthesizeConversationKokoroBlob(following),
+      };
+    }
+    kickConversationSpeakQueueRef.current?.();
+  }
+
+  /** Drain TTS sentence queue — start next beat as soon as prior audio ends; prefetch N+1 while N plays. */
+  function kickConversationSpeakQueue() {
+    const gate = conversationTtsGateRef.current;
+    if (!conversationModeRef.current || !gate.expectSpeak) return;
+    if (gate.interrupted || gate.resumeScheduled) return;
+    if (gate.speaking) return;
+
+    const next = gate.queue.shift();
+    if (!next) {
+      gate.prefetch = null;
+      if (gate.streamDone) scheduleConversationResumeAfterSpeak();
+      return;
+    }
+
+    gate.speaking = true;
+    gate.spokenCount += 1;
+
+    const matchedPrefetch =
+      gate.prefetch && gate.prefetch.text === next ? gate.prefetch : null;
+    gate.prefetch = null;
+
+    // Prefetch following sentence while we speak `next`.
+    const following = gate.queue[0];
+    if (following && duplexCapabilityRef.current?.kokoro) {
+      voiceDebug("tts.prefetch_start", { preview: voiceDebugPreview(following) });
+      gate.prefetch = {
+        text: following,
+        promise: synthesizeConversationKokoroBlob(following),
+      };
+    }
+
+    const afterSpeak = () => {
+      gate.speaking = false;
+      voiceDebug("tts.speak_end", { n: gate.spokenCount, queueLeft: gate.queue.length });
+      if (gate.interrupted) return;
+      kickConversationSpeakQueueRef.current?.();
+    };
+
+    voiceDebug("tts.speak_start", {
+      n: gate.spokenCount,
+      preview: voiceDebugPreview(next),
+      prefetched: Boolean(matchedPrefetch),
+    });
+
+    if (matchedPrefetch) {
+      void matchedPrefetch.promise.then((blob) => {
+        if (gate.interrupted || gate.resumeScheduled) {
+          gate.speaking = false;
+          return;
+        }
+        const lastIndex = messagesRef.current.length - 1;
+        speakUtteranceText(next, lastIndex >= 0 ? lastIndex : -1, afterSpeak, blob);
+      });
+      return;
+    }
+
+    speakConversationTextRef.current?.(next, afterSpeak);
+  }
+
+  function speakConversationText(text: string, onAfterSpeak?: () => void) {
+    const shouldSpeak = ttsEnabled || conversationModeRef.current;
+    if (!shouldSpeak) {
+      onAfterSpeak?.();
+      return;
+    }
+    const lastIndex = messagesRef.current.length - 1;
+    speakUtteranceText(text, lastIndex >= 0 ? lastIndex : -1, onAfterSpeak);
+  }
+
+  function speakMessageAtIndex(index: number, onAfterSpeak?: () => void) {
+    // Face Conversation always speaks back so the loop does not die when TTS is off in Chat settings.
+    const shouldSpeak = ttsEnabled || conversationModeRef.current;
+    if (!shouldSpeak) {
+      onAfterSpeak?.();
+      return;
+    }
+    const msg = messagesRef.current[index] ?? messages[index];
+    if (!msg || msg.role !== "assistant" || !msg.content.trim()) {
+      onAfterSpeak?.();
+      return;
+    }
+    const speakText = conversationModeRef.current
+      ? pickConversationalSpeakText(msg.content)
+      : msg.content.length > 1200
+        ? `${msg.content.slice(0, 1200).trim()}…`
+        : msg.content;
+    speakUtteranceText(speakText, index, onAfterSpeak);
+  }
+
+  function speakWithSystemTts(text: string, onEnd: () => void) {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       onEnd();
       return;
@@ -2212,6 +2580,10 @@ function App() {
       const voice = chooseSystemVoiceForPreset(voices);
       const utterance = new SpeechSynthesisUtterance(text);
       if (voice) utterance.voice = voice;
+      if (conversationModeRef.current) {
+        utterance.rate = 1.06;
+        utterance.pitch = 1.0;
+      }
       utterance.onend = onEnd;
       utterance.onerror = onEnd;
       ttsUtteranceRef.current = utterance;
@@ -2241,230 +2613,280 @@ function App() {
     synth.addEventListener("voiceschanged", onVoicesChanged);
   }
 
-  function startBrowserConversationListening() {
-    if (!conversationModeRef.current) return;
-    const SpeechRecognitionAPI =
-      typeof window !== "undefined" &&
-      (window.SpeechRecognition || window.webkitSpeechRecognition);
-    if (!SpeechRecognitionAPI) {
-      const msg =
-        "Speech recognition is not available in this browser. Use Chrome/Edge (or another Chromium build) for Conversation mode, or type instead.";
-      logErrorRef.current?.(msg);
-      setConversationMicError(msg);
-      setConversationMicStatus("denied");
-      return;
-    }
-    speechRecognitionRef.current?.abort();
-    setConversationInterimTranscript("");
-    let hadResult = false;
-    const rec = new SpeechRecognitionAPI();
-    rec.continuous = false;
-    rec.interimResults = true;
-    rec.lang = "en-US";
-    rec.maxAlternatives = 2;
-    rec.onresult = (e: SpeechRecognitionEvent) => {
-      const results = Array.from(e.results);
-      const transcript = results
-        .map((r) => r[0]?.transcript)
-        .filter(Boolean)
-        .join(" ")
-        .trim();
-      const lastIsFinal = results[results.length - 1]?.isFinal;
-      if (lastIsFinal) {
-        setConversationInterimTranscript("");
-        if (transcript) {
-          hadResult = true;
-          setSpeechListening(false);
-          handleSend(transcript);
-        }
-      } else {
-        setConversationInterimTranscript(transcript);
-      }
-    };
-    rec.onend = () => {
-      setConversationInterimTranscript("");
-      if (conversationModeRef.current && !hadResult) {
-        setTimeout(() => startConversationListening(), 500);
-      } else {
-        setSpeechListening(false);
-      }
-    };
-    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
-      setConversationInterimTranscript("");
-      setSpeechListening(false);
-      const permissionDenied = e.error === "not-allowed" || e.error === "audio-capture";
-      if (permissionDenied) {
-        setConversationMicError(`Microphone denied (${e.error}). Allow in System Settings → Privacy & Security → Microphone.`);
-        setConversationMicStatus("denied");
-        logErrorRef.current?.("Microphone access denied. Allow microphone to use conversation mode.");
-        return;
-      }
-      if (conversationModeRef.current) {
-        setTimeout(() => startConversationListening(), 800);
-      }
-    };
-    speechRecognitionRef.current = rec;
-    rec.start();
-    setSpeechListening(true);
-  }
-
-  async function ensureConversationMicStream(): Promise<MediaStream | null> {
-    if (conversationMicStreamRef.current) {
-      const live = conversationMicStreamRef.current.getTracks().some((t) => t.readyState === "live");
-      if (live) return conversationMicStreamRef.current;
-      releaseConversationMic();
-    }
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      return null;
-    }
-    setConversationMicStatus("requesting");
-    setConversationMicError(null);
-    try {
-      const { requestMicrophonePermission } = await import("tauri-plugin-macos-permissions-api");
-      await requestMicrophonePermission();
-    } catch {
-      /* Not Tauri / macOS */
-    }
-    if (!conversationModeRef.current) return null;
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(
-        () =>
-          reject(
-            new Error(
-              "Request timed out. Check System Settings → Privacy & Security → Microphone for Athena.",
-            ),
-          ),
-        10000,
-      ),
-    );
-    try {
-      const stream = await Promise.race([
-        navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        }),
-        timeout,
-      ]);
-      if (!conversationModeRef.current) {
-        stream.getTracks().forEach((t) => t.stop());
-        return null;
-      }
-      conversationMicStreamRef.current = stream;
-      setConversationMicStatus("granted");
-      setConversationMicError(null);
-      return stream;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setConversationMicError(msg);
-      setConversationMicStatus("denied");
-      logErrorRef.current?.(`Microphone: ${msg}`);
-      return null;
-    }
-  }
-
   function startConversationListening() {
+    // Legacy continuous VAD path — Conversation uses push-to-talk instead.
+    // Kept so any stray callers fail closed into PTT idle rather than auto-listen.
+    resumeConversationListening();
+  }
+
+  /** After Athena speaks — return to Hold to talk (no continuous mic). */
+  function resumeConversationListening() {
     if (!conversationModeRef.current) return;
+    if (sendingRef.current) return;
+    if (pttSessionRef.current?.isRecording()) return;
+    bargeInStopRef.current?.();
+    bargeInStopRef.current = null;
+    whisperListenSessionRef.current?.stop();
+    whisperListenSessionRef.current = null;
+    setSpeechListening(false);
+    setVoiceEnergyRms(0);
+    setConversationInterimTranscript("Hold to talk");
+    voiceDebug("listen.resume_ptt", {});
+  }
+
+  function interruptConversationSpeechForPtt() {
+    const gate = conversationTtsGateRef.current;
+    gate.interrupted = true;
+    gate.expectSpeak = false;
+    gate.speaking = false;
+    gate.queue = [];
+    gate.prefetch = null;
+    gate.resumeScheduled = false;
+    stopTts();
+  }
+
+  async function beginConversationPushToTalk() {
+    if (!conversationModeRef.current) return;
+    if (pttBusyRef.current || sendingRef.current) return;
+    if (pttSessionRef.current?.isRecording()) return;
+
+    pttHoldActiveRef.current = true;
+
+    if (ttsSpeakingRef.current || conversationTtsGateRef.current.speaking) {
+      interruptConversationSpeechForPtt();
+    }
+
     whisperListenSessionRef.current?.stop();
     whisperListenSessionRef.current = null;
     bargeInStopRef.current?.();
     bargeInStopRef.current = null;
-    speechRecognitionRef.current?.abort();
-    setConversationInterimTranscript("");
 
-    void (async () => {
-      const cap = duplexCapabilityRef.current ?? (await probeDuplexCapability());
-      if (!conversationModeRef.current) return;
-      setDuplexCapability(cap);
+    try {
+      setConversationInterimTranscript("Preparing mic…");
 
-      if (cap.whisper && cap.whisperBaseUrl) {
-        const stream = await ensureConversationMicStream();
-        if (!conversationModeRef.current) return;
-        if (!stream) {
-          // Mic failed — try browser STT (may also fail)
-          startBrowserConversationListening();
-          return;
+      // Free WebKit mic if any — never clear PTT hold flags here.
+      releaseConversationMic();
+
+      if (!micPermissionReadyRef.current) {
+        try {
+          const { requestMicrophonePermission } = await import("tauri-plugin-macos-permissions-api");
+          await requestMicrophonePermission();
+          micPermissionReadyRef.current = true;
+        } catch {
+          /* Not Tauri / macOS — still try native capture */
+          micPermissionReadyRef.current = true;
         }
-        setSpeechListening(true);
-        const session = startWhisperListen({
-          stream,
-          whisperBaseUrl: cap.whisperBaseUrl,
-          onInterim: (hint) => setConversationInterimTranscript(hint),
-          onEnergy: (rms) => setVoiceEnergyRms(rms),
-          isPaused: () => sendingRef.current || !conversationModeRef.current,
-          onTranscript: (text) => {
-            if (sendingRef.current) return;
-            setSpeechListening(false);
-            setConversationInterimTranscript("");
-            whisperListenSessionRef.current?.setPaused(true);
-            whisperListenSessionRef.current?.stop();
-            whisperListenSessionRef.current = null;
-            void handleSend(text);
-          },
-          onError: (message) => {
-            logErrorRef.current?.(`Whisper STT: ${message} — falling back to browser speech.`);
-            whisperListenSessionRef.current?.stop();
-            whisperListenSessionRef.current = null;
-            setSpeechListening(false);
-            void probeDuplexCapability().then((next) => {
-              setDuplexCapability(next);
-              if (conversationModeRef.current && !sendingRef.current) startBrowserConversationListening();
-            });
-          },
-        });
-        whisperListenSessionRef.current = session;
+      }
+      if (!conversationModeRef.current) {
+        cancelConversationPushToTalk();
+        setConversationInterimTranscript("Hold to talk");
         return;
       }
 
-      // Browser STT path — still acquire mic for barge-in during TTS when possible
-      void ensureConversationMicStream().then(() => {
-        if (conversationModeRef.current) startBrowserConversationListening();
+      // Start native capture even if the user already released — we'll stop immediately after.
+      pttSessionRef.current?.cancel();
+      const session = createNativePushToTalk();
+      pttSessionRef.current = session;
+      await session.start();
+      if (!conversationModeRef.current) {
+        session.cancel();
+        pttSessionRef.current = null;
+        pttHoldActiveRef.current = false;
+        return;
+      }
+      setSpeechListening(true);
+      setConversationInterimTranscript("Recording… release when done");
+      voiceDebug("ptt.start", { via: "native" });
+
+      // Released during async start — transcribe what we captured.
+      if (!pttHoldActiveRef.current) {
+        void endConversationPushToTalk();
+      }
+    } catch (e) {
+      pttHoldActiveRef.current = false;
+      const msg = e instanceof Error ? e.message : String(e);
+      setConversationMicError(msg);
+      setSpeechListening(false);
+      setConversationInterimTranscript("Hold to talk");
+      voiceDebug("ptt.start_error", { error: msg });
+    }
+  }
+
+  async function endConversationPushToTalk() {
+    pttHoldActiveRef.current = false;
+    const session = pttSessionRef.current;
+    if (pttBusyRef.current) return;
+
+    // Start still arming — begin() will call us again once recording is live.
+    if (!session?.isRecording()) {
+      voiceDebug("ptt.release_deferred", { reason: "not_recording_yet" });
+      return;
+    }
+
+    pttBusyRef.current = true;
+    setSpeechListening(false);
+    setConversationInterimTranscript("Transcribing…");
+    voiceDebug("ptt.release", {});
+
+    try {
+      // Prefer cached duplex probe — re-probing marketplace on every release adds lag.
+      let cap = duplexCapabilityRef.current;
+      if (!cap?.whisper || !cap.whisperBaseUrl) {
+        cap = await probeDuplexCapability();
+        setDuplexCapability(cap);
+      }
+      if (!cap.whisper || !cap.whisperBaseUrl) {
+        session.cancel();
+        pttSessionRef.current = null;
+        setConversationMicError("Whisper STT not available. Start Distil-Whisper in Marketplace.");
+        setConversationInterimTranscript("Hold to talk");
+        return;
+      }
+
+      const result = await session.stopAndTranscribe(cap.whisperBaseUrl);
+      pttSessionRef.current = null;
+      if (!conversationModeRef.current) return;
+
+      const text = (result.text || "").trim();
+      if (!text || isJunkTranscript(text)) {
+        voiceDebug("ptt.rejected", {
+          preview: text ? voiceDebugPreview(text) : "(empty)",
+          peak: result.peak,
+          durationMs: result.durationMs,
+          samples: result.samples,
+        });
+        const hint = text
+          ? ` (heard “${text.slice(0, 40)}”, peak ${result.peak.toFixed(3)})`
+          : ` (peak ${result.peak.toFixed(3)}, ${result.durationMs}ms)`;
+        setConversationInterimTranscript(`Didn't catch that${hint} — hold and try again`);
+        window.setTimeout(() => {
+          if (conversationModeRef.current && !sendingRef.current) {
+            setConversationInterimTranscript("Hold to talk");
+          }
+        }, 1800);
+        return;
+      }
+
+      setConversationInterimTranscript("");
+      voiceDebug("ptt.transcript", {
+        preview: voiceDebugPreview(text),
+        peak: result.peak,
+        durationMs: result.durationMs,
+      });
+      void handleSend(text);
+    } catch (e) {
+      pttSessionRef.current = null;
+      const msg = e instanceof Error ? e.message : String(e);
+      voiceDebug("ptt.error", { error: msg });
+      logErrorRef.current?.(`Push-to-talk: ${msg}`);
+      if (/too quiet|hold longer|no audio/i.test(msg)) {
+        setConversationInterimTranscript(msg.split("—")[0].trim() || "Too quiet — try again");
+      } else {
+        setConversationInterimTranscript(`Mic error: ${msg.slice(0, 80)}`);
+      }
+      window.setTimeout(() => {
+        if (conversationModeRef.current && !sendingRef.current) {
+          setConversationInterimTranscript("Hold to talk");
+        }
+      }, 1800);
+    } finally {
+      pttBusyRef.current = false;
+    }
+  }
+
+  function enterConversationFace() {
+    setConversationModeActive(true);
+    void (async () => {
+      setConversationInterimTranscript("Preparing voice…");
+      // Permission only — do not keep getUserMedia open (blocks Dexter-style cpal).
+      try {
+        const { requestMicrophonePermission } = await import("tauri-plugin-macos-permissions-api");
+        await requestMicrophonePermission();
+        micPermissionReadyRef.current = true;
+      } catch {
+        micPermissionReadyRef.current = true;
+      }
+      // If a prior session left WebKit mic open, free it now.
+      releaseConversationMic();
+      if (!conversationModeRef.current) return;
+      const cap = await probeDuplexCapability();
+      setDuplexCapability(cap);
+      if (cap.whisper && cap.whisperBaseUrl) {
+        setConversationInterimTranscript("Warming speech recognition…");
+        clearWhisperModelCache();
+        await warmWhisper(cap.whisperBaseUrl);
+      }
+      // Prefetch a tiny Kokoro clip so the first spoken reply isn't a cold TTS hit.
+      if (cap.kokoro && cap.kokoroBaseUrl) {
+        void synthesizeWithKokoro(
+          cap.kokoroBaseUrl,
+          "Ready.",
+          kokoroVoiceRef.current || getPreferredKokoroVoice(),
+          1.2,
+        ).catch(() => {});
+      }
+      if (!conversationModeRef.current) return;
+      setSpeechListening(false);
+      setConversationInterimTranscript("Hold to talk");
+      voiceDebug("conversation.enter_ptt", {
+        whisper: Boolean(cap.whisper),
+        kokoro: Boolean(cap.kokoro),
+        native: true,
       });
     })();
   }
 
-  function enterConversationFace() {
-    setChatSurface("conversation");
-    setConversationModeActive(true);
-    void probeDuplexCapability().then((cap) => {
-      setDuplexCapability(cap);
-      startConversationListening();
-    });
-  }
-
-  function exitConversationFace(switchToChat = true) {
+  function exitConversationFace(_switchToChat = true) {
     setConversationModeActive(false);
+    setVisionIdentifying(false);
     speechRecognitionRef.current?.abort();
     stopTts();
+    cancelConversationPushToTalk();
     releaseConversationMic();
     setSpeechListening(false);
     setConversationInterimTranscript("");
     setConversationMicStatus("idle");
     setConversationMicError(null);
-    if (switchToChat) setChatSurface("chat");
   }
 
   const conversationFacePhase = (() => {
     if (!conversationModeActive) return "idle" as const;
-    if (sending) return "thinking" as const;
+    if (visionIdentifying) return "identifying" as const;
+    // Prefer speaking over thinking so early TTS (while stream continues) feels natural.
     if (ttsSpeakingIndex != null) return "speaking" as const;
+    if (sending) return "thinking" as const;
     if (speechListening) return "listening" as const;
     return "idle" as const;
   })();
 
   const lastAssistantText =
     [...messages].reverse().find((m) => m.role === "assistant" && m.content.trim())?.content ?? "";
+  const lastUserText =
+    [...messages].reverse().find((m) => m.role === "user" && m.content.trim())?.content ?? "";
 
   speakMessageAtIndexRef.current = speakMessageAtIndex;
+  speakConversationTextRef.current = speakConversationText;
   startConversationListeningRef.current = startConversationListening;
+  resumeConversationListeningRef.current = resumeConversationListening;
+  scheduleConversationResumeRef.current = scheduleConversationResumeAfterSpeak;
+  kickConversationSpeakQueueRef.current = kickConversationSpeakQueue;
+  enqueueConversationSentencesRef.current = enqueueConversationSentences;
+
+  useEffect(() => {
+    if (currentView !== "map") return;
+    registerPmtilesMaplibreProtocolOnce();
+  }, [currentView]);
 
   useEffect(() => {
     if (currentView !== "chat") return;
-    if (readChatSurfaceDefault() !== "conversation") return;
-    if (conversationModeRef.current) return;
-    enterConversationFace();
+    const preferred = readChatSurfaceDefault();
+    setChatSurface(preferred);
+    if (preferred === "conversation") {
+      if (!conversationModeRef.current) enterConversationFace();
+      return;
+    }
+    // Preferred Chat: leave face mode if a previous session left it on.
+    if (conversationModeRef.current) exitConversationFace(true);
     // only when entering chat view
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentView]);
@@ -2472,18 +2894,19 @@ function App() {
 
   // Load theme + personality config from backend so persona matches the selected preset.
   useEffect(() => {
-    invoke<[string | null, string | null, BackendCustomTheme[]]>("get_theme_config")
-      .then(([themeId, personalityId, customs]) => {
+    invoke<[string | null, string | null, BackendCustomTheme[], string | null]>("get_theme_config")
+      .then(([themeId, personalityId, customs, appearance]) => {
         const id = themeId ?? "default";
         const personaRaw = personalityId ?? id;
-        const persona: PersonalityId =
-          personaRaw === "fallout" || personaRaw === "fieldguide" || personaRaw === "default"
-            ? (personaRaw as PersonalityId)
-            : "default";
+        const persona: PersonalityId = isPersonalityId(personaRaw) ? personaRaw : "default";
         const safeId = id === "jarvis" || id === "lastofus" ? "default" : id;
         setActiveThemeId(safeId);
         setActivePersonalityId(persona);
         setMasterThemeProfile(safeId === "fallout" ? "fallout" : "tactical");
+        if (appearance === "light" || appearance === "dark" || appearance === "auto") {
+          setFruitAppearance(appearance);
+          saveFruitAppearance(appearance);
+        }
         const backendCustoms = customs || [];
         setCustomThemes(backendCustoms);
         const activeCustom = backendCustoms.find((t) => t.id === safeId);
@@ -2504,6 +2927,14 @@ function App() {
             setTheme("amber");
             saveTheme("amber");
             const c = PRESET_COLORS.amber;
+            setCustomBg(c.bg);
+            setCustomPrimary(c.primary);
+            setCustomText(c.text);
+            saveCustomColors(c);
+          } else if (safeId === "fruit") {
+            setTheme("silver");
+            saveTheme("silver");
+            const c = PRESET_COLORS.silver;
             setCustomBg(c.bg);
             setCustomPrimary(c.primary);
             setCustomText(c.text);
@@ -2584,11 +3015,7 @@ function App() {
       setSelectedRerankerModelId(uis.active_reranker_model_folder ?? "");
       {
         const om = uis.explicit_ollama_model?.trim() ?? "";
-        if (om) {
-          setSelectedChatModelPath(om.toLowerCase().endsWith(".gguf") ? om : `${om}.gguf`);
-        } else {
-          setSelectedChatModelPath("");
-        }
+        setSelectedChatModelPath(om);
       }
       if (!uis.openai_compatible_api_key_set) {
         setOpenaiApiKeyLocal("");
@@ -2692,18 +3119,25 @@ function App() {
   const refreshLocalModelPathLists = useCallback(async () => {
     setModelScannerPathsLoading(true);
     try {
-      const [c, e, r] = await Promise.all([
+      const [c, e, r, ollama] = await Promise.all([
         invoke<string[]>("get_downloaded_models"),
         invoke<string[]>("scan_embedding_models"),
         invoke<string[]>("scan_reranker_models"),
+        invoke<string[]>("get_local_models").catch(() => [] as string[]),
       ]);
       setAvailableChatModels(Array.isArray(c) ? c : []);
       setAvailableEmbeddingModels(Array.isArray(e) ? e : []);
       setAvailableRerankerModels(Array.isArray(r) ? r : []);
+      setAvailableOllamaModels(
+        Array.isArray(ollama)
+          ? ollama.map((m) => (typeof m === "string" ? m.trim() : "")).filter((m) => m.length > 0)
+          : [],
+      );
     } catch {
       setAvailableChatModels([]);
       setAvailableEmbeddingModels([]);
       setAvailableRerankerModels([]);
+      setAvailableOllamaModels([]);
     } finally {
       setModelScannerPathsLoading(false);
     }
@@ -2851,6 +3285,7 @@ function App() {
     switch (action.type) {
       case "view":
         setMarketplaceFocusAppId(null);
+        setMarketplaceFocusTab(null);
         setCurrentView(action.view);
         break;
       case "settings":
@@ -2912,6 +3347,7 @@ function App() {
         break;
       case "marketplace":
         setMarketplaceFocusAppId(action.appId ?? null);
+        setMarketplaceFocusTab(null);
         setCurrentView("marketplace");
         break;
       case "web":
@@ -3650,27 +4086,56 @@ function App() {
   }, [refreshLocalModelPathLists]);
 
   useEffect(() => {
+    if (currentView === "marketplace") return;
+    setMarketplaceFocusTab(null);
+    setMarketplaceFocusAppId(null);
+  }, [currentView]);
+
+  useEffect(() => {
     if (!settingsOpen) return;
     void refreshLocalModelPathLists();
   }, [settingsOpen, refreshLocalModelPathLists]);
 
-  useEffect(() => {
-    setSelectedChatModelPath((cur) =>
-      availableChatModels.length === 0 ? "" : availableChatModels.includes(cur) ? cur : availableChatModels[0],
-    );
-  }, [availableChatModels]);
+  const chatModelOptions = useMemo(
+    () => buildChatModelOptions(availableOllamaModels, availableChatModels),
+    [availableOllamaModels, availableChatModels],
+  );
+  const installedChatModelIds = useMemo(
+    () => chatModelOptions.map((o) => o.value),
+    [chatModelOptions],
+  );
 
-  /** After disk scan, drop routing prefs that reference deleted GGUF files. */
+  useEffect(() => {
+    setSelectedChatModelPath((cur) => {
+      if (chatModelOptions.length === 0) return "";
+      if (cur && chatModelOptions.some((o) => o.value === cur)) return cur;
+      const fromEngine = activeEngineModel.trim();
+      if (fromEngine) {
+        const match = chatModelOptions.find((o) => {
+          if (o.value === fromEngine) return true;
+          if (o.source !== "gguf") return false;
+          if (o.value === `${fromEngine}.gguf`) return true;
+          const lower = o.value.toLowerCase();
+          if (lower.endsWith(".gguf") && o.value.slice(0, -5) === fromEngine) return true;
+          return false;
+        });
+        if (match) return match.value;
+      }
+      return chatModelOptions[0].value;
+    });
+  }, [chatModelOptions, activeEngineModel]);
+
+  /** After disk / Ollama scan, drop routing prefs that reference missing models. */
   useEffect(() => {
     if (modelScannerPathsLoading) return;
-    const ok = (v: string) => v === MODEL_ROUTING_AUTO || availableChatModels.includes(v);
+    const ok = (v: string) => isInstalledChatModelId(v, chatModelOptions, MODEL_ROUTING_AUTO);
     if (!ok(globalSystemModel)) setGlobalSystemModel(MODEL_ROUTING_AUTO);
     if (!ok(chatAnalysisModel)) setChatAnalysisModel(MODEL_ROUTING_AUTO);
     if (!ok(tacticalMapModel)) setTacticalMapModel(MODEL_ROUTING_AUTO);
     if (activeSessionOverride != null && !ok(activeSessionOverride)) setActiveSessionOverride(null);
   }, [
     modelScannerPathsLoading,
-    availableChatModels,
+    chatModelOptions,
     globalSystemModel,
     chatAnalysisModel,
     tacticalMapModel,
@@ -3679,10 +4144,10 @@ function App() {
 
   const effectiveRoutingSessionOverride = useMemo(
     () =>
-      activeSessionOverride != null && availableChatModels.includes(activeSessionOverride)
+      activeSessionOverride != null && isInstalledChatModelId(activeSessionOverride, chatModelOptions, MODEL_ROUTING_AUTO)
         ? activeSessionOverride
         : null,
-    [activeSessionOverride, availableChatModels],
+    [activeSessionOverride, chatModelOptions],
   );
 
   useEffect(() => {
@@ -4234,14 +4699,38 @@ function App() {
             streamLastChunkAtRef.current = now;
             streamGotFirstChunkRef.current = true;
             streamAssistantContentRef.current += chunk;
-            setMessages((prev) => {
-              const next = [...prev];
-              const i = next.length - 1;
-              if (i >= 0 && next[i].role === "assistant") {
-                next[i] = { ...next[i], content: streamAssistantContentRef.current };
+            setVisionIdentifying(false);
+            // Conversation: throttle React paints so Kokoro playback isn't starved on the UI thread.
+            const flushMessages = () => {
+              const content = streamAssistantContentRef.current;
+              setMessages((prev) => {
+                const next = [...prev];
+                const i = next.length - 1;
+                if (i >= 0 && next[i].role === "assistant") {
+                  next[i] = { ...next[i], content };
+                }
+                return next;
+              });
+            };
+            if (conversationModeRef.current) {
+              const w = window as Window & { __athenaStreamUiTimer?: number };
+              if (w.__athenaStreamUiTimer == null) {
+                w.__athenaStreamUiTimer = window.setTimeout(() => {
+                  w.__athenaStreamUiTimer = undefined;
+                  flushMessages();
+                }, 120);
               }
-              return next;
-            });
+            } else {
+              flushMessages();
+            }
+            // nix-vox style: buffer stream tokens into sentences and speak as they complete.
+            const gate = conversationTtsGateRef.current;
+            if (conversationModeRef.current && gate.expectSpeak && !gate.interrupted && !gate.resumeScheduled) {
+              const completed = gate.buffer.push(chunk);
+              if (completed.length > 0) {
+                enqueueConversationSentencesRef.current?.(completed);
+              }
+            }
           }
         }),
       );
@@ -4273,6 +4762,24 @@ function App() {
             setStreamStallMessage(null);
             sendingRef.current = false;
             setSending(false);
+            setVisionIdentifying(false);
+            // Flush any throttled Conversation stream paint.
+            {
+              const w = window as Window & { __athenaStreamUiTimer?: number };
+              if (w.__athenaStreamUiTimer != null) {
+                window.clearTimeout(w.__athenaStreamUiTimer);
+                w.__athenaStreamUiTimer = undefined;
+              }
+              const content = streamAssistantContentRef.current;
+              setMessages((prev) => {
+                const next = [...prev];
+                const i = next.length - 1;
+                if (i >= 0 && next[i].role === "assistant" && next[i].content !== content) {
+                  next[i] = { ...next[i], content };
+                }
+                return next;
+              });
+            }
             setTimeout(() => {
               if (temporaryChatRef.current) return;
               const latest = messagesRef.current;
@@ -4294,24 +4801,26 @@ function App() {
             }, 0);
             inputRef.current?.focus();
             if (conversationModeRef.current) {
-              setTimeout(() => {
+              const gate = conversationTtsGateRef.current;
+              gate.streamDone = true;
+              window.setTimeout(() => {
                 if (!conversationModeRef.current) return;
-                const lastIndex = messagesRef.current.length - 1;
-                if (lastIndex >= 0) {
-                  const lastMsg = messagesRef.current[lastIndex];
+                if (gate.resumeScheduled || gate.interrupted) return;
+                const leftover = gate.buffer.flush();
+                if (leftover) enqueueConversationSentencesRef.current?.([leftover]);
+                if (gate.spokenCount === 0 && gate.queue.length === 0) {
+                  // No sentence boundaries — fall back to full conversational pick.
+                  const lastIndex = messagesRef.current.length - 1;
+                  const lastMsg = lastIndex >= 0 ? messagesRef.current[lastIndex] : null;
                   if (lastMsg?.role === "assistant" && lastMsg.content?.trim()) {
                     speakMessageAtIndexRef.current?.(lastIndex, () => {
-                      if (conversationModeRef.current) {
-                        setTimeout(() => startConversationListeningRef.current?.(), 350);
-                      }
+                      scheduleConversationResumeRef.current?.();
                     });
-                  } else {
-                    setTimeout(() => startConversationListeningRef.current?.(), 350);
+                    return;
                   }
-                } else {
-                  setTimeout(() => startConversationListeningRef.current?.(), 350);
                 }
-              }, 150);
+                kickConversationSpeakQueueRef.current?.();
+              }, 30);
             }
           }
         }),
@@ -4337,10 +4846,23 @@ function App() {
             });
             sendingRef.current = false;
             setSending(false);
+            setVisionIdentifying(false);
+            conversationTtsGateRef.current = {
+              expectSpeak: false,
+              streamDone: true,
+              resumeScheduled: false,
+              interrupted: false,
+              speaking: false,
+              spokenCount: 0,
+              maxSentences: 2,
+              buffer: new SpokenSentenceBuffer(12),
+              queue: [],
+              prefetch: null,
+            };
           }
           inputRef.current?.focus();
           if (conversationModeRef.current) {
-            setTimeout(() => startConversationListeningRef.current?.(), 500);
+            setTimeout(() => resumeConversationListeningRef.current?.(), 80);
           }
         }),
       );
@@ -4719,34 +5241,45 @@ ${tag}` : tag;
       (studioDraft.base === "fieldguide" || studioDraft.base === "survival-manual");
     // Only the explicit "survival manual" book preset uses paper/vellum chrome. Do not tie `fieldguide`
     // here — that left `body.theme-survival-manual` stuck when switching back to the default guide look.
-    const isSurvivalManualTheme = activeThemeId === "survival-manual" || previewSurvivalManual;
+    const isSurvivalManualTheme = Boolean(
+      activeThemeId === "survival-manual" || previewSurvivalManual,
+    );
 
     const root = document.documentElement;
     let bgRgb =
       hexToRgbCsv(resolvedThemeBgHex) ?? hexToRgbCsv(DEFAULT_CUSTOM.bg) ?? DEFAULT_THEME_BG_RGB;
     let accentRgb =
       hexToRgbCsv(resolvedThemeAccentHex) ?? hexToRgbCsv(DEFAULT_CUSTOM.primary) ?? DEFAULT_THEME_ACCENT_RGB;
-    if (isFalloutCrt) {
-      bgRgb = FALLOUT_DEFAULT_BG_RGB;
-      accentRgb = FALLOUT_DEFAULT_ACCENT_RGB;
-    }
-    root.style.setProperty("--theme-bg-rgb", bgRgb);
-    root.style.setProperty("--theme-accent-rgb", accentRgb);
-    if (isFalloutCrt) {
-      document.body.classList.add("theme-fallout");
-    } else {
-      document.body.classList.remove("theme-fallout");
-    }
 
-    if (isSurvivalManualTheme) {
-      document.body.classList.add("theme-survival-manual");
+    const { isFruit, isFalloutChrome } = applyTheme({
+      themeId: activeThemeId,
+      appearanceMode: fruitAppearance,
+      isNight,
+      survivalManualChrome: isSurvivalManualTheme,
+      forceFalloutChrome: Boolean(isFalloutCrt),
+      appEl: appRef.current ?? undefined,
+    });
+
+    if (!isFruit) {
+      if (isFalloutChrome) {
+        bgRgb = FALLOUT_DEFAULT_BG_RGB;
+        accentRgb = FALLOUT_DEFAULT_ACCENT_RGB;
+      }
+      root.style.setProperty("--theme-bg-rgb", bgRgb);
+      root.style.setProperty("--theme-accent-rgb", accentRgb);
     } else {
-      document.body.classList.remove("theme-survival-manual");
+      // Fruit owns surfaces via package tokens; keep glass RGB aligned with appearance.
+      const fruitBg = fruitAppearance === "dark" || (fruitAppearance === "auto" && isNight) ? "0, 0, 0" : "245, 245, 247";
+      const fruitAccent =
+        fruitAppearance === "dark" || (fruitAppearance === "auto" && isNight) ? "10, 132, 255" : "0, 113, 227";
+      root.style.setProperty("--theme-bg-rgb", fruitBg);
+      root.style.setProperty("--theme-accent-rgb", fruitAccent);
     }
 
     return () => {
       document.body.classList.remove("theme-fallout");
       document.body.classList.remove("theme-survival-manual");
+      document.body.classList.remove("theme-fruit");
     };
   }, [
     theme,
@@ -4758,6 +5291,8 @@ ${tag}` : tag;
     studioDraft,
     activeThemeId,
     activePersonalityId,
+    fruitAppearance,
+    isNight,
   ]);
 
   async function handleSend(overrideText?: string) {
@@ -4771,22 +5306,82 @@ ${tag}` : tag;
     setSpeechListening(false);
     whisperListenSessionRef.current?.setPaused(true);
 
+    if (conversationModeRef.current) {
+      voiceDebug("chat.turn_begin", {
+        chars: text.length,
+        preview: voiceDebugPreview(text),
+        thinkMode,
+      });
+      conversationTtsGateRef.current = {
+        expectSpeak: true,
+        streamDone: false,
+        resumeScheduled: false,
+        interrupted: false,
+        speaking: false,
+        spokenCount: 0,
+        maxSentences: 2,
+        buffer: new SpokenSentenceBuffer(12),
+        queue: [],
+        prefetch: null,
+      };
+    } else {
+      conversationTtsGateRef.current.expectSpeak = false;
+    }
+
     // Wake local AI if asleep so Conversation doesn't fail mid-turn.
     if (aiInferenceSleep) {
       try {
         await invoke("set_ai_inference_sleep", { value: false });
         setAiInferenceSleep(false);
         // Brief settle so Ollama can accept the next request after wake.
-        await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, conversationModeRef.current ? 100 : 250));
       } catch {
         /* continue; backend may still reject */
       }
     }
 
-    const think = thinkModeModelOptions(thinkMode, aiTemperature, aiNumCtx);
     const userFacingText = text;
     const inConversation = conversationModeRef.current;
-    const modelPromptPrefix = inConversation ? think.promptPrefix : "";
+    const think = thinkModeModelOptions(
+      thinkMode,
+      aiTemperature,
+      aiNumCtx,
+      inConversation ? "conversation" : "chat",
+    );
+    // Shared gate (mirrors Rust): skip library browse on greetings / chitchat;
+    // Conversation also skips short ambiguous turns.
+    const skipLibraryRag = shouldSkipLibraryRag(userFacingText, {
+      preferFast: inConversation,
+    });
+    if (skipLibraryRag) {
+      voiceDebug("chat.skip_rag", {
+        preview: voiceDebugPreview(userFacingText),
+        conversation: inConversation,
+      });
+    }
+    // Quick / Deep applies to both Chat and Conversation.
+    const modelPromptPrefix = think.promptPrefix;
+
+    const visionImages: string[] = [];
+    try {
+      // Camera on → always send the current frame so Athena can see the user or an object they hold up.
+      const camFrame = conversationCaptureFrameRef.current?.();
+      if (camFrame) visionImages.push(camFrame);
+    } catch {
+      /* ignore capture errors */
+    }
+    if (attachments.some((a) => a.kind === "image")) {
+      for (const a of attachments.filter((x) => x.kind === "image").slice(0, 3)) {
+        try {
+          const src = convertFileSrc(a.path);
+          const { blobUrlOrPathToBase64 } = await import("../domains/chat/cameraCapture");
+          const b64 = await blobUrlOrPathToBase64(src);
+          if (b64) visionImages.push(b64);
+        } catch {
+          /* skip bad image */
+        }
+      }
+    }
 
     const attachNote =
       attachments.length > 0
@@ -4794,10 +5389,20 @@ ${tag}` : tag;
             .map((a) => a.name)
             .join(", ")}. Use them if helpful.]`
         : "";
+    const visionNote =
+      visionImages.length > 0
+        ? "\n\n[A local camera or image frame is attached. Identify the person, scene, or any object they are holding, then answer their question using what you see. Do not say you cannot see the image. Frames stay on this device.]"
+        : "";
+    if (visionImages.length > 0) {
+      setVisionIdentifying(true);
+    } else {
+      setVisionIdentifying(false);
+    }
     let ragContextString = "";
     let ragSources: string[] = [];
-    // Face Conversation prioritizes turn latency — skip heavy retrieval context there.
-    if (!inConversation) {
+    // Quick Conversation skips library lookup for latency. Deep Conversation may use a short retrieval.
+    // Greetings / chitchat still skip even in Deep.
+    if ((!inConversation || thinkMode === "deep") && !skipLibraryRag) {
       try {
         let ragFilters: RagSearchFilters | undefined;
         try {
@@ -4810,7 +5415,7 @@ ${tag}` : tag;
         }
         const ragResults = await invoke<RagSearchChunk[]>("search_rag_chunks", {
           query: text,
-          limit: 3,
+          limit: inConversation ? 2 : 3,
           filters: ragFilters,
         });
         if (Array.isArray(ragResults) && ragResults.length > 0) {
@@ -4870,7 +5475,7 @@ ${tag}` : tag;
       (ragContextString || spatialContextString || radioTrafficContextString
         ? `Use the following document context, spatial map context, and recent radio traffic context to answer the user's question.\n\nDocument Context: ${ragContextString || "(none)"}\n\nSpatial Map Context: ${spatialContextString || "(none)"}\n\nRecent Radio Traffic Context: ${radioTrafficContextString || "(none)"}\n\nQuestion: ${text}`
         : text);
-    const promptWithMode = `${modelPromptPrefix}${promptForModel}`;
+    const promptWithMode = `${modelPromptPrefix}${promptForModel}${visionNote}`;
 
     const localSourcesLabel: LibraryStreamSource[] =
       ragSources.length > 0
@@ -4880,11 +5485,11 @@ ${tag}` : tag;
           : [];
     const userMessage: ChatMessage = {
       role: "user",
-      content: userFacingText + attachNote,
+      content: userFacingText + attachNote + (visionImages.length > 0 ? " 📷" : ""),
       timestamp: Date.now(),
       ...(localSourcesLabel.length > 0 ? { sources: localSourcesLabel } : {}),
     };
-    const currentMessages = messages;
+    const currentMessages = messagesRef.current;
     if (text.toLowerCase() === "/rag-count") {
       setInput("");
       setMessages((prev) => [...prev, userMessage, { role: "assistant", content: "", timestamp: Date.now() }]);
@@ -4917,8 +5522,9 @@ ${tag}` : tag;
       }
       sendingRef.current = false;
       setSending(false);
+      setVisionIdentifying(false);
       if (conversationModeRef.current) {
-        setTimeout(() => startConversationListeningRef.current?.(), 400);
+        setTimeout(() => resumeConversationListeningRef.current?.(), 80);
       }
       return;
     }
@@ -4962,15 +5568,22 @@ ${tag}` : tag;
       const { userLat, userLon } = await resolveGpsForChatPayload();
       invoke("send_message_stream", {
         message: promptWithMode,
-        history: currentMessages.map((m) => ({ role: m.role, content: m.content })),
+        history: (inConversation
+          ? currentMessages.slice(thinkMode === "deep" ? -10 : -6)
+          : currentMessages
+        ).map((m) => ({ role: m.role, content: m.content })),
         userLat,
         userLon,
         chatId: chatIdToUse,
         modelOptions: {
-          temperature: inConversation ? think.temperature : aiTemperature,
-          num_ctx: inConversation ? think.num_ctx : aiNumCtx,
+          temperature: think.temperature,
+          num_ctx: think.num_ctx,
+          ...(think.numPredict != null ? { num_predict: think.numPredict } : {}),
         },
         model: chatInferenceModel,
+        images: visionImages.length > 0 ? visionImages : null,
+        skipLibraryRag,
+        conversationMode: inConversation,
       }).catch((e) => {
         const errMsg = e != null ? String(e) : "Send failed";
         logError(errMsg);
@@ -4986,9 +5599,10 @@ ${tag}` : tag;
         });
         sendingRef.current = false;
         setSending(false);
+        setVisionIdentifying(false);
         inputRef.current?.focus();
         if (conversationModeRef.current) {
-          setTimeout(() => startConversationListeningRef.current?.(), 400);
+          setTimeout(() => resumeConversationListeningRef.current?.(), 80);
         }
       });
     } catch (e) {
@@ -4996,6 +5610,7 @@ ${tag}` : tag;
       logError(errMsg);
       sendingRef.current = false;
       setSending(false);
+      setVisionIdentifying(false);
       setMessages((prev) => {
         const next = [...prev];
         const i = next.length - 1;
@@ -5005,7 +5620,7 @@ ${tag}` : tag;
         return next;
       });
       if (conversationModeRef.current) {
-        setTimeout(() => startConversationListeningRef.current?.(), 400);
+        setTimeout(() => resumeConversationListeningRef.current?.(), 80);
       }
     }
   }
@@ -5015,6 +5630,26 @@ ${tag}` : tag;
       e.preventDefault();
       handleSend();
     }
+  }
+
+  async function handleRegenerate(assistantIndex: number) {
+    if (sending || sendingRef.current || localChatHistoryReadOnly) return;
+    const msgs = messagesRef.current;
+    let userIdx = -1;
+    for (let i = assistantIndex - 1; i >= 0; i--) {
+      if (msgs[i]?.role === "user") {
+        userIdx = i;
+        break;
+      }
+    }
+    if (userIdx < 0) return;
+    const raw = msgs[userIdx].content ?? "";
+    const userContent = raw.replace(/\s*📷\s*$/u, "").trim();
+    if (!userContent) return;
+    const historyBefore = msgs.slice(0, userIdx);
+    messagesRef.current = historyBefore;
+    setMessages(historyBefore);
+    await handleSend(userContent);
   }
 
   async function handleAttachImages() {
@@ -5145,6 +5780,7 @@ ${tag}` : tag;
     if (!messages.length || exportingPdf) return;
     try {
       setExportingPdf(true);
+      const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
       const pdfDoc = await PDFDocument.create();
       const pageMargin = 50;
       const page = pdfDoc.addPage();
@@ -5271,7 +5907,7 @@ ${tag}` : tag;
   const displayPersona: PersonalityId = (() => {
     if (previewThemeStudio && studioDraft?.personality_id) {
       const p = studioDraft.personality_id;
-      if (p === "fallout" || p === "fieldguide" || p === "default") return p;
+      if (isPersonalityId(p)) return p;
     }
     return activePersonalityId;
   })();
@@ -5308,7 +5944,7 @@ ${tag}` : tag;
       scopeLabel,
       activeLabel,
       value: effectiveRoutingSessionOverride ?? SESSION_MODEL_FOLLOW_SETTINGS,
-      basenames: availableChatModels,
+      basenames: installedChatModelIds,
       onChange: (v: string) => {
         if (v === SESSION_MODEL_FOLLOW_SETTINGS) setActiveSessionOverride(null);
         else setActiveSessionOverride(v);
@@ -5320,7 +5956,7 @@ ${tag}` : tag;
     chatAnalysisModel,
     globalSystemModel,
     effectiveRoutingSessionOverride,
-    availableChatModels,
+    installedChatModelIds,
   ]);
 
   const chatInferenceModel = useMemo(
@@ -5377,7 +6013,12 @@ ${tag}` : tag;
     appStyle["--fx-grain"] = String(customThemeForFx.film_grain);
   }
 
-  const lexiconThemeId: LexiconThemeId = activeThemeId === "fallout" ? "fallout" : "survival";
+  const lexiconThemeId: LexiconThemeId =
+    activeThemeId === "fallout" || activePersonalityId === "fallout"
+      ? "fallout"
+      : activeThemeId === "fruit" || activePersonalityId === "fruit"
+        ? "fruit"
+        : "survival";
   const lx = useMemo(() => getLexicon(lexiconThemeId), [lexiconThemeId]);
 
   const meshSosGlobalBanner = useMemo(() => {
@@ -5550,9 +6191,13 @@ ${tag}` : tag;
       style={Object.keys(appStyle).length ? appStyle : undefined}
     >
       {!user ? (
-        <LockScreen />
+        <Suspense fallback={<ViewChunkFallback label="Loading lock screen…" />}>
+          <LockScreen />
+        </Suspense>
       ) : ((user.clearance_level ?? user.rank_level ?? 0) <= 0) ? (
-        <GuestDashboard />
+        <Suspense fallback={<ViewChunkFallback label="Loading…" />}>
+          <GuestDashboard />
+        </Suspense>
       ) : (
       <>
       <div className="app-shell">
@@ -5564,10 +6209,6 @@ ${tag}` : tag;
             setCurrentView("archive");
           }}
           onOpenSettings={() => setSettingsOpen(true)}
-          onOpenAiModelSettings={() => {
-            settingsPanelOnOpenRef.current = "ai";
-            setSettingsOpen(true);
-          }}
           onOpenHelp={() => setHelpOpen(true)}
           onOpenCalendar={() => setCurrentView("calendar")}
           calendarDateTimeLabel={headerClockLabel}
@@ -5667,6 +6308,7 @@ ${tag}` : tag;
             document.body
           )}
         <div className="app-content-stage">
+          <Suspense fallback={<ViewChunkFallback />}>
           {currentView === "home" ? (
             <div className="home-view-scroll">
               <DashboardView
@@ -5688,13 +6330,34 @@ ${tag}` : tag;
                     return;
                   }
                   setMarketplaceFocusAppId(null);
+                  setMarketplaceFocusTab(null);
                   setCurrentView(destination);
                 }}
               />
             </div>
           ) : null}
           {currentView === "marketplace" ? (
-            <MarketplaceView focusAppId={marketplaceFocusAppId} />
+            <MarketplaceView
+              focusAppId={marketplaceFocusAppId}
+              initialTab={marketplaceFocusTab}
+              initialActiveModel={activeEngineModel}
+              onActiveModelChange={(model) => setActiveEngineModel(model)}
+              onModelsChanged={() => {
+                void refreshLocalModelPathLists();
+              }}
+              showUnrestrictedCatalog={allowNsfwCatalog}
+              isAdult={userIs18}
+              onOpenDataAcquisitionMaps={() => {
+                setMarketplaceFocusTab(null);
+                setDataAcquisitionTab("maps");
+                setCurrentView("data_acquisition");
+              }}
+              onOpenDataAcquisitionModels={() => {
+                setMarketplaceFocusTab(null);
+                setDataAcquisitionTab("models");
+                setCurrentView("data_acquisition");
+              }}
+            />
           ) : null}
           {currentView === "chat" ? (
             <div className={`app-chat-workspace${conversationModeActive ? " app-chat-workspace--face" : ""}`}>
@@ -5704,14 +6367,22 @@ ${tag}` : tag;
           phase={conversationFacePhase}
           interimTranscript={conversationInterimTranscript}
           lastAssistantText={lastAssistantText}
+          lastUserText={lastUserText}
           duplexLabel={duplexCapability?.label ?? "Probing voice modules…"}
           micError={conversationMicError}
           stallMessage={streamStallMessage}
           thinkMode={thinkMode}
           onThinkModeChange={setThinkMode}
           energyRms={voiceEnergyRms}
-          onClose={() => exitConversationFace(true)}
-          onSwitchToChat={() => exitConversationFace(true)}
+          preferredChatModel={chatInferenceModel}
+          registerCaptureFrame={registerConversationCaptureFrame}
+          pttDisabled={sending || visionIdentifying || conversationInterimTranscript === "Transcribing…"}
+          onPttDown={() => {
+            void beginConversationPushToTalk();
+          }}
+          onPttUp={() => {
+            void endConversationPushToTalk();
+          }}
         />
       ) : null}
       <aside className={`chat-sidebar ${chatsOpen ? "" : "chat-sidebar-collapsed"}`}>
@@ -5728,6 +6399,43 @@ ${tag}` : tag;
               <path d="M4 12h10" />
               <path d="M4 18h8" />
             </svg>
+          </button>
+        </div>
+        <div className="sidebar-surface-toggle" role="group" aria-label="Chat or Conversation">
+          <button
+            type="button"
+            className={
+              !conversationModeActive
+                ? "sidebar-surface-btn sidebar-surface-btn--active"
+                : "sidebar-surface-btn"
+            }
+            onClick={() => {
+              // Session switch only — do not overwrite Settings → Default Chat surface.
+              if (conversationModeActive) exitConversationFace(true);
+            }}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            className={
+              conversationModeActive
+                ? "sidebar-surface-btn sidebar-surface-btn--active"
+                : "sidebar-surface-btn"
+            }
+            disabled={localChatHistoryReadOnly}
+            onClick={() => {
+              // Session switch only — default for next boot stays in Settings.
+              enterConversationFace();
+            }}
+          >
+            <span className="sidebar-surface-long">
+              Conversation
+              <span className="sidebar-dev-badge" title="Under development">
+                Dev
+              </span>
+            </span>
+            <span className="sidebar-surface-short">Talk</span>
           </button>
         </div>
         <div className="sidebar-brand">
@@ -5859,7 +6567,7 @@ ${tag}` : tag;
         </ul>
       </aside>
 
-      <main className="chat-main glass-panel">
+      <main className="chat-main glass-panel chat-main--gemini">
         {activePersonalityId === "fieldguide" && (
           <div className="fieldguide-hole-punches" aria-hidden>
             <span /><span /><span />
@@ -6212,21 +6920,52 @@ ${tag}` : tag;
         <div key={currentChatId ?? "new"} className="chat-messages content-transition">
         <ErrorBoundary sectionLabel="chat messages">
         {messages.length === 0 && (
-          <div className="welcome">
-            <p>Ask me anything</p>
+          <div className="welcome gemini-welcome">
+            <h1 className="gemini-welcome-brand">Athena</h1>
+            <p className="gemini-welcome-lead">Ask anything — field guide, plans, or a quick check.</p>
+            <div className="gemini-suggest-row">
+              {[
+                "What’s the fastest way to purify water?",
+                "Help me plan a 3-day pack",
+                "Explain frostbite first aid",
+                "Start a voice Conversation",
+              ].map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className="gemini-suggest-chip"
+                  disabled={localChatHistoryReadOnly}
+                  onClick={() => {
+                    if (s.toLowerCase().includes("conversation")) {
+                      enterConversationFace();
+                      return;
+                    }
+                    setInput(s);
+                    void handleSend(s);
+                  }}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {messages.map((msg, i) => (
-          <div key={i} className={`message message-${msg.role}`}>
+          <div key={i} className={`message message-${msg.role} gemini-message`}>
             <div className="message-role">{msg.role === "user" ? "You" : "Athena"}</div>
             <div className="message-content" ref={(el) => { messageRefsRef.current[i] = el; }}>
-              {formatMessageTextWithHighlight(msg.content, findInChatQuery)}
+              <ChatMarkdown content={msg.content} highlightQuery={findInChatQuery} />
               {sending && i === messages.length - 1 && msg.role === "assistant" && msg.content === "" && (
                 <span className="message-loading-dots" aria-hidden>
                   <span className="message-loading-dot" />
                   <span className="message-loading-dot" />
                   <span className="message-loading-dot" />
                 </span>
+              )}
+              {visionIdentifying && i === messages.length - 1 && msg.role === "assistant" && (
+                <div className="chat-identifying-line" aria-live="polite">
+                  Identifying…
+                </div>
               )}
               {msg.role === "assistant" && showSourcesInChat && (msg.sources?.length ?? 0) > 0 && (
                 <div className="message-sources" aria-label="Sources from your library">
@@ -6312,10 +7051,42 @@ ${tag}` : tag;
                 >
                   ⎘
                 </button>
+                <button
+                  type="button"
+                  className="message-tts-btn"
+                  onClick={() => void handleRegenerate(i)}
+                  disabled={sending || localChatHistoryReadOnly}
+                  aria-label="Regenerate response"
+                  title="Regenerate response"
+                >
+                  ↻
+                </button>
               </div>
             )}
           </div>
         ))}
+        {!sending &&
+        !conversationModeActive &&
+        messages.length >= 2 &&
+        messages[messages.length - 1]?.role === "assistant" &&
+        messages[messages.length - 1]?.content?.trim() ? (
+          <div className="gemini-followups" aria-label="Suggested follow-ups">
+            {buildFollowUpSuggestions(
+              [...messages].reverse().find((m) => m.role === "user")?.content ?? "",
+              messages[messages.length - 1].content,
+            ).map((s) => (
+              <button
+                key={s}
+                type="button"
+                className="gemini-suggest-chip"
+                disabled={localChatHistoryReadOnly}
+                onClick={() => void handleSend(s)}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        ) : null}
           <div ref={messagesEndRef} />
         </ErrorBoundary>
         </div>
@@ -6374,143 +7145,97 @@ ${tag}` : tag;
               )}
             </div>
           )}
-          <div className="chat-input-row">
-            <div className="chat-input-left-buttons">
-              <div className="chat-surface-toggle" role="group" aria-label="Chat or Conversation">
-                <button
-                  type="button"
-                  className={`chat-surface-btn${chatSurface === "chat" && !conversationModeActive ? " chat-surface-btn--active" : ""}`}
-                  onClick={() => {
-                    saveChatSurfaceDefault("chat");
-                    setChatSurface("chat");
-                    if (conversationModeActive) exitConversationFace(true);
-                  }}
-                >
-                  Chat
-                </button>
-                <button
-                  type="button"
-                  className={`chat-surface-btn${conversationModeActive ? " chat-surface-btn--active" : ""}`}
-                  disabled={localChatHistoryReadOnly}
-                  onClick={() => {
-                    saveChatSurfaceDefault("conversation");
-                    enterConversationFace();
-                  }}
-                >
-                  Conversation
-                </button>
-              </div>
-              {!VOICE_AND_MIC_FEATURES_HIDDEN && (
-                <button
-                  type="button"
-                  className={`chat-tools-btn conversation-mode-btn${conversationModeActive ? " conversation-mode-btn-active" : ""}`}
-                  disabled={localChatHistoryReadOnly}
-                  onClick={() => {
-                    if (conversationModeActive) {
-                      exitConversationFace(true);
-                    } else {
-                      saveChatSurfaceDefault("conversation");
-                      enterConversationFace();
-                    }
-                  }}
-                  title={
-                    conversationModeActive
-                      ? `Exit face Conversation (${duplexCapability?.label ?? "Browser speech"})`
-                      : "Open Yes Man–style face Conversation (continuous talk)"
-                  }
-                  aria-label={conversationModeActive ? "Exit conversation face mode" : "Start conversation face mode"}
-                >
-                  <span className="chat-tools-icon" aria-hidden>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                      <line x1="12" x2="12" y1="19" y2="22" />
-                    </svg>
-                  </span>
-                  <span className="chat-tools-label">{conversationModeActive ? (speechListening ? "Listening…" : "Face On") : "Face"}</span>
-                </button>
+          <div className="chat-input-row gemini-pill" ref={composerMenusRef}>
+            <div className="gemini-pill-plus chat-tools">
+              <button
+                type="button"
+                className="gemini-pill-icon-btn"
+                onClick={() => {
+                  setThinkMenuOpen(false);
+                  setToolsOpen((v) => !v);
+                }}
+                aria-expanded={toolsOpen}
+                disabled={localChatHistoryReadOnly}
+                title="Tools"
+                aria-label="Tools"
+              >
+                ＋
+              </button>
+              {toolsOpen && (
+                <div className="chat-tools-menu gemini-pill-menu" role="menu">
+                  {!VOICE_AND_MIC_FEATURES_HIDDEN && (
+                    <button
+                      type="button"
+                      className={`chat-tools-item${speechListening ? " chat-tools-item-active" : ""}`}
+                      onClick={() => {
+                        setToolsOpen(false);
+                        const SpeechRecognitionAPI = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+                        if (!SpeechRecognitionAPI) {
+                          logErrorRef.current?.("Speech recognition not supported in this browser.");
+                          return;
+                        }
+                        if (speechListening) {
+                          speechRecognitionRef.current?.abort();
+                          return;
+                        }
+                        const rec = new SpeechRecognitionAPI();
+                        rec.continuous = false;
+                        rec.interimResults = true;
+                        rec.lang = "en-US";
+                        rec.onresult = (e: SpeechRecognitionEvent) => {
+                          const transcript = Array.from(e.results)
+                            .map((r) => r[0].transcript)
+                            .join(" ")
+                            .trim();
+                          if (transcript) setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
+                        };
+                        rec.onend = () => setSpeechListening(false);
+                        rec.onerror = () => setSpeechListening(false);
+                        speechRecognitionRef.current = rec;
+                        rec.start();
+                        setSpeechListening(true);
+                      }}
+                      aria-label={speechListening ? "Stop listening" : "Speak to type"}
+                      title={speechListening ? "Stop listening" : "Speak to type (browser speech recognition)"}
+                    >
+                      <span className="chat-tools-item-icon">🎤</span>
+                      <span className="chat-tools-item-text">{speechListening ? "Listening…" : "Speak"}</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="chat-tools-item"
+                    onClick={() => {
+                      setToolsOpen(false);
+                      void handleAttachImages();
+                    }}
+                  >
+                    <span className="chat-tools-item-icon">🖼️</span>
+                    <span className="chat-tools-item-text">Upload images</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-tools-item"
+                    onClick={() => {
+                      setToolsOpen(false);
+                      void handleAttachFiles();
+                    }}
+                  >
+                    <span className="chat-tools-item-icon">📄</span>
+                    <span className="chat-tools-item-text">Upload files</span>
+                  </button>
+                </div>
               )}
-              <div className="chat-tools">
-                <button
-                  type="button"
-                  className="chat-tools-btn"
-                  onClick={() => setToolsOpen((v) => !v)}
-                  aria-expanded={toolsOpen}
-                  disabled={localChatHistoryReadOnly}
-                >
-                  <span className="chat-tools-icon">＋</span>
-                  <span className="chat-tools-label">Tools</span>
-                </button>
-                {toolsOpen && (
-                  <div className="chat-tools-menu">
-                    {!VOICE_AND_MIC_FEATURES_HIDDEN && (
-                      <button
-                        type="button"
-                        className={`chat-tools-item${speechListening ? " chat-tools-item-active" : ""}`}
-                        onClick={() => {
-                          setToolsOpen(false);
-                          const SpeechRecognitionAPI = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
-                          if (!SpeechRecognitionAPI) {
-                            logErrorRef.current?.("Speech recognition not supported in this browser.");
-                            return;
-                          }
-                          if (speechListening) {
-                            speechRecognitionRef.current?.abort();
-                            return;
-                          }
-                          const rec = new SpeechRecognitionAPI();
-                          rec.continuous = false;
-                          rec.interimResults = true;
-                          rec.lang = "en-US";
-                          rec.onresult = (e: SpeechRecognitionEvent) => {
-                            const transcript = Array.from(e.results)
-                              .map((r) => r[0].transcript)
-                              .join(" ")
-                              .trim();
-                            if (transcript) setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
-                          };
-                          rec.onend = () => setSpeechListening(false);
-                          rec.onerror = () => setSpeechListening(false);
-                          speechRecognitionRef.current = rec;
-                          rec.start();
-                          setSpeechListening(true);
-                        }}
-                        aria-label={speechListening ? "Stop listening" : "Speak to type"}
-                        title={speechListening ? "Stop listening" : "Speak to type (browser speech recognition)"}
-                      >
-                        <span className="chat-tools-item-icon">🎤</span>
-                        <span className="chat-tools-item-text">{speechListening ? "Listening…" : "Speak"}</span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="chat-tools-item"
-                      onClick={handleAttachImages}
-                    >
-                      <span className="chat-tools-item-icon">🖼️</span>
-                      <span className="chat-tools-item-text">Upload images</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-tools-item"
-                      onClick={handleAttachFiles}
-                    >
-                      <span className="chat-tools-item-icon">📄</span>
-                      <span className="chat-tools-item-text">Upload files</span>
-                    </button>
-                  </div>
-                )}
-              </div>
             </div>
             <textarea
               ref={inputRef}
-              className="chat-input"
+              className="chat-input gemini-pill-input"
               placeholder={
                 conversationModeActive
-                  ? "Active conversation: speak, get a reply, then speak again for a continuous back-and-forth…"
+                  ? "Speak, or type here…"
                   : temporaryChat
                     ? "Temporary chat…"
-                    : "Message Athena…"
+                    : "Ask Athena…"
               }
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -6518,14 +7243,118 @@ ${tag}` : tag;
               disabled={sending || localChatHistoryReadOnly}
               rows={1}
             />
+            <div className="gemini-pill-think-wrap">
+              <button
+                type="button"
+                className="gemini-pill-think"
+                onClick={() => {
+                  setToolsOpen(false);
+                  setThinkMenuOpen((v) => !v);
+                }}
+                aria-expanded={thinkMenuOpen}
+                title="Thinking level"
+                aria-label={`Thinking level: ${thinkMode}`}
+              >
+                {thinkMode === "quick" ? "Quick" : "Deep"}
+                <span aria-hidden>▾</span>
+              </button>
+              {thinkMenuOpen ? (
+                <div className="chat-tools-menu gemini-pill-menu gemini-think-menu" role="menu">
+                  <div className="gemini-think-menu-section-label">Local</div>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={thinkMode === "quick"}
+                    className={`chat-tools-item${thinkMode === "quick" ? " chat-tools-item-active" : ""}`}
+                    onClick={() => {
+                      setThinkMode("quick");
+                      setThinkMenuOpen(false);
+                    }}
+                  >
+                    <span className="chat-tools-item-icon">⚡</span>
+                    <span className="chat-tools-item-text">
+                      <strong>Quick</strong>
+                      <span className="gemini-think-item-sub">Fast natural replies</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={thinkMode === "deep"}
+                    className={`chat-tools-item${thinkMode === "deep" ? " chat-tools-item-active" : ""}`}
+                    onClick={() => {
+                      setThinkMode("deep");
+                      setThinkMenuOpen(false);
+                    }}
+                  >
+                    <span className="chat-tools-item-icon">🧠</span>
+                    <span className="chat-tools-item-text">
+                      <strong>Deep</strong>
+                      <span className="gemini-think-item-sub">Thorough technical answers</span>
+                    </span>
+                  </button>
+                  {internetAllowed ? (
+                    <>
+                      <div className="gemini-think-menu-divider" />
+                      <div className="gemini-think-menu-section-label">Cloud (when configured)</div>
+                      <p className="gemini-think-menu-note">
+                        {inferenceBackendMode === "openai_compatible" && openaiApiKeyLocal.trim()
+                          ? "OpenAI-compatible cloud backend is configured in Settings."
+                          : openaiApiKeyLocal.trim() || inferenceBackendMode === "openai_compatible"
+                            ? "Cloud-compatible backend available — manage models in Settings → AI."
+                            : "Connect online models with an API key to use cloud chatbots alongside local thinking levels."}
+                      </p>
+                      <button
+                        type="button"
+                        className="chat-tools-item gemini-think-settings-link"
+                        onClick={() => {
+                          setThinkMenuOpen(false);
+                          settingsPanelOnOpenRef.current = "ai";
+                          setSettingsOpen(true);
+                        }}
+                      >
+                        <span className="chat-tools-item-icon">⚙</span>
+                        <span className="chat-tools-item-text">
+                          <strong>Open AI settings</strong>
+                          <span className="gemini-think-item-sub">Add API key / cloud backend</span>
+                        </span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="gemini-think-menu-divider" />
+                      <p className="gemini-think-menu-note">
+                        Offline — local Quick / Deep only. When online, you can add a cloud API key in Settings.
+                      </p>
+                      <button
+                        type="button"
+                        className="chat-tools-item gemini-think-settings-link"
+                        onClick={() => {
+                          setThinkMenuOpen(false);
+                          settingsPanelOnOpenRef.current = "ai";
+                          setSettingsOpen(true);
+                        }}
+                      >
+                        <span className="chat-tools-item-icon">⚙</span>
+                        <span className="chat-tools-item-text">
+                          <strong>Open AI settings</strong>
+                          <span className="gemini-think-item-sub">API key for cloud bots</span>
+                        </span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
-              className={`send-btn${input.trim() ? " send-btn-active" : ""}`}
+              className={`gemini-pill-send${input.trim() ? " gemini-pill-send--active" : ""}`}
               onClick={() => handleSend()}
               disabled={sending || !input.trim() || localChatHistoryReadOnly}
               title="Send (Enter)"
+              aria-label="Send"
             >
-              Send
+              {sending ? "…" : "↑"}
             </button>
           </div>
         </div>
@@ -6708,14 +7537,17 @@ ${tag}` : tag;
               onOpenProfile={(id) => setProfilePersonnelId(id)}
             />
           ) : null}
+          </Suspense>
         </div>
       </div>
-      <PersonnelProfileModal
-        open={profilePersonnelId != null}
-        personnelId={profilePersonnelId}
-        onClose={() => setProfilePersonnelId(null)}
-        onOpenPersonnel={(id) => setProfilePersonnelId(id)}
-      />
+      <Suspense fallback={null}>
+        <PersonnelProfileModal
+          open={profilePersonnelId != null}
+          personnelId={profilePersonnelId}
+          onClose={() => setProfilePersonnelId(null)}
+          onOpenPersonnel={(id) => setProfilePersonnelId(id)}
+        />
+      </Suspense>
       {birthdayModalVisible && (
         <div
           className="birthday-modal-backdrop"
@@ -7044,6 +7876,7 @@ ${tag}` : tag;
               onClose={() => setSettingsOpen(false)}
               detailScrollRef={settingsBodyRef}
             >
+            <Suspense fallback={<ViewChunkFallback label="Loading settings…" />}>
             {settingsPanel === "me" && (
               <>
                 <header className="settings-me-pane-header">
@@ -7591,12 +8424,46 @@ ${tag}` : tag;
                 onOpenMarketplace={() => {
                   setSettingsOpen(false);
                   setMarketplaceFocusAppId(null);
+                  setMarketplaceFocusTab(null);
                   setCurrentView("marketplace");
                 }}
               />
             )}
             {settingsPanel === "ai" && (
               <>
+                <section className="library-section">
+                  <h3>Chat</h3>
+                  <SettingsGroup>
+                    <SettingsRow
+                      focusId="chat-surface-default"
+                      spotlight={settingsFocusId === "chat-surface-default"}
+                      title="Default Chat surface"
+                      subtitle="When you open Chat: typing UI, or Conversation face mode"
+                      trailing={
+                        <select
+                          className="theme-select settings-row-inline-control"
+                          value={chatSurface}
+                          aria-label="Default Chat surface"
+                          onChange={(e) => {
+                            const v = e.target.value === "conversation" ? "conversation" : "chat";
+                            saveChatSurfaceDefault(v);
+                            setChatSurface(v);
+                            if (currentView === "chat") {
+                              if (v === "conversation" && !conversationModeActive) {
+                                enterConversationFace();
+                              } else if (v === "chat" && conversationModeActive) {
+                                exitConversationFace(true);
+                              }
+                            }
+                          }}
+                        >
+                          <option value="chat">Chat (type + quick mic)</option>
+                          <option value="conversation">Conversation (face mode)</option>
+                        </select>
+                      }
+                    />
+                  </SettingsGroup>
+                </section>
                 <section className="library-section">
                   <h3>Connectivity (NOMAD)</h3>
                   <p className="text-muted small">
@@ -7637,15 +8504,15 @@ ${tag}` : tag;
                   globalSystemModel={globalSystemModel}
                   chatAnalysisModel={chatAnalysisModel}
                   tacticalMapModel={tacticalMapModel}
-                  downloadedGgufFilenames={availableChatModels}
+                  installedChatModelIds={installedChatModelIds}
                   onChangeModelRouting={updateModelRoutingPreference}
                 />
                 <section className="library-section">
-                  <h3>Chat, embedding, and reranker folders</h3>
+                  <h3>Active models</h3>
                   <p className="text-muted small">
-                    These lists come from your app data <code className="ollama-managed-path-code">models/</code> tree (chat
-                    files and folders, embedding subfolders, reranker subfolders). ONNX files may still be downloading in the
-                    background on first launch.
+                    Choose the active chat model from installed Ollama tags and local GGUF files. Install more from{" "}
+                    <strong>Marketplace → Models</strong>. Embedding and reranker folders still come from your app data{" "}
+                    <code className="ollama-managed-path-code">models/</code> tree.
                   </p>
                   <div
                     className="glass-panel"
@@ -7659,38 +8526,68 @@ ${tag}` : tag;
                         id="settings-chat-model-select"
                         className="theme-select"
                         style={{ marginTop: "0.25rem", width: "100%" }}
-                        disabled={availableChatModels.length === 0}
+                        disabled={chatModelOptions.length === 0}
                         value={
-                          availableChatModels.length === 0
+                          chatModelOptions.length === 0
                             ? ""
-                            : availableChatModels.includes(selectedChatModelPath)
+                            : chatModelOptions.some((o) => o.value === selectedChatModelPath)
                               ? selectedChatModelPath
-                              : availableChatModels[0]
+                              : chatModelOptions[0].value
                         }
                         onChange={(e) => {
                           const v = e.target.value;
                           setSelectedChatModelPath(v);
-                          const stem = v.toLowerCase().endsWith(".gguf") ? v.slice(0, -5) : v;
+                          const explicit = explicitModelValueFromSelection(v);
+                          setActiveEngineModel(explicit ?? "");
                           void invoke("set_explicit_ollama_model", {
-                            value: stem.trim().length > 0 ? stem.trim() : null,
+                            value: explicit,
                           }).catch((err) => {
                             setLibraryError(String(err));
                           });
                         }}
-                        aria-label="Chat model path or file"
+                        aria-label="Chat model"
                       >
-                        {availableChatModels.length === 0 ? (
+                        {chatModelOptions.length === 0 ? (
                           <option value="" disabled>
-                            {modelScannerPathsLoading ? "Downloading models..." : "No models found"}
+                            {modelScannerPathsLoading ? "Loading models…" : "No models found"}
                           </option>
                         ) : (
-                          availableChatModels.map((name) => (
-                            <option key={name} value={name}>
-                              {name}
+                          chatModelOptions.map((opt) => (
+                            <option key={`${opt.source}-${opt.value}`} value={opt.value}>
+                              {opt.label}
                             </option>
                           ))
                         )}
                       </select>
+                      {chatModelOptions.length === 0 && !modelScannerPathsLoading ? (
+                        <button
+                          type="button"
+                          className="secondary"
+                          style={{ marginTop: "0.55rem" }}
+                          onClick={() => {
+                            setSettingsOpen(false);
+                            setMarketplaceFocusAppId(null);
+                            setMarketplaceFocusTab("models");
+                            setCurrentView("marketplace");
+                          }}
+                        >
+                          Install models in Marketplace
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="secondary"
+                          style={{ marginTop: "0.55rem" }}
+                          onClick={() => {
+                            setSettingsOpen(false);
+                            setMarketplaceFocusAppId(null);
+                            setMarketplaceFocusTab("models");
+                            setCurrentView("marketplace");
+                          }}
+                        >
+                          Open Marketplace → Models
+                        </button>
+                      )}
                     </div>
                     <div>
                       <label className="text-muted small" htmlFor="settings-embedding-model-select">
@@ -8027,12 +8924,22 @@ ${tag}` : tag;
                       )}
                     </>
                   )}
-                  <AiModelManager
-                    initialActiveModel={activeEngineModel}
-                    onActiveModelChange={(model) => setActiveEngineModel(model)}
-                    showUnrestrictedCatalog={allowNsfwCatalog}
-                    isAdult={userIs18}
-                  />
+                  <p className="text-muted small" style={{ marginTop: "0.75rem" }}>
+                    Pull Ollama models and browse GGUF packs in Marketplace. The active chat model is chosen above.
+                  </p>
+                  <button
+                    type="button"
+                    className="secondary"
+                    style={{ marginTop: "0.45rem" }}
+                    onClick={() => {
+                      setSettingsOpen(false);
+                      setMarketplaceFocusAppId(null);
+                      setMarketplaceFocusTab("models");
+                      setCurrentView("marketplace");
+                    }}
+                  >
+                    Open Marketplace → Models
+                  </button>
                     </>
                   )}
                 </section>
@@ -8040,7 +8947,7 @@ ${tag}` : tag;
                   <h3>Personality</h3>
                   <p className="text-muted small">
                     How Athena speaks (tone and style). Choosing an <strong>experience</strong> under Settings → Themes &amp; Colors
-                    still updates this to match (Default, Fallout, or Field guide) unless you override it here.
+                    still updates this to match (Default, Fallout, Field guide, or Fruit) unless you override it here.
                   </p>
                   <div className="ui-persona-row ui-persona-row-ai">
                     <div className="ui-persona-field">
@@ -8060,7 +8967,7 @@ ${tag}` : tag;
                       </select>
                     </div>
                     <p className="text-muted small ui-persona-help">
-                      Field guide personality pairs with the paper manual look; switch experience in Themes to change both at once.
+                      Field guide personality pairs with the paper manual look; Fruit pairs with the clean system look. Switch experience in Themes to change both at once.
                     </p>
                   </div>
                 </section>
@@ -8585,11 +9492,23 @@ ${tag}` : tag;
                         type="button"
                         onClick={() => {
                           setSettingsOpen(false);
+                          setMarketplaceFocusAppId(null);
+                          setMarketplaceFocusTab("maps");
+                          setCurrentView("marketplace");
+                        }}
+                      >
+                        Open Marketplace → Maps
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => {
+                          setSettingsOpen(false);
                           setDataAcquisitionTab("maps");
                           setCurrentView("data_acquisition");
                         }}
                       >
-                        Open Data Acquisition (Maps)
+                        Data Acquisition (Maps)
                       </button>
                     </div>
                   </div>
@@ -8775,40 +9694,19 @@ ${tag}` : tag;
                 {!VOICE_AND_MIC_FEATURES_HIDDEN && (
                   <section className="library-section">
                     <h3>Text-to-Speech</h3>
-                    <SettingsGroup>
-                      <SettingsRow
-                        focusId="chat-surface-default"
-                        spotlight={settingsFocusId === "chat-surface-default"}
-                        title="Default Chat surface"
-                        subtitle="Open Chat typing UI, or Conversation face mode"
-                        trailing={
-                          <select
-                            className="theme-select"
-                            value={chatSurface}
-                            aria-label="Default Chat surface"
-                            onChange={(e) => {
-                              const v = e.target.value === "conversation" ? "conversation" : "chat";
-                              saveChatSurfaceDefault(v);
-                              setChatSurface(v);
-                            }}
-                          >
-                            <option value="chat">Chat (type + quick mic)</option>
-                            <option value="conversation">Conversation (face mode)</option>
-                          </select>
-                        }
-                      />
-                    </SettingsGroup>
-                    <p className="text-muted small settings-build-banner">
-                      <strong>Voice pack:</strong> Conversation prefers Marketplace{" "}
-                      <strong>Whisper</strong> (STT) and <strong>Kokoro</strong> (TTS) when those Docker
-                      modules are installed and healthy. If they are missing or down, Athena falls back to
-                      this device&apos;s browser speech engines. Interrupt Athena mid-reply by speaking
-                      (barge-in). Face mode uses a Yes Man–style holographic avatar with Quick/Deep think
-                      and optional camera emotion cues.
-                    </p>
-                    <p className="text-muted">
-                      Have Athena read responses aloud. Status when Conversation is on:{" "}
-                      <strong>{duplexCapability?.label ?? "Probe modules from Conversation or Marketplace"}</strong>
+                    <p className="text-muted small">
+                      Conversation uses Marketplace Distil-Whisper (STT) and Kokoro TTS when healthy;
+                      otherwise browser speech. Pick a Kokoro voice below for Conversation and read-aloud.
+                      Interrupt Athena mid-reply by speaking (barge-in). After a catalog change, open
+                      Marketplace and tap <strong>Update</strong> when shown, or enable
+                      Auto-update (Stop/Start alone keeps the old settings).
+                      {duplexCapability ? (
+                        <>
+                          {" "}
+                          Status: Whisper {duplexCapability.whisper ? "ok" : "down"} · Kokoro{" "}
+                          {duplexCapability.kokoro ? "ok" : "down"} · {duplexCapability.label}
+                        </>
+                      ) : null}
                     </p>
                     <SettingsGroup>
                       <SettingsRow
@@ -8828,21 +9726,28 @@ ${tag}` : tag;
                           </button>
                         }
                       />
-                    </SettingsGroup>
-                    {duplexCapability ? (
-                      <p className="text-muted small">
-                        Whisper: {duplexCapability.whisper ? "healthy" : "unavailable"} · Kokoro:{" "}
-                        {duplexCapability.kokoro ? "healthy" : "unavailable"} · Mode: {duplexCapability.label}
-                      </p>
-                    ) : (
-                      <p className="text-muted small">Click Refresh status, or start Conversation to probe.</p>
-                    )}
-                    <SettingsGroup>
+                      <SettingsRow
+                        focusId="voice-debug-logs"
+                        spotlight={settingsFocusId === "voice-debug-logs"}
+                        title="Voice debug logs"
+                        subtitle="Print STT / listen diagnostics to the tauri dev terminal (prefix [athena:voice])"
+                        trailing={
+                          <PillToggle
+                            checked={voiceDebugLogs}
+                            aria-label="Enable voice debug logs in terminal"
+                            onCheckedChange={(enabled) => {
+                              setVoiceDebugEnabled(enabled);
+                              setVoiceDebugLogs(enabled);
+                              voiceDebug(enabled ? "debug.enabled" : "debug.disabled");
+                            }}
+                          />
+                        }
+                      />
                       <SettingsRow
                         focusId="tts-enable"
                         spotlight={settingsFocusId === "tts-enable"}
                         title="Enable text-to-speech"
-                        subtitle="Read Athena replies aloud (Kokoro when available, else system voices)"
+                        subtitle="Read Athena replies aloud in Chat (Conversation always speaks when duplex is up)"
                         trailing={
                           <PillToggle
                             checked={ttsEnabled}
@@ -8864,79 +9769,151 @@ ${tag}` : tag;
                         }
                       />
                     </SettingsGroup>
+                    {duplexCapability?.kokoro ? (
+                      <SettingsGroup>
+                        <SettingsRow
+                          focusId="kokoro-voice"
+                          spotlight={settingsFocusId === "kokoro-voice"}
+                          title="Kokoro bot voice"
+                          subtitle="Offline voice for Conversation and Chat TTS when Kokoro is running"
+                          trailing={
+                            <div
+                              className="settings-row-inline-control"
+                              style={{ display: "flex", gap: 8, alignItems: "center" }}
+                            >
+                              <select
+                                id="kokoro-voice-select"
+                                className="theme-select"
+                                value={kokoroVoice}
+                                onChange={(e) => {
+                                  const id = e.target.value || ATHENA_OFFLINE_TTS_VOICE;
+                                  setKokoroVoice(id);
+                                  setPreferredKokoroVoice(id);
+                                }}
+                                aria-label="Kokoro voice for Athena"
+                                disabled={kokoroVoices.length === 0}
+                              >
+                                {kokoroVoices.length === 0 ? (
+                                  <option value={kokoroVoice}>{kokoroVoice}</option>
+                                ) : (
+                                  kokoroVoices.map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                      {v.name}
+                                    </option>
+                                  ))
+                                )}
+                              </select>
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={kokoroVoicePreviewBusy || !duplexCapability.kokoroBaseUrl}
+                                onClick={() => {
+                                  const url = duplexCapability.kokoroBaseUrl;
+                                  if (!url) return;
+                                  setKokoroVoicePreviewBusy(true);
+                                  void withTimeout(
+                                    synthesizeWithKokoro(
+                                      url,
+                                      "Hello. This is Athena speaking with the selected voice.",
+                                      kokoroVoice || ATHENA_OFFLINE_TTS_VOICE,
+                                      1.0,
+                                    ),
+                                    20_000,
+                                    "Kokoro preview timed out",
+                                  )
+                                    .then((blob) => {
+                                      const objectUrl = URL.createObjectURL(blob);
+                                      const audio = new Audio(objectUrl);
+                                      audio.onended = () => URL.revokeObjectURL(objectUrl);
+                                      audio.onerror = () => URL.revokeObjectURL(objectUrl);
+                                      return audio.play();
+                                    })
+                                    .catch(() => {
+                                      /* preview soft-fail */
+                                    })
+                                    .finally(() => setKokoroVoicePreviewBusy(false));
+                                }}
+                              >
+                                {kokoroVoicePreviewBusy ? "…" : "Preview"}
+                              </button>
+                            </div>
+                          }
+                        />
+                      </SettingsGroup>
+                    ) : null}
                     {ttsEnabled && (
-                      <>
-                        <div className="tts-voice-row">
-                          <label htmlFor="voice-preset-select">Athena voice</label>
-                          <select
-                            id="voice-preset-select"
-                            className="theme-select"
-                            value={voicePreset}
-                            onChange={(e) => {
-                              const v = e.target.value as VoicePresetId;
-                              if (v === "default" || v === "fallout" || v === "ultron") {
-                                setVoicePreset(v);
-                                try {
-                                  window.localStorage.setItem("athena-voice-preset", v);
-                                } catch {
-                                  // ignore
-                                }
-                              }
-                            }}
-                            aria-label="Character voice preset"
-                          >
-                            {VOICE_PRESETS.map((id) => (
-                              <option key={id} value={id}>
-                                {VOICE_PRESET_LABELS[id]}
-                              </option>
-                            ))}
-                          </select>
-                          <p className="text-muted small">
-                            Default uses your chosen system voice. Fallout adds 1950s-style static; Ultron uses a deeper voice. For custom Piper voices, add models to app data.
-                          </p>
-                        </div>
-                        <div className="tts-voice-row">
-                          <label htmlFor="tts-voice-select">Preferred system voice</label>
-                          <select
-                            id="tts-voice-select"
-                            className="theme-select"
-                            value={ttsPreferredVoiceUri ?? ""}
-                            onChange={(e) => {
-                              const uri = e.target.value || null;
-                              setTtsPreferredVoiceUri(uri);
-                              if (typeof window !== "undefined") {
-                                try {
-                                  if (uri) {
-                                    window.localStorage.setItem("athena-tts-voice", uri);
-                                  } else {
-                                    window.localStorage.removeItem("athena-tts-voice");
+                      <SettingsGroup>
+                        <SettingsRow
+                          title="Athena voice (fallback)"
+                          subtitle="Used when Kokoro is down. Fallout adds 1950s static; Ultron is deeper. Piper models go in app data."
+                          trailing={
+                            <select
+                              id="voice-preset-select"
+                              className="theme-select settings-row-inline-control"
+                              value={voicePreset}
+                              onChange={(e) => {
+                                const v = e.target.value as VoicePresetId;
+                                if (v === "default" || v === "fallout" || v === "ultron") {
+                                  setVoicePreset(v);
+                                  try {
+                                    window.localStorage.setItem("athena-voice-preset", v);
+                                  } catch {
+                                    // ignore
                                   }
-                                } catch {
-                                  // ignore
                                 }
-                              }
-                            }}
-                            disabled={!ttsVoices.length}
-                            aria-label="Preferred voice for text-to-speech"
-                          >
-                            {ttsVoices.length === 0 ? (
-                              <option value="">Loading voices…</option>
-                            ) : (
-                              <>
-                                <option value="">System default</option>
-                                {ttsVoices.map((v) => (
-                                  <option key={v.voiceURI} value={v.voiceURI}>
-                                    {v.name} ({v.lang})
-                                  </option>
-                                ))}
-                              </>
-                            )}
-                          </select>
-                          <p className="text-muted small">
-                            Voice availability depends on your operating system and browser. On Apple devices, look for the Apple voices for the best match.
-                          </p>
-                        </div>
-                      </>
+                              }}
+                              aria-label="Character voice preset"
+                            >
+                              {VOICE_PRESETS.map((id) => (
+                                <option key={id} value={id}>
+                                  {VOICE_PRESET_LABELS[id]}
+                                </option>
+                              ))}
+                            </select>
+                          }
+                        />
+                        <SettingsRow
+                          title="Preferred system voice"
+                          subtitle="Depends on your OS. On Apple devices, Apple voices usually match best."
+                          trailing={
+                            <select
+                              id="tts-voice-select"
+                              className="theme-select settings-row-inline-control"
+                              value={ttsPreferredVoiceUri ?? ""}
+                              onChange={(e) => {
+                                const uri = e.target.value || null;
+                                setTtsPreferredVoiceUri(uri);
+                                if (typeof window !== "undefined") {
+                                  try {
+                                    if (uri) {
+                                      window.localStorage.setItem("athena-tts-voice", uri);
+                                    } else {
+                                      window.localStorage.removeItem("athena-tts-voice");
+                                    }
+                                  } catch {
+                                    // ignore
+                                  }
+                                }
+                              }}
+                              disabled={!ttsVoices.length}
+                              aria-label="Preferred voice for text-to-speech"
+                            >
+                              {ttsVoices.length === 0 ? (
+                                <option value="">Loading voices…</option>
+                              ) : (
+                                <>
+                                  <option value="">System default</option>
+                                  {ttsVoices.map((v) => (
+                                    <option key={v.voiceURI} value={v.voiceURI}>
+                                      {v.name} ({v.lang})
+                                    </option>
+                                  ))}
+                                </>
+                              )}
+                            </select>
+                          }
+                        />
+                      </SettingsGroup>
                     )}
                   </section>
                 )}
@@ -8970,32 +9947,34 @@ ${tag}` : tag;
                     }
                   />
                 </SettingsGroup>
-                <h3>Night vision</h3>
-                <div className="nightvision-mode-wrap">
-                  <label htmlFor="nightvision-mode-select">Night vision</label>
-                  <select
-                    id="nightvision-mode-select"
-                    className="theme-select"
-                    value={nightVisionMode}
-                    onChange={(e) => {
-                      const mode = e.target.value as NightVisionMode;
-                      setNightVisionMode(mode);
-                      try {
-                        localStorage.setItem(STORAGE_KEY_NIGHT_VISION_MODE, mode);
-                      } catch {
-                        // ignore
-                      }
-                    }}
-                    aria-label="Night vision mode"
-                  >
-                    <option value="auto">Automatic (based on sunset/sunrise)</option>
-                    <option value="on">Always on</option>
-                    <option value="off">Off</option>
-                  </select>
-                  <p className="text-muted small">
-                    Automatic uses your approximate location and local time to enable a deep red night-vision palette after sunset.
-                  </p>
-                </div>
+                <SettingsGroup label="Night vision">
+                  <SettingsRow
+                    focusId="night-vision"
+                    title="Mode"
+                    subtitle="Automatic uses approximate location and local time for a deep red palette after sunset."
+                    trailing={
+                      <select
+                        id="nightvision-mode-select"
+                        className="theme-select settings-row-inline-control"
+                        value={nightVisionMode}
+                        onChange={(e) => {
+                          const mode = e.target.value as NightVisionMode;
+                          setNightVisionMode(mode);
+                          try {
+                            localStorage.setItem(STORAGE_KEY_NIGHT_VISION_MODE, mode);
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                        aria-label="Night vision mode"
+                      >
+                        <option value="auto">Automatic (sunset/sunrise)</option>
+                        <option value="on">Always on</option>
+                        <option value="off">Off</option>
+                      </select>
+                    }
+                  />
+                </SettingsGroup>
               </section>
             )}
 
@@ -9055,7 +10034,7 @@ ${tag}` : tag;
                     id="theme-studio-persona"
                     className="theme-select"
                     value={
-                      studioDraft.personality_id === "fallout" || studioDraft.personality_id === "fieldguide" || studioDraft.personality_id === "default"
+                      isPersonalityId(studioDraft.personality_id)
                         ? studioDraft.personality_id
                         : "default"
                     }
@@ -9225,7 +10204,7 @@ ${tag}` : tag;
                     value={activeThemeId}
                     onChange={(e) => {
                       const v = e.target.value;
-                      if (v === "default" || v === "fallout" || v === "fieldguide") applyThemePreset(v);
+                      if (isBuiltInThemeId(v)) applyThemePreset(v);
                       else applyCustomTheme(v);
                     }}
                     aria-label="Overall experience theme"
@@ -9252,6 +10231,25 @@ ${tag}` : tag;
                   {EXPERIENCE_PRESETS.find((p) => p.id === activeThemeId)?.description ??
                     (customThemes.some((t) => t.id === activeThemeId) ? "Your saved theme (effects and colors from Theme studio)." : "")}
                 </p>
+                {activeThemeId === "fruit" ? (
+                  <div className="color-preset-wrap" style={{ marginTop: "0.75rem" }}>
+                    <label htmlFor="fruit-appearance-select">Appearance</label>
+                    <select
+                      id="fruit-appearance-select"
+                      className="theme-select"
+                      value={fruitAppearance}
+                      onChange={(e) => handleFruitAppearanceChange(e.target.value as AppearanceMode)}
+                      aria-label="Fruit light or dark appearance"
+                    >
+                      <option value="light">Light</option>
+                      <option value="dark">Dark</option>
+                      <option value="auto">Auto (time of day)</option>
+                    </select>
+                    <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
+                      Auto follows local day and night. It does not turn on tactical night vision.
+                    </p>
+                  </div>
+                ) : null}
                 <p className="text-muted small">
                   Voice and tone are under <strong>AI &amp; Models → Personality</strong>. Choosing a built-in experience here still
                   updates personality to match.
@@ -9260,6 +10258,8 @@ ${tag}` : tag;
                 <p className="text-muted small">
                   {activeThemeId === "fieldguide" ? (
                     <>Field guide uses fixed warm paper tones (amber). Switch experience above to edit palette colors.</>
+                  ) : activeThemeId === "fruit" ? (
+                    <>Fruit uses its own light and dark surfaces. Switch experience above to edit palette colors.</>
                   ) : (
                     <>
                       Palette applies to built-in looks and Fallout accents—even before you save a custom theme. Choose{" "}
@@ -9276,7 +10276,7 @@ ${tag}` : tag;
                       value={theme}
                       onChange={handlePresetChange}
                       aria-label="Color palette preset"
-                      disabled={activeThemeId === "fieldguide"}
+                      disabled={activeThemeId === "fieldguide" || activeThemeId === "fruit"}
                     >
                       {THEMES.map((t) => (
                         <option key={t} value={t}>
@@ -9566,6 +10566,7 @@ ${tag}` : tag;
               </section>
             )}
             {libraryError !== null && <p className="error">{libraryError}</p>}
+            </Suspense>
             </SettingsShell>
             {localDataInstallOpen && (
               <div
@@ -9669,11 +10670,17 @@ ${tag}` : tag;
         </div>
       )}
 
-      <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+      {helpOpen ? (
+        <Suspense fallback={null}>
+          <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+        </Suspense>
+      ) : null}
 
-      {meshOpen && (
-        <MeshRadioModal open={meshOpen} onClose={() => setMeshOpen(false)} messages={meshMessages} />
-      )}
+      {meshOpen ? (
+        <Suspense fallback={null}>
+          <MeshRadioModal open={meshOpen} onClose={() => setMeshOpen(false)} messages={meshMessages} />
+        </Suspense>
+      ) : null}
 
       <ExportModal
         open={usbExportModalOpen}

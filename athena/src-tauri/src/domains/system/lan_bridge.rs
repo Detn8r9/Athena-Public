@@ -391,7 +391,8 @@ fn dispatch_invoke(
             let payload = json!([
                 cfg.theme_id,
                 cfg.personality_id,
-                cfg.custom_themes
+                cfg.custom_themes,
+                cfg.theme_appearance
             ]);
             Ok((payload, None))
         }
@@ -406,6 +407,15 @@ fn dispatch_invoke(
                 arg_str(args, "personality_id").or_else(|| arg_str(args, "personalityId"))
             {
                 cfg.personality_id = if pid.is_empty() { None } else { Some(pid) };
+            }
+            if let Some(appearance) =
+                arg_str(args, "theme_appearance").or_else(|| arg_str(args, "themeAppearance"))
+            {
+                cfg.theme_appearance = if appearance.is_empty() {
+                    None
+                } else {
+                    Some(appearance)
+                };
             }
             save_config(&app_data, &cfg)?;
             Ok((Value::Null, None))

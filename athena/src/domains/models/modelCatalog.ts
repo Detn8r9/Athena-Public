@@ -21,7 +21,7 @@ export type ModelTierOption = {
   minRamGb: number;
   fileSizeBytes: number;
   url: string;
-  /** Relative to Athena data root — must be under `models/chat/` */
+  /** Relative to Athena data root — must be under `user/models/chat/` */
   fileName: string;
   alternateUrls?: string[];
 };
@@ -82,7 +82,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 8,
         fileSizeBytes: 2_393_232_672,
         url: HF("bartowski/Phi-3.5-mini-instruct-GGUF", "Phi-3.5-mini-instruct-Q4_K_M.gguf"),
-        fileName: "models/chat/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+        fileName: "user/models/chat/Phi-3.5-mini-instruct-Q4_K_M.gguf",
       },
       {
         id: "llama31-8b-q4",
@@ -92,7 +92,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 8,
         fileSizeBytes: 4_928_333_328,
         url: HF("bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"),
-        fileName: "models/chat/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        fileName: "user/models/chat/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
       },
       {
         id: "command-r-q4",
@@ -102,7 +102,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 32,
         fileSizeBytes: 20_000_000_000,
         url: HF("bartowski/c4ai-command-r-v01-GGUF", "c4ai-command-r-v01-Q4_K_M.gguf"),
-        fileName: "models/chat/c4ai-command-r-v01-Q4_K_M.gguf",
+        fileName: "user/models/chat/c4ai-command-r-v01-Q4_K_M.gguf",
       },
       {
         id: "llama33-70b-q4",
@@ -112,7 +112,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 64,
         fileSizeBytes: 42_000_000_000,
         url: HF("bartowski/Meta-Llama-3.3-70B-Instruct-GGUF", "Meta-Llama-3.3-70B-Instruct-Q4_K_M.gguf"),
-        fileName: "models/chat/Meta-Llama-3.3-70B-Instruct-Q4_K_M.gguf",
+        fileName: "user/models/chat/Meta-Llama-3.3-70B-Instruct-Q4_K_M.gguf",
       },
     ],
   },
@@ -132,7 +132,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 8,
         fileSizeBytes: 7_650_000_000,
         url: HF("bartowski/Mistral-Nemo-Instruct-2407-GGUF", "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf"),
-        fileName: "models/chat/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
+        fileName: "user/models/chat/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
       },
       {
         id: "mixtral-8x7b-q4",
@@ -142,7 +142,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 32,
         fileSizeBytes: 26_000_000_000,
         url: HF("bartowski/Mixtral-8x7B-Instruct-v0.1-GGUF", "Mixtral-8x7B-Instruct-v0.1-Q4_K_M.gguf"),
-        fileName: "models/chat/Mixtral-8x7B-Instruct-v0.1-Q4_K_M.gguf",
+        fileName: "user/models/chat/Mixtral-8x7B-Instruct-v0.1-Q4_K_M.gguf",
       },
       {
         id: "mistral-large-q4",
@@ -152,7 +152,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 64,
         fileSizeBytes: 68_000_000_000,
         url: HF("bartowski/Mistral-Large-Instruct-2407-GGUF", "Mistral-Large-Instruct-2407-Q4_K_M.gguf"),
-        fileName: "models/chat/Mistral-Large-Instruct-2407-Q4_K_M.gguf",
+        fileName: "user/models/chat/Mistral-Large-Instruct-2407-Q4_K_M.gguf",
       },
     ],
   },
@@ -172,7 +172,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 8,
         fileSizeBytes: 4_900_000_000,
         url: HF("bartowski/Dolphin3.0-Llama3.1-8B-GGUF", "Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf"),
-        fileName: "models/chat/Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf",
+        fileName: "user/models/chat/Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf",
       },
       {
         id: "dolphin-mixtral-8x22b-q4",
@@ -182,7 +182,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 64,
         fileSizeBytes: 80_000_000_000,
         url: HF("bartowski/Dolphin-2.9.2-Mixtral-8x22B-GGUF", "dolphin-2.9.2-mixtral-8x22b.Q4_K_M.gguf"),
-        fileName: "models/chat/dolphin-2.9.2-mixtral-8x22b.Q4_K_M.gguf",
+        fileName: "user/models/chat/dolphin-2.9.2-mixtral-8x22b.Q4_K_M.gguf",
       },
     ],
   },
@@ -202,7 +202,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 8,
         fileSizeBytes: 4_400_000_000,
         url: HF("bartowski/Qwen2.5-Coder-7B-Instruct-GGUF", "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"),
-        fileName: "models/chat/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+        fileName: "user/models/chat/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
       },
       {
         id: "qwen25-coder-32b-q4",
@@ -212,7 +212,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 32,
         fileSizeBytes: 19_000_000_000,
         url: HF("bartowski/Qwen2.5-Coder-32B-Instruct-GGUF", "Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"),
-        fileName: "models/chat/Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf",
+        fileName: "user/models/chat/Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf",
       },
       {
         id: "qwen25-coder-32b-q8",
@@ -222,7 +222,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 64,
         fileSizeBytes: 35_000_000_000,
         url: HF("bartowski/Qwen2.5-Coder-32B-Instruct-GGUF", "Qwen2.5-Coder-32B-Instruct-Q8_0.gguf"),
-        fileName: "models/chat/Qwen2.5-Coder-32B-Instruct-Q8_0.gguf",
+        fileName: "user/models/chat/Qwen2.5-Coder-32B-Instruct-Q8_0.gguf",
       },
     ],
   },
@@ -242,7 +242,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 8,
         fileSizeBytes: 2_000_000_000,
         url: HF("bartowski/Llama-3.2-3B-Instruct-GGUF", "Llama-3.2-3B-Instruct-Q4_K_M.gguf"),
-        fileName: "models/chat/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+        fileName: "user/models/chat/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
       },
       {
         id: "biomistral-7b-q4",
@@ -252,7 +252,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 8,
         fileSizeBytes: 4_400_000_000,
         url: HF("bartowski/BioMistral-7B-GGUF", "BioMistral-7B-Q4_K_M.gguf"),
-        fileName: "models/chat/BioMistral-7B-Q4_K_M.gguf",
+        fileName: "user/models/chat/BioMistral-7B-Q4_K_M.gguf",
       },
       {
         id: "biomistral-7b-q8",
@@ -262,7 +262,7 @@ export const MODEL_FAMILY_CATALOG: ModelFamily[] = [
         minRamGb: 32,
         fileSizeBytes: 7_600_000_000,
         url: HF("bartowski/BioMistral-7B-GGUF", "BioMistral-7B-Q8_0.gguf"),
-        fileName: "models/chat/BioMistral-7B-Q8_0.gguf",
+        fileName: "user/models/chat/BioMistral-7B-Q8_0.gguf",
       },
     ],
   },
@@ -287,11 +287,14 @@ export function modelRoutingDropdownValues(): string[] {
   return [MODEL_ROUTING_AUTO, ...listCatalogGgufBasenames()];
 }
 
-/** Routing `<select>` options: Auto + only `.gguf` files present on disk (caller supplies `get_downloaded_models` result). */
-export function modelRoutingSelectOptions(downloadedGgufFilenames: readonly string[]): string[] {
+/**
+ * Routing `<select>` options: Auto + installed model ids (Ollama tags and/or `.gguf` basenames).
+ * Caller typically supplies `buildChatModelOptions(...).map(o => o.value)`.
+ */
+export function modelRoutingSelectOptions(installedModelIds: readonly string[]): string[] {
   const seen = new Set<string>();
   const names: string[] = [];
-  for (const raw of downloadedGgufFilenames) {
+  for (const raw of installedModelIds) {
     const t = typeof raw === "string" ? raw.trim() : "";
     if (!t || seen.has(t)) continue;
     seen.add(t);
@@ -302,7 +305,9 @@ export function modelRoutingSelectOptions(downloadedGgufFilenames: readonly stri
 }
 
 export function labelForModelRoutingValue(v: string): string {
-  return v === MODEL_ROUTING_AUTO ? "Auto / Default" : v;
+  if (v === MODEL_ROUTING_AUTO) return "Auto / Default";
+  if (v.toLowerCase().endsWith(".gguf")) return `${v} (local file)`;
+  return v;
 }
 
 /** Header override: follow persisted per-view routing (no hot-swap lock). */

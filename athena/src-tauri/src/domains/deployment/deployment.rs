@@ -85,18 +85,19 @@ fn dest_dir_from_subdir(
     athena: &Path,
     dest_subdir: Option<String>,
 ) -> Result<PathBuf, String> {
+    let paths = crate::athena_paths::AthenaPaths::new(athena);
     let Some(s) = dest_subdir else {
         // Default: all Data Acquisition HTTP downloads land in managed downloads/packages.
-        return Ok(athena.join("downloads").join("packages"));
+        return Ok(paths.user_downloads_dir().join("packages"));
     };
     let t = s.trim();
     if t.is_empty() {
-        return Ok(athena.join("downloads").join("packages"));
+        return Ok(paths.user_downloads_dir().join("packages"));
     }
     safe_join(athena, t)
 }
 
-fn categorize_download_dest(dest_root: &Path, job_file_name: &str) -> Result<PathBuf, String> {
+fn categorize_download_dest(athena_root: &Path, job_file_name: &str) -> Result<PathBuf, String> {
     let rel = job_file_name.trim().replace('\\', "/");
     let p = Path::new(&rel);
     let fname = p
@@ -104,18 +105,31 @@ fn categorize_download_dest(dest_root: &Path, job_file_name: &str) -> Result<Pat
         .and_then(|n| n.to_str())
         .ok_or_else(|| "Invalid file name.".to_string())?;
     let lower = rel.to_ascii_lowercase();
-    let sub = if lower.starts_with("models/") || lower.starts_with("models\\") {
-        "models"
-    } else if lower.starts_with("library/maps/") || lower.starts_with("library\\maps\\") || lower.contains("/maps/") {
-        "maps"
-    } else if lower.starts_with("academy/") || lower.starts_with("academy\\") {
-        "academy"
+    let paths = crate::athena_paths::AthenaPaths::new(athena_root);
+    let user = paths.user_dir();
+
+    // Preserve `models/<subdir>/…` under AthenaData/user/models/
+    if lower.starts_with("models/") {
+        let rest = &rel[7..];
+        if rest.is_empty() || rest.contains("..") {
+            return Err("Invalid models path.".to_string());
+        }
+        return Ok(user.join("models").join(rest));
+    }
+
+    let folder = if lower.starts_with("library/maps/")
+        || lower.contains("/maps/")
+        || lower.starts_with("maps/")
+    {
+        user.join("maps")
+    } else if lower.starts_with("academy/") {
+        user.join("library").join("academy")
     } else if lower.starts_with("library/") || lower.contains("/library/") {
-        "packages"
+        user.join("downloads").join("packages")
     } else {
-        "documents"
+        user.join("downloads").join("documents")
     };
-    Ok(dest_root.join(sub).join(fname))
+    Ok(folder.join(fname))
 }
 
 fn mount_point_for_path(p: &Path) -> Result<String, String> {
@@ -686,7 +700,7 @@ async fn preflight_first_working_url(
 async fn download_one_job(
     app: &AppHandle,
     client: &reqwest::Client,
-    dest_dir: &Path,
+    _dest_dir: &Path,
     athena_root: &Path,
     mgr: &DeploymentQueueStateManager,
     job: &DownloadJob,
@@ -698,8 +712,8 @@ async fn download_one_job(
         return Err(QueueError::Fatal("Empty file_name".to_string()));
     }
 
-    // Unified downloads root: dest_dir is `AthenaData/downloads`. Route each job into its category.
-    let final_path = categorize_download_dest(dest_dir, &job.file_name)
+    // Route each job into AthenaData/user/… by category (models/chat, maps, packages, …).
+    let final_path = categorize_download_dest(athena_root, &job.file_name)
         .map_err(QueueError::Fatal)?;
     if let Some(p) = final_path.parent() {
         tokio::fs::create_dir_all(p)
@@ -1093,8 +1107,8 @@ pub async fn deployment_start_downloads(
     }
 
     let athena = athena_data_dir(&app)?;
-    // Unified managed downloads root.
-    let dest_dir = athena.join("downloads");
+    // Unified managed downloads root (layout v2: user/downloads).
+    let dest_dir = crate::athena_paths::AthenaPaths::new(&athena).user_downloads_dir();
     // Optional override still supported for advanced callers.
     let dest_dir = if dest_subdir.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
         dest_dir

@@ -26,9 +26,11 @@ impl Default for KiwixServeState {
 
 /// Roots under AthenaData where offline `.zim` files are expected (recursive scan per directory).
 pub fn zim_discovery_roots(athena_root: &Path) -> Vec<PathBuf> {
+    let paths = crate::athena_paths::AthenaPaths::new(athena_root);
     vec![
         kiwix_downloads_dir(athena_root),
-        athena_root.join("library"),
+        paths.user_library_dir(),
+        athena_root.join("library"), // legacy dual-read
         athena_root.join("ZIM_Archives"),
     ]
 }

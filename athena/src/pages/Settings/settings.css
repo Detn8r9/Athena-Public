@@ -513,9 +513,64 @@
   transform: translateX(1.1rem);
 }
 
+/* `.library-section button` sets min-height: 44px + padding — keep settings controls compact */
+.settings-shell .pill-toggle,
+.library-section .pill-toggle {
+  min-height: 0;
+  width: 2.55rem;
+  height: 1.45rem;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 45%, var(--border));
+  color: inherit;
+  box-shadow: none;
+}
+
+.settings-shell .pill-toggle:hover,
+.library-section .pill-toggle:hover {
+  background: color-mix(in srgb, var(--text-muted) 45%, var(--border));
+  box-shadow: none;
+}
+
+.settings-shell .pill-toggle--on,
+.library-section .pill-toggle--on {
+  background: var(--primary);
+}
+
+.settings-shell .pill-toggle--on:hover,
+.library-section .pill-toggle--on:hover {
+  background: var(--primary);
+}
+
+.settings-shell .theme-select,
+.library-section .theme-select,
+.settings-shell .settings-row-inline-control.theme-select {
+  min-height: 2rem;
+  height: 2rem;
+  padding: 0 0.55rem;
+  font-size: 0.85rem;
+  border-radius: 8px;
+  line-height: 1.2;
+}
+
+.settings-shell .tts-voice-row,
+.settings-shell .nightvision-mode-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.75rem 0;
+}
+
+.settings-shell .tts-voice-row > label,
+.settings-shell .nightvision-mode-wrap > label {
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
 .settings-row-inline-control {
   min-width: 7rem;
-  max-width: 11rem;
+  max-width: 14rem;
 }
 
 .settings-detail-hero {

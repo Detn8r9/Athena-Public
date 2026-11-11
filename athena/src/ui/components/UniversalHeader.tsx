@@ -6,7 +6,6 @@ import { ATHENA_FULL_NAME } from "../../shared/branding";
 import { substLexicon, useLexicon } from "../../shared/lexicon";
 import { useIngestionQueueStore, type IngestionQueueSnapshot } from "../../stores/ingestionQueueStore";
 import {
-  Bot,
   BookOpen,
   CalendarDays,
   HelpCircle,
@@ -77,7 +76,6 @@ export interface UniversalHeaderProps {
   featureMapEnabled: boolean;
   onOpenArchive: () => void;
   onOpenSettings: () => void;
-  onOpenAiModelSettings: () => void;
   onOpenHelp: () => void;
   onOpenCalendar: () => void;
   calendarDateTimeLabel: string;
@@ -215,7 +213,6 @@ export function UniversalHeader({
   featureMapEnabled,
   onOpenArchive,
   onOpenSettings,
-  onOpenAiModelSettings,
   onOpenHelp,
   onOpenCalendar,
   calendarDateTimeLabel,
@@ -463,7 +460,6 @@ export function UniversalHeader({
     </>
   );
 
-  const openModelSettings = onOpenAiModelSettings;
   const nodeState: "local" | "network" | "disconnected" =
     ollamaHiveRoute === "local" ? "local" : ollamaHiveRoute === "hive" ? "network" : "disconnected";
 
@@ -558,15 +554,6 @@ export function UniversalHeader({
       >
         <CalendarDays size={18} strokeWidth={2} aria-hidden className="universal-header-calendar-merge-icon" />
         <span className="universal-header-calendar-merge-text">{calendarDateTimeLabel}</span>
-      </button>
-      <button
-        type="button"
-        onClick={openModelSettings}
-        className="p-2 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
-        aria-label="Select AI Model"
-        title="Select AI Model"
-      >
-        <Bot className="w-5 h-5" />
       </button>
       {nodeDot}
       {authClearance >= 1 ? (
@@ -697,15 +684,6 @@ export function UniversalHeader({
       >
         <CalendarDays size={18} strokeWidth={2} aria-hidden className="universal-header-calendar-merge-icon" />
         <span className="universal-header-calendar-merge-text">{calendarDateTimeLabel}</span>
-      </button>
-      <button
-        type="button"
-        onClick={openModelSettings}
-        className="p-2 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
-        aria-label="Select AI Model"
-        title="Select AI Model"
-      >
-        <Bot className="w-5 h-5" />
       </button>
       {nodeDot}
       {authClearance >= 1 ? (

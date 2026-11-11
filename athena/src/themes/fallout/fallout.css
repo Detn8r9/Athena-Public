@@ -1,0 +1,7 @@
+/* Package-owned chrome for Fallout CRT.
+ * Visual rules currently live in App.css under body.theme-fallout / [data-persona="fallout"]
+ * for zero intentional visual change. This file marks package ownership and can absorb
+ * migrated selectors over time. */
+[data-athena-theme="fallout"] {
+  /* Ownership hook — CRT styles apply via body.theme-fallout from applyTheme. */
+}

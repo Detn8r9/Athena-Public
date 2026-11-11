@@ -162,7 +162,11 @@ fn library_scan_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
             .as_deref()
             .filter(|p| Path::new(p).is_dir())
             .map(PathBuf::from)
-            .unwrap_or_else(|| app_data_dir.join("kiwix_downloads"))]
+            .unwrap_or_else(|| {
+                crate::athena_paths::AthenaPaths::new(&app_data_dir)
+                    .user_downloads_dir()
+                    .join("packages")
+            })]
     };
     if let Ok(zdir) = crate::kiwix_serve::zim_archives_dir(app) {
         if !roots.iter().any(|r| r == &zdir) {

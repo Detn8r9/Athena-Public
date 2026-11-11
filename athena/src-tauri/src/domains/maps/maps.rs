@@ -195,7 +195,16 @@ pub fn get_map_catalog(
 // --- POI store ---
 
 pub fn pois_path(app_data_dir: &Path) -> std::path::PathBuf {
-    app_data_dir.join(POIS_FILENAME)
+    let paths = crate::athena_paths::AthenaPaths::new(app_data_dir);
+    let modern = paths.user_config_dir().join(POIS_FILENAME);
+    if modern.exists() {
+        return modern;
+    }
+    let legacy = app_data_dir.join(POIS_FILENAME);
+    if legacy.exists() {
+        return legacy;
+    }
+    modern
 }
 
 fn load_pois(app_data_dir: &Path) -> Vec<Poi> {
@@ -291,11 +300,15 @@ pub fn update_poi(
 // --- Downloaded maps store ---
 
 pub fn map_downloads_dir(app_data_dir: &Path) -> std::path::PathBuf {
-    app_data_dir.join("downloads").join("maps")
+    crate::athena_paths::AthenaPaths::new(app_data_dir)
+        .user_downloads_dir()
+        .join("maps")
 }
 
 fn downloaded_maps_path(app_data_dir: &Path) -> std::path::PathBuf {
-    app_data_dir.join(DOWNLOADED_MAPS_FILENAME)
+    crate::athena_paths::AthenaPaths::new(app_data_dir)
+        .user_config_dir()
+        .join(DOWNLOADED_MAPS_FILENAME)
 }
 
 fn load_downloaded_maps(app_data_dir: &Path) -> Vec<DownloadedMap> {

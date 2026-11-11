@@ -39,6 +39,11 @@ export class SharedMicPipeline {
   private silenceAccum = new Map<number, number>();
   private inSpeech = new Map<number, boolean>();
   private bargeAccum = new Map<number, number>();
+  /** Push-to-talk PCM capture (ScriptProcessor — continuous samples, not analyser snapshots). */
+  private captureProc: ScriptProcessorNode | null = null;
+  private captureMute: GainNode | null = null;
+  private captureChunks: Float32Array[] = [];
+  private capturing = false;
 
   constructor(stream: MediaStream) {
     this.stream = stream;
@@ -77,12 +82,89 @@ export class SharedMicPipeline {
     }
   }
 
+  /**
+   * Begin capturing continuous mono PCM for push-to-talk.
+   * Safer than MediaRecorder in WKWebView (which often yields silent/junk Whisper ghosts).
+   */
+  async startPcmCapture(): Promise<void> {
+    await this.ensureGraph();
+    if (!this.ctx || !this.source) {
+      throw new Error("Microphone audio graph failed to start.");
+    }
+    this.captureChunks = [];
+    this.capturing = true;
+    if (!this.captureProc) {
+      // 4096 ≈ 85ms @ 48kHz — good balance of latency vs callback overhead.
+      this.captureProc = this.ctx.createScriptProcessor(4096, 1, 1);
+      this.captureMute = this.ctx.createGain();
+      this.captureMute.gain.value = 0;
+      this.captureProc.onaudioprocess = (e) => {
+        if (!this.capturing) return;
+        const input = e.inputBuffer.getChannelData(0);
+        this.captureChunks.push(new Float32Array(input));
+      };
+      this.source.connect(this.captureProc);
+      this.captureProc.connect(this.captureMute);
+      // Destination connection required on some engines for onaudioprocess to fire.
+      this.captureMute.connect(this.ctx.destination);
+    }
+    if (this.ctx.state === "suspended") {
+      try {
+        await this.ctx.resume();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /** Stop PCM capture and return merged samples at the AudioContext sample rate. */
+  stopPcmCapture(): { pcm: Float32Array; sampleRate: number } | null {
+    this.capturing = false;
+    const chunks = this.captureChunks;
+    this.captureChunks = [];
+    const rate = this.ctx?.sampleRate ?? 48_000;
+    if (!chunks.length) return null;
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    if (total < 32) return null;
+    const pcm = new Float32Array(total);
+    let offset = 0;
+    for (const c of chunks) {
+      pcm.set(c, offset);
+      offset += c.length;
+    }
+    return { pcm, sampleRate: rate };
+  }
+
+  /** Drop capture nodes when Conversation exits (keeps analyser for energy if still subscribed). */
+  stopPcmCaptureHardware(): void {
+    this.capturing = false;
+    this.captureChunks = [];
+    try {
+      this.captureProc?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.captureMute?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    this.captureProc = null;
+    this.captureMute = null;
+  }
+
   subscribe(
     opts: Omit<Subscriber, "id" | "pauseUtterance" | "pauseBargeIn"> & {
       pauseUtterance?: boolean;
       pauseBargeIn?: boolean;
     },
-  ): { id: number; unsubscribe: () => void; setPaused: (u: boolean, b: boolean) => void } {
+  ): {
+    id: number;
+    unsubscribe: () => void;
+    setPaused: (u: boolean, b: boolean) => void;
+    setSilenceOffMs: (ms: number) => void;
+  } {
     const id = nextSubId++;
     this.subs.set(id, {
       id,
@@ -117,6 +199,11 @@ export class SharedMicPipeline {
         if (!s) return;
         s.pauseUtterance = pauseUtterance;
         s.pauseBargeIn = pauseBargeIn;
+      },
+      setSilenceOffMs: (ms: number) => {
+        const s = this.subs.get(id);
+        if (!s) return;
+        s.silenceOffMs = Math.max(200, Math.min(2000, ms));
       },
     };
   }
@@ -197,6 +284,7 @@ export class SharedMicPipeline {
   private teardownGraph() {
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
+    this.stopPcmCaptureHardware();
     try {
       this.source?.disconnect();
     } catch {

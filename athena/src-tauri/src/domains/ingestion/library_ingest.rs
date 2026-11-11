@@ -15,9 +15,9 @@ use zip::ZipArchive;
 /// Progress for long-running archive unpack (UI listens on this channel).
 pub const LIBRARY_ARCHIVE_EXTRACTION_PROGRESS_EVENT: &str = "athena:library-archive-extraction-progress";
 
-// Unified managed downloads layout: keep external-file staging under downloads/documents.
-const UNSORTED_REL: &str = "downloads/documents/staging";
-const ARCHIVE_REL: &str = "downloads/documents/archive";
+// Unified managed downloads layout under AthenaData/user/.
+const UNSORTED_REL: &str = "user/downloads/documents/staging";
+const ARCHIVE_REL: &str = "user/downloads/documents/archive";
 const EMIT_ENTRY_INTERVAL: usize = 32;
 
 #[derive(Clone, serde::Serialize)]
@@ -277,7 +277,10 @@ fn safe_path_under_root(root: &Path, relative: &str) -> Result<PathBuf, String> 
 
 fn extraction_dest_root(athena_root: &Path, category: &str, archive_path: &Path) -> Result<PathBuf, String> {
     let bundle = archive_bundle_stem(archive_path);
-    let lib = athena_root.join("library").join(category).join(&bundle);
+    let lib = crate::athena_paths::AthenaPaths::new(athena_root)
+        .user_library_dir()
+        .join(category)
+        .join(&bundle);
     fs::create_dir_all(&lib).map_err(|e| e.to_string())?;
     Ok(lib)
 }

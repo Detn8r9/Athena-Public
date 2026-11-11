@@ -83,6 +83,7 @@ fn chat_stream_errors_when_body_stalls_after_first_chunk() {
         vec![ChatMessage {
             role: "user".to_string(),
             content: "ping".to_string(),
+        images: None,
         }],
         &mut |s| aggregated.push_str(s),
         || {},

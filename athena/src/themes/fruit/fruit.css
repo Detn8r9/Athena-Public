@@ -1,0 +1,272 @@
+/**
+ * Fruit theme — Apple-clean full-app surface.
+ * Scoped only under [data-athena-theme="fruit"] (+ [data-appearance]).
+ * Does not alter tactical / fallout / fieldguide packages.
+ */
+
+body.theme-fruit,
+[data-athena-theme="fruit"] {
+  color-scheme: light;
+}
+
+body.theme-fruit[data-appearance="dark"],
+[data-athena-theme="fruit"][data-appearance="dark"] {
+  color-scheme: dark;
+}
+
+.app[data-athena-theme="fruit"] {
+  --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --transition-fast: 0.18s;
+  --transition-normal: 0.28s;
+  font-family: var(--font);
+  letter-spacing: -0.01em;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app[data-athena-theme="fruit"][data-appearance="light"] {
+  --bg: #f5f5f7;
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-solid: #ffffff;
+  --theme-elevated: #ffffff;
+  --primary: #0071e3;
+  --secondary: #0077ed;
+  --text: #1d1d1f;
+  --text-muted: #6e6e73;
+  --border: rgba(0, 0, 0, 0.08);
+  --theme-hairline: rgba(0, 0, 0, 0.06);
+  --glow: rgba(0, 113, 227, 0.18);
+  --user-bubble: rgba(0, 113, 227, 0.1);
+  --hover-overlay: rgba(0, 0, 0, 0.04);
+  --theme-danger: #ff3b30;
+  --theme-success: #34c759;
+  --theme-radius: 12px;
+  --theme-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(0, 0, 0, 0.06);
+}
+
+.app[data-athena-theme="fruit"][data-appearance="dark"] {
+  --bg: #000000;
+  --surface: rgba(28, 28, 30, 0.78);
+  --surface-solid: #1c1c1e;
+  --theme-elevated: #2c2c2e;
+  --primary: #0a84ff;
+  --secondary: #409cff;
+  --text: #f5f5f7;
+  --text-muted: #98989d;
+  --border: rgba(255, 255, 255, 0.12);
+  --theme-hairline: rgba(255, 255, 255, 0.08);
+  --glow: rgba(10, 132, 255, 0.22);
+  --user-bubble: rgba(10, 132, 255, 0.16);
+  --hover-overlay: rgba(255, 255, 255, 0.06);
+  --theme-danger: #ff453a;
+  --theme-success: #30d158;
+  --theme-radius: 12px;
+  --theme-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --glass-bg: rgba(28, 28, 30, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.1);
+}
+
+/* Shell */
+.app[data-athena-theme="fruit"] .app-shell {
+  background: var(--bg);
+}
+
+.app[data-athena-theme="fruit"] .glass-panel,
+.app[data-athena-theme="fruit"] .chat-sidebar,
+.app[data-athena-theme="fruit"] .chat-main.glass-panel,
+.app[data-athena-theme="fruit"] .library-modal,
+.app[data-athena-theme="fruit"] .settings-panel,
+.app[data-athena-theme="fruit"] .triage-overlay-panel {
+  background: var(--surface) !important;
+  border: 1px solid var(--theme-hairline) !important;
+  border-radius: var(--theme-radius) !important;
+  box-shadow: var(--theme-shadow) !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+.app[data-athena-theme="fruit"] .glass-panel::before,
+.app[data-athena-theme="fruit"] .chat-sidebar::before,
+.app[data-athena-theme="fruit"] .chat-main.glass-panel::before {
+  display: none !important;
+}
+
+/* Header / chrome */
+.app[data-athena-theme="fruit"] .universal-header,
+.app[data-athena-theme="fruit"] .main-header {
+  border-bottom: 1px solid var(--theme-hairline) !important;
+  background: color-mix(in srgb, var(--surface-solid) 82%, transparent) !important;
+  backdrop-filter: saturate(180%) blur(16px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+}
+
+.app[data-athena-theme="fruit"] .sidebar-title,
+.app[data-athena-theme="fruit"] .message-role {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.app[data-athena-theme="fruit"] .sidebar-tagline,
+.app[data-athena-theme="fruit"] .text-muted,
+.app[data-athena-theme="fruit"] .welcome-hint {
+  color: var(--text-muted) !important;
+}
+
+/* Chat */
+.app[data-athena-theme="fruit"] .message-content {
+  border-radius: calc(var(--theme-radius) + 2px);
+  line-height: 1.55;
+}
+
+.app[data-athena-theme="fruit"] .message.user .message-content,
+.app[data-athena-theme="fruit"] .message[data-role="user"] .message-content {
+  background: var(--user-bubble) !important;
+  border: 1px solid var(--theme-hairline);
+}
+
+.app[data-athena-theme="fruit"] .chat-input-wrap,
+.app[data-athena-theme="fruit"] .chat-input,
+.app[data-athena-theme="fruit"] textarea.chat-input {
+  border-radius: var(--theme-radius) !important;
+  border-color: var(--theme-hairline) !important;
+  background: var(--surface-solid) !important;
+}
+
+.app[data-athena-theme="fruit"] .send-btn,
+.app[data-athena-theme="fruit"] .sidebar-new-chat,
+.app[data-athena-theme="fruit"] .btn-primary-cta,
+.app[data-athena-theme="fruit"] button.primary,
+.app[data-athena-theme="fruit"] .library-btn {
+  border-radius: 980px !important;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  border: none !important;
+  box-shadow: none !important;
+  transition: background var(--transition-fast) var(--ease-out),
+    transform var(--transition-fast) var(--ease-out),
+    opacity var(--transition-fast) var(--ease-out);
+}
+
+.app[data-athena-theme="fruit"] .send-btn.send-btn-active:not(:disabled),
+.app[data-athena-theme="fruit"] .sidebar-new-chat,
+.app[data-athena-theme="fruit"] .btn-primary-cta {
+  background: var(--primary) !important;
+  color: #fff !important;
+}
+
+.app[data-athena-theme="fruit"] .send-btn:hover:not(:disabled),
+.app[data-athena-theme="fruit"] .sidebar-new-chat:hover,
+.app[data-athena-theme="fruit"] .btn-primary-cta:hover {
+  filter: brightness(1.06);
+  transform: translateY(-0.5px);
+}
+
+.app[data-athena-theme="fruit"] .main-header-icon-btn {
+  border-radius: 10px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+}
+
+.app[data-athena-theme="fruit"] .main-header-icon-btn:hover,
+.app[data-athena-theme="fruit"] .main-header-icon-btn-active {
+  background: var(--hover-overlay) !important;
+  border-color: var(--theme-hairline) !important;
+}
+
+/* Settings / lists */
+.app[data-athena-theme="fruit"] .theme-select,
+.app[data-athena-theme="fruit"] select,
+.app[data-athena-theme="fruit"] input[type="text"],
+.app[data-athena-theme="fruit"] input[type="password"],
+.app[data-athena-theme="fruit"] input[type="number"] {
+  border-radius: 10px !important;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-solid) !important;
+  color: var(--text) !important;
+}
+
+.app[data-athena-theme="fruit"] .sidebar-chat-item,
+.app[data-athena-theme="fruit"] .sidebar-chat-btn,
+.app[data-athena-theme="fruit"] .settings-nav button,
+.app[data-athena-theme="fruit"] .library-section {
+  border-radius: 10px;
+}
+
+.app[data-athena-theme="fruit"] .sidebar-chat-btn:hover,
+.app[data-athena-theme="fruit"] .settings-nav button:hover {
+  background: var(--hover-overlay) !important;
+}
+
+.app[data-athena-theme="fruit"] hr,
+.app[data-athena-theme="fruit"] .divider {
+  border-color: var(--theme-hairline) !important;
+}
+
+/* Map chrome */
+.app[data-athena-theme="fruit"] .map-view-chat-zone,
+.app[data-athena-theme="fruit"] .map-smart-bar,
+.app[data-athena-theme="fruit"] .tactical-sidebar {
+  border-radius: var(--theme-radius) !important;
+  border: 1px solid var(--theme-hairline) !important;
+  background: var(--surface) !important;
+  backdrop-filter: saturate(180%) blur(16px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+}
+
+/* Modals */
+.app[data-athena-theme="fruit"] .modal,
+.app[data-athena-theme="fruit"] .modal-content,
+.app[data-athena-theme="fruit"] [role="dialog"] {
+  border-radius: 16px !important;
+  border: 1px solid var(--theme-hairline) !important;
+  box-shadow: var(--theme-shadow) !important;
+}
+
+/* Disable CRT / grain FX under Fruit even if leftover attrs exist */
+.app[data-athena-theme="fruit"][data-fx-scanlines="1"]::before,
+.app[data-athena-theme="fruit"][data-fx-scanlines="1"]::after,
+body.theme-fruit::after {
+  display: none !important;
+  content: none !important;
+  opacity: 0 !important;
+}
+
+/* Welcome / empty states */
+.app[data-athena-theme="fruit"] .welcome p {
+  color: var(--text);
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.app[data-athena-theme="fruit"] .welcome-tip {
+  border: 1px solid var(--theme-hairline);
+  border-radius: var(--theme-radius);
+  background: var(--surface-solid);
+}
+
+/* Subtle motion */
+@keyframes fruit-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.app[data-athena-theme="fruit"] .message {
+  animation: fruit-fade-in 0.28s var(--ease-out);
+}
+
+.app[data-athena-theme="fruit"] .chat-sidebar,
+.app[data-athena-theme="fruit"] .chat-main {
+  transition: background var(--transition-normal) var(--ease-out),
+    border-color var(--transition-normal) var(--ease-out);
+}

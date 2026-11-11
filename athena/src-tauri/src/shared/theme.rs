@@ -29,6 +29,12 @@ const PRESETS: &[ThemePreset] = &[
         personality_id: "fieldguide",
         description: "Terse, instructional voice like a vintage field guide or army manual; numbered steps, short sentences, no-nonsense.",
     },
+    ThemePreset {
+        id: "fruit",
+        name: "Fruit",
+        personality_id: "fruit",
+        description: "Calm, clear modern assistant — clean phrasing, no tactical jargon or terminal theater.",
+    },
 ];
 
 #[allow(dead_code)] // For future theme-picker commands / sync with the frontend

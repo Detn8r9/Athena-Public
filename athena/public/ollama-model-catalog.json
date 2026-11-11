@@ -4,25 +4,29 @@
       "name": "llama3.2:3b",
       "label": "Llama 3.2 3B (balanced)",
       "category": "general",
-      "nsfw": false
+      "nsfw": false,
+      "sizeBytesEstimate": 2000000000
     },
     {
       "name": "mistral:7b",
       "label": "Mistral 7B",
       "category": "general",
-      "nsfw": false
+      "nsfw": false,
+      "sizeBytesEstimate": 4100000000
     },
     {
       "name": "qwen2.5:7b",
       "label": "Qwen 2.5 7B",
       "category": "coding",
-      "nsfw": false
+      "nsfw": false,
+      "sizeBytesEstimate": 4700000000
     },
     {
       "name": "dolphin-mixtral:8x7b",
       "label": "Dolphin Mixtral (uncensored — 18+ only)",
       "category": "unrestricted",
-      "nsfw": true
+      "nsfw": true,
+      "sizeBytesEstimate": 26000000000
     }
   ]
 }

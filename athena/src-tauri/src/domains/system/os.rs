@@ -1,15 +1,12 @@
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 /// Open Athena's unified downloads folder in the native file explorer.
 #[tauri::command]
 pub async fn reveal_downloads_folder(app_handle: AppHandle) -> Result<(), String> {
     use std::process::Command;
 
-    let base = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e: tauri::Error| e.to_string())?;
-    let path = base.join("downloads");
+    let base = crate::portable::resolved_app_data_dir(&app_handle)?;
+    let path = crate::athena_paths::AthenaPaths::new(&base).user_downloads_dir();
 
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
 
@@ -143,14 +140,11 @@ fn migrate_one_root(
 /// One-time migration: move legacy download/staging folders into the unified `downloads/*` tree.
 #[tauri::command]
 pub async fn migrate_existing_downloads(app_handle: AppHandle) -> Result<DownloadsMigrationReport, String> {
-    let base = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e: tauri::Error| e.to_string())?;
+    let base = crate::portable::resolved_app_data_dir(&app_handle)?;
 
     crate::ensure_download_dirs(&base)?;
 
-    let downloads = base.join("downloads");
+    let downloads = crate::athena_paths::AthenaPaths::new(&base).user_downloads_dir();
     let packages = downloads.join("packages");
     let maps = downloads.join("maps");
     let documents = downloads.join("documents");
@@ -162,13 +156,14 @@ pub async fn migrate_existing_downloads(app_handle: AppHandle) -> Result<Downloa
         errors: 0,
     };
 
-    // Legacy roots
+    // Legacy roots (flat AthenaData + pre-layout-v2 downloads/)
     migrate_one_root(&base.join("library"), &packages, &mut report);
     migrate_one_root(&base.join("kiwix_downloads"), &packages, &mut report);
     migrate_one_root(&base.join("map_downloads"), &maps, &mut report);
     migrate_one_root(&base.join("harvest_staging"), &documents.join("harvest_staging"), &mut report);
     migrate_one_root(&base.join("Unsorted"), &documents.join("staging"), &mut report);
     migrate_one_root(&base.join("archive"), &documents.join("archive"), &mut report);
+    migrate_one_root(&base.join("downloads"), &downloads, &mut report);
 
     Ok(report)
 }

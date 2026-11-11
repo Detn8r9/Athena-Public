@@ -112,3 +112,6 @@ athena/**/.env.local
 # --- Workspace lockdown (IDE + file watchers) ---
 src-tauri/target/
 *.part
+
+# Local reference clones (not part of Athena product)
+reference/

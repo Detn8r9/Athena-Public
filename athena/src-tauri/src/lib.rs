@@ -14,6 +14,8 @@ mod chunking;
 mod commands;
 #[path = "shared/config.rs"]
 mod config;
+#[path = "shared/athena_paths.rs"]
+mod athena_paths;
 #[path = "domains/db/db.rs"]
 mod db;
 #[path = "domains/ingestion/downloader.rs"]
@@ -154,14 +156,13 @@ mod quarantine;
 mod radio_manager;
 #[path = "domains/vector/rag_indexer.rs"]
 mod rag_indexer;
+mod library_rag_gate;
 #[path = "domains/queue/remote_queue.rs"]
 mod remote_queue;
 #[path = "domains/ingestion/satellite_region_download.rs"]
 mod satellite_region_download;
 #[path = "domains/radio/sdr_manager.rs"]
 mod sdr_manager;
-#[path = "domains/radio/sdr_radio.rs"]
-mod sdr_radio;
 #[path = "domains/db/spatial.rs"]
 mod spatial;
 #[path = "domains/routing/routing.rs"]
@@ -193,6 +194,8 @@ mod tile_pack;
 #[cfg(feature = "piper-tts")]
 #[path = "domains/ai/tts.rs"]
 mod tts;
+#[path = "domains/ai/ptt_record.rs"]
+mod ptt_record;
 #[path = "domains/auth/user_profile.rs"]
 mod user_profile;
 #[path = "domains/hardware/usb.rs"]
@@ -1559,10 +1562,15 @@ fn open_path_in_file_manager(app: tauri::AppHandle, path: String) -> Result<(), 
 #[allow(clippy::type_complexity)]
 fn get_theme_config(
     app: tauri::AppHandle,
-) -> Result<(Option<String>, Option<String>, Vec<CustomTheme>), String> {
+) -> Result<(Option<String>, Option<String>, Vec<CustomTheme>, Option<String>), String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let cfg = load_config(&app_data_dir);
-    Ok((cfg.theme_id, cfg.personality_id, cfg.custom_themes))
+    Ok((
+        cfg.theme_id,
+        cfg.personality_id,
+        cfg.custom_themes,
+        cfg.theme_appearance,
+    ))
 }
 
 #[tauri::command]
@@ -1571,12 +1579,16 @@ fn set_theme_config(
     theme_id: Option<String>,
     personality_id: Option<String>,
     custom_themes: Vec<CustomTheme>,
+    theme_appearance: Option<String>,
 ) -> Result<(), String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut cfg = load_config(&app_data_dir);
     cfg.theme_id = theme_id;
     cfg.personality_id = personality_id;
     cfg.custom_themes = custom_themes;
+    if theme_appearance.is_some() {
+        cfg.theme_appearance = theme_appearance;
+    }
     save_config(&app_data_dir, &cfg)
 }
 
@@ -1629,11 +1641,13 @@ fn is_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
 
 pub(crate) fn kiwix_downloads_dir(app_data_dir: &std::path::Path) -> std::path::PathBuf {
     // Unified downloads root: ZIMs live under the managed packages downloads.
-    app_data_dir.join("downloads").join("packages")
+    crate::athena_paths::AthenaPaths::new(app_data_dir)
+        .user_downloads_dir()
+        .join("packages")
 }
 
 pub(crate) fn downloads_root(app_data_dir: &std::path::Path) -> std::path::PathBuf {
-    app_data_dir.join("downloads")
+    crate::athena_paths::AthenaPaths::new(app_data_dir).user_downloads_dir()
 }
 
 pub(crate) fn ensure_download_dirs(app_data_dir: &std::path::Path) -> Result<(), String> {
@@ -2258,7 +2272,9 @@ fn try_launch_ollama(app: tauri::AppHandle) -> Result<(), String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let prefs = ollama_setup::resolve_launch_paths(&app_data_dir, &config);
-    try_launch_ollama_server_with_preferences(&prefs);
+    let ollama_models = crate::athena_paths::AthenaPaths::new(&app_data_dir).user_ollama_models_dir();
+    let _ = std::fs::create_dir_all(&ollama_models);
+    try_launch_ollama_server_with_preferences(&prefs, Some(ollama_models.as_path()));
     Ok(())
 }
 
@@ -2498,6 +2514,21 @@ fn marketplace_overview(app: tauri::AppHandle) -> Result<marketplace::Marketplac
 #[tauri::command]
 fn marketplace_install(app: tauri::AppHandle, id: String) -> Result<(), String> {
     marketplace::install_async(&app, id.trim())
+}
+
+#[tauri::command]
+fn marketplace_recreate(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    marketplace::recreate_async(&app, id.trim())
+}
+
+#[tauri::command]
+fn marketplace_set_auto_update(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    marketplace::set_auto_update(&app, enabled)
+}
+
+#[tauri::command]
+fn marketplace_tick_auto_updates(app: tauri::AppHandle) -> Result<usize, String> {
+    marketplace::tick_auto_updates(&app)
 }
 
 #[tauri::command]
@@ -2744,7 +2775,103 @@ fn is_inference_ready(app: tauri::AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 fn moondream_describe_image(_app: tauri::AppHandle, image_path: String) -> Result<String, String> {
-    moondream::describe_image_stub(std::path::Path::new(&image_path))
+    use base64::Engine;
+    let bytes = std::fs::read(&image_path).map_err(|e| format!("Read image failed: {e}"))?;
+    if bytes.len() > 12_000_000 {
+        return Err("Image too large for local vision (max ~12MB).".to_string());
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    moondream::describe_images_locally(&[b64], "")
+}
+
+/// Describe one or more in-memory camera/attachment frames (base64, no data: prefix).
+#[tauri::command]
+fn describe_vision_frames(images_b64: Vec<String>, question: Option<String>) -> Result<String, String> {
+    if images_b64.is_empty() {
+        return Err("No frames provided.".to_string());
+    }
+    if images_b64.len() > 4 {
+        return Err("Too many frames (max 4).".to_string());
+    }
+    for img in &images_b64 {
+        if img.len() > 16_000_000 {
+            return Err("Frame payload too large.".to_string());
+        }
+    }
+    moondream::describe_images_locally(&images_b64, question.as_deref().unwrap_or(""))
+}
+
+#[tauri::command]
+fn get_vision_capability(preferred_model: Option<String>) -> Result<moondream::VisionCapability, String> {
+    Ok(moondream::vision_capability(preferred_model.as_deref()))
+}
+
+const OLLAMA_PULL_PROGRESS_EVENT: &str = "athena:ollama-pull-progress";
+const OLLAMA_PULL_DONE_EVENT: &str = "athena:ollama-pull-done";
+
+/// Pull an Ollama model in a background thread (e.g. `moondream` for camera vision).
+#[tauri::command]
+fn pull_ollama_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    let model = model.trim().to_string();
+    if model.is_empty() || model.len() > 120 || model.contains([' ', '\n', '\r', ';', '|', '&']) {
+        return Err("Invalid model name.".to_string());
+    }
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
+    let config = load_config(&app_data_dir);
+    let mut candidates = ollama_setup::resolve_launch_paths(&app_data_dir, &config);
+    if let Ok(w) = which::which("ollama") {
+        candidates.push(w);
+    }
+    candidates.push(std::path::PathBuf::from("ollama"));
+    let bin = candidates
+        .into_iter()
+        .find(|p| p.as_os_str() == "ollama" || p.is_file())
+        .ok_or_else(|| "Ollama CLI not found. Install Ollama, then try again.".to_string())?;
+
+    let app_emit = app.clone();
+    let model_clone = model.clone();
+    std::thread::spawn(move || {
+        let _ = app_emit.emit(
+            OLLAMA_PULL_PROGRESS_EVENT,
+            format!("Pulling {model_clone}…"),
+        );
+        let output = std::process::Command::new(&bin)
+            .arg("pull")
+            .arg(&model_clone)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+        match output {
+            Ok(out) if out.status.success() => {
+                let _ = app_emit.emit(
+                    OLLAMA_PULL_DONE_EVENT,
+                    serde_json::json!({ "ok": true, "model": model_clone }),
+                );
+            }
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                let msg = if err.trim().is_empty() {
+                    format!("ollama pull {model_clone} failed")
+                } else {
+                    err.chars().take(400).collect()
+                };
+                let _ = app_emit.emit(OLLAMA_PULL_PROGRESS_EVENT, msg.clone());
+                let _ = app_emit.emit(
+                    OLLAMA_PULL_DONE_EVENT,
+                    serde_json::json!({ "ok": false, "model": model_clone, "error": msg }),
+                );
+            }
+            Err(e) => {
+                let msg = format!("Failed to run ollama pull: {e}");
+                let _ = app_emit.emit(OLLAMA_PULL_PROGRESS_EVENT, msg.clone());
+                let _ = app_emit.emit(
+                    OLLAMA_PULL_DONE_EVENT,
+                    serde_json::json!({ "ok": false, "model": model_clone, "error": msg }),
+                );
+            }
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -2964,10 +3091,12 @@ async fn map_assistant_send(
         ollama::ChatMessage {
             role: "system".to_string(),
             content: sys,
+        images: None,
         },
         ollama::ChatMessage {
             role: "user".to_string(),
             content: msg.to_string(),
+        images: None,
         },
     ];
     // CRITICAL: LLM inference must not run on the Tauri main thread (macOS pinwheel / UI stall).
@@ -3589,6 +3718,7 @@ fn generate_chat_description(
         .map(|m| ChatMessage {
             role: m.role,
             content: m.content,
+        images: None,
         })
         .collect();
     generate_chat_description_unified(&config, &models, &chat_messages)
@@ -3609,14 +3739,25 @@ const ERROR_LOG_FILENAME: &str = "athena_error_log.txt";
 const ERROR_LOG_MAX_BYTES: usize = 100_000;
 
 fn error_log_path(app_data_dir: &std::path::Path) -> std::path::PathBuf {
-    app_data_dir.join(ERROR_LOG_FILENAME)
+    let paths = crate::athena_paths::AthenaPaths::new(app_data_dir);
+    let modern = paths.user_config_dir().join(ERROR_LOG_FILENAME);
+    if modern.exists() {
+        return modern;
+    }
+    let legacy = app_data_dir.join(ERROR_LOG_FILENAME);
+    if legacy.exists() {
+        return legacy;
+    }
+    modern
 }
 
 #[tauri::command]
 fn append_error_log(app: tauri::AppHandle, message: String) -> Result<(), String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
-    std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
     let path = error_log_path(&app_data_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
     let line = format!("[{}] {}\n", timestamp, message.replace('\n', " "));
     std::fs::OpenOptions::new()
@@ -4264,6 +4405,9 @@ fn format_hybrid_library_context(hits: &[HybridSearchHit]) -> String {
 
 /// Single-turn RAG text for chat console: same RRF keyword + semantic merge as main chat (no history).
 pub(crate) fn console_chat_library_context(db: &Database, query: &str) -> String {
+    if library_rag_gate::should_skip_library_rag(query, false) {
+        return String::new();
+    }
     if let Ok(hits) = db.hybrid_search(query) {
         if !hits.is_empty() {
             return format!(
@@ -4325,6 +4469,7 @@ fn build_personality_section(config: &AppConfig) -> String {
     let style = match personality_id.as_str() {
         "fallout" => "You speak like a retro-futuristic terminal in a Fallout-style universe: concise, matter-of-fact, with dry, sometimes dark humor. You keep answers practical and terse, like a pre-war maintenance terminal trying to be helpful despite everything falling apart.",
         "fieldguide" => "You speak like an old survival manual or vintage field guide: terse, instructional, no-nonsense. Use short sentences, numbered steps where appropriate, and the occasional dated turn of phrase. Sound like printed text from a well-thumbed booklet—authoritative, sparse, and to the point.",
+        "fruit" => "You speak like a modern consumer assistant from a polished product team: calm, clear, and warm without being cute. Prefer plain language over tactical jargon, briefing tone, or terminal theater. Keep answers concise, well-structured, and easy to skim.",
         _ => "You speak like a calm, practical survival instructor. Be encouraging but honest, avoid drama, and focus on clear, step-by-step guidance that a stressed person can follow.",
     };
     format!(
@@ -4340,7 +4485,16 @@ fn build_user_profile_section(config: &AppConfig) -> String {
 const KNOWLEDGE_BLOCK_FILENAME: &str = "knowledge_block.txt";
 
 fn knowledge_block_path(app_data_dir: &std::path::Path) -> std::path::PathBuf {
-    app_data_dir.join(KNOWLEDGE_BLOCK_FILENAME)
+    let paths = crate::athena_paths::AthenaPaths::new(app_data_dir);
+    let modern = paths.user_config_dir().join(KNOWLEDGE_BLOCK_FILENAME);
+    if modern.exists() {
+        return modern;
+    }
+    let legacy = app_data_dir.join(KNOWLEDGE_BLOCK_FILENAME);
+    if legacy.exists() {
+        return legacy;
+    }
+    modern
 }
 
 fn read_persistent_knowledge_block(app_data_dir: &std::path::Path) -> String {
@@ -4352,6 +4506,9 @@ fn read_persistent_knowledge_block(app_data_dir: &std::path::Path) -> String {
             .to_string()
     } else {
         let default_content = "# Add critical survival facts and user preferences below.\n# One per line or in paragraphs. This content is injected into every AI query.\n";
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let _ = std::fs::write(&path, default_content);
         String::new()
     }
@@ -4524,6 +4681,7 @@ fn build_chat_messages(
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
         content: system_content,
+    images: None,
     }];
     let start = history.len().saturating_sub(max);
     for h in &history[start..] {
@@ -4531,12 +4689,14 @@ fn build_chat_messages(
             messages.push(ChatMessage {
                 role: h.role.clone(),
                 content: h.content.clone(),
+            images: None,
             });
         }
     }
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: new_user_message.to_string(),
+    images: None,
     });
     messages
 }
@@ -4551,6 +4711,7 @@ fn insert_spatial_system_before_last_user_message(
             messages.push(ChatMessage {
                 role: "system".to_string(),
                 content: spatial_content,
+            images: None,
             });
             messages.push(last);
         } else {
@@ -4587,6 +4748,11 @@ fn send_message(
         let db = state.db.lock().map_err(|e| e.to_string())?;
         let (context_section, library_rule) = if athena_ref_mode {
             (String::new(), LIBRARY_RULE_ATHENA_REF_MODE)
+        } else if library_rag_gate::should_skip_library_rag(&message_for_model, false) {
+            (
+                String::new(),
+                "Answer from conversation context and general knowledge. Do not invent library citations. If the user wants a document looked up, ask them to say so clearly.",
+            )
         } else {
             let retrieval_query = message_for_model.as_str();
             let mentioned = db
@@ -4932,7 +5098,10 @@ fn restore_database(
     rusqlite::Connection::open(&src)
         .map_err(|e| format!("Selected file is not a valid SQLite database: {e}"))?;
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
-    let db_path = app_data_dir.join("athena_index.db");
+    let db_path = crate::athena_paths::AthenaPaths::new(&app_data_dir).resolve_db_path();
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let mut guard = state.db.lock().map_err(|e| e.to_string())?;
     let _old = std::mem::replace(&mut *guard, Database::new_in_memory_placeholder()?);
     drop(_old);
@@ -5407,15 +5576,18 @@ Be concise (under 8 short paragraphs). Do not invent features.",
         ChatMessage {
             role: "system".to_string(),
             content: system,
+        images: None,
         },
         ChatMessage {
             role: "user".to_string(),
             content: q.to_string(),
+        images: None,
         },
     ];
     let options = ModelOptions {
         temperature: 0.35,
         num_ctx: 4096,
+        num_predict: None,
     };
     chat_unified(&config, &models, messages, Some(options))
 }
@@ -5431,6 +5603,9 @@ fn send_message_stream(
     chat_id: Option<String>,
     model_options: Option<ModelOptions>,
     model: Option<String>,
+    images: Option<Vec<String>>,
+    skip_library_rag: Option<bool>,
+    conversation_mode: Option<bool>,
 ) -> Result<(), String> {
     let session_user = auth::authenticated_user(&session)?;
     start_send_message_stream_for_user(
@@ -5443,6 +5618,9 @@ fn send_message_stream(
         chat_id,
         model_options,
         model,
+        images,
+        skip_library_rag.unwrap_or(false),
+        conversation_mode.unwrap_or(false),
     )
 }
 
@@ -5457,7 +5635,13 @@ pub(crate) fn start_send_message_stream_for_user(
     chat_id: Option<String>,
     model_options: Option<ModelOptions>,
     model: Option<String>,
+    images: Option<Vec<String>>,
+    skip_library_rag: bool,
+    conversation_mode: bool,
 ) -> Result<(), String> {
+    // Client hint OR heuristic gate (greetings / chitchat / short voice turns).
+    let skip_library_rag = skip_library_rag
+        || library_rag_gate::should_skip_library_rag(&message, conversation_mode);
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     if config.ai_inference_sleep.unwrap_or(false) {
@@ -5482,22 +5666,70 @@ pub(crate) fn start_send_message_stream_for_user(
     let app_data_dir_clone = app_data_dir.clone();
     let chat_id_clone = chat_id.clone();
     let history_owner_id = session_user_id.clone();
+    let images_clone = images
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .take(4)
+        .collect::<Vec<_>>();
     std::thread::spawn(move || {
+        let enrich_with_vision = |user_text: &str| -> String {
+            if images_clone.is_empty() {
+                return user_text.to_string();
+            }
+            // Prefer attaching images directly when the primary chat model can see them.
+            let primary = stream_model_override
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let primary_vision = primary
+                .map(moondream::name_is_vision_capable)
+                .unwrap_or(false)
+                || moondream::vision_capability(primary)
+                    .model
+                    .as_deref()
+                    .map(|m| primary == Some(m))
+                    .unwrap_or(false);
+            if primary_vision {
+                return format!(
+                    "{user_text}\n\n[Visual input is attached to this message. Analyze the image(s) directly to identify objects, text, and scene context. Camera frames stay on this device and are never uploaded to the cloud.]"
+                );
+            }
+            match moondream::describe_images_locally(&images_clone, user_text) {
+                Ok(desc) => format!(
+                    "{user_text}\n\n---\nLocal camera / image vision context (use this to identify objects the user is showing and answer accordingly). Frames stay on this device:\n{desc}\n---"
+                ),
+                Err(e) => format!(
+                    "{user_text}\n\n[Camera frame was provided but local vision failed: {e}. Answer without visual identification.]"
+                ),
+            }
+        };
+
         if is_guest {
             // Level 0 guest: bypass ALL RAG / vector DB / local chat context.
             let config = load_config(&app_data_dir_clone);
             let models = load_models_for_inference(&config);
             let system_content = "You are a basic survival assistant. You do not know about Project ATHENA, its personnel, or its operations. Provide general, safe advice only. Do not mention internal systems, security, or databases. If asked about ATHENA, say you don't know.";
-            let messages = vec![
+            let guest_user = enrich_with_vision(&message);
+            let mut messages = vec![
                 ChatMessage {
                     role: "system".to_string(),
                     content: system_content.to_string(),
+                    images: None,
                 },
                 ChatMessage {
                     role: "user".to_string(),
-                    content: message.clone(),
+                    content: guest_user,
+                    images: None,
                 },
             ];
+            if !images_clone.is_empty() {
+                if let Some(last) = messages.last_mut() {
+                    if last.role == "user" {
+                        last.images = Some(images_clone.clone());
+                    }
+                }
+            }
             let mut on_chunk = |chunk: &str| {
                 let _ = app_emit.emit(STREAM_CHUNK_EVENT, chunk);
             };
@@ -5522,6 +5754,7 @@ pub(crate) fn start_send_message_stream_for_user(
         let app_data_dir = app_data_dir_clone;
         let config = load_config(&app_data_dir);
         let history_ref = history_clone.as_deref().unwrap_or(&[]);
+        let message = enrich_with_vision(&message);
 
         let (message_for_model, athena_ref_mode) = parse_athena_ref_message(&message);
 
@@ -5578,8 +5811,23 @@ pub(crate) fn start_send_message_stream_for_user(
                 }
             };
 
-            let (context_section, library_rule, stream_citations) = if athena_ref_mode {
-                (String::new(), LIBRARY_RULE_ATHENA_REF_MODE, Vec::<StreamLibrarySource>::new())
+            let (context_section, library_rule, stream_citations) =
+                if athena_ref_mode || skip_library_rag {
+                if athena_ref_mode {
+                    (
+                        String::new(),
+                        LIBRARY_RULE_ATHENA_REF_MODE,
+                        Vec::<StreamLibrarySource>::new(),
+                    )
+                } else {
+                    // Chitchat / gate skip: no hybrid library retrieval.
+                    let rule = if conversation_mode {
+                        "You are Athena in a live voice conversation. Reply briefly and naturally. Do not cite library documents unless the user asked about one."
+                    } else {
+                        "Answer from conversation context and general knowledge. Do not invent library citations. If the user wants a document looked up, ask them to say so clearly."
+                    };
+                    (String::new(), rule, Vec::<StreamLibrarySource>::new())
+                }
             } else {
                 let mentioned = db
                     .get_indexed_files_by_name_mentioned(&format!(
@@ -5800,6 +6048,14 @@ Critical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
             let mut messages =
                 build_chat_messages(system_content, history_ref, &message_for_model, max_memory);
 
+            if !images_clone.is_empty() {
+                if let Some(last) = messages.last_mut() {
+                    if last.role == "user" {
+                        last.images = Some(images_clone.clone());
+                    }
+                }
+            }
+
             if let (Some(lat), Some(lon)) = (user_lat, user_lon) {
                 if lat.is_finite()
                     && lon.is_finite()
@@ -5911,6 +6167,20 @@ pub(crate) fn start_send_message_stream_from_lan_args(
         .get("model")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let images = args
+        .get("images")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok());
+    let skip_library_rag = args
+        .get("skip_library_rag")
+        .or_else(|| args.get("skipLibraryRag"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let conversation_mode = args
+        .get("conversation_mode")
+        .or_else(|| args.get("conversationMode"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     start_send_message_stream_for_user(
         app,
         session_user,
@@ -5921,6 +6191,9 @@ pub(crate) fn start_send_message_stream_from_lan_args(
         chat_id,
         model_options,
         model,
+        images,
+        skip_library_rag,
+        conversation_mode,
     )
 }
 
@@ -6021,6 +6294,36 @@ pub fn run() {
             ocr::init_ocr_environment(app.handle());
             let app_data_dir = crate::portable::resolved_app_data_dir(&app.handle())?;
             std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+            // Layout v2: AthenaData/app (bundled) + AthenaData/user (installed) — migrate flat roots once.
+            let athena_paths = crate::athena_paths::ensure_layout(&app_data_dir)
+                .map_err(|e| format!("AthenaData layout: {e}"))?;
+            // Seed app/ (and empty user model packs) from bundled Tauri resources when present.
+            {
+                use tauri::Manager;
+                let ollama_res = app
+                    .handle()
+                    .path()
+                    .resolve("ollama", tauri::path::BaseDirectory::Resource)
+                    .ok();
+                let emb_res = app
+                    .handle()
+                    .path()
+                    .resolve("embedding", tauri::path::BaseDirectory::Resource)
+                    .ok();
+                let rr_res = app
+                    .handle()
+                    .path()
+                    .resolve("reranker", tauri::path::BaseDirectory::Resource)
+                    .ok();
+                if let Err(e) = crate::athena_paths::seed_app_from_bundled_resources(
+                    &athena_paths,
+                    ollama_res.as_deref(),
+                    emb_res.as_deref(),
+                    rr_res.as_deref(),
+                ) {
+                    eprintln!("[athena] seed bundled resources into AthenaData/app: {e}");
+                }
+            }
             // One-time migration into unified `downloads/*` structure (best-effort, non-fatal).
             {
                 let h = app.handle().clone();
@@ -6041,7 +6344,10 @@ pub fn run() {
             let model_paths = ensure_model_directories(&app_data_dir)?;
             let _ = map_manager_download::ensure_offline_maps_directory(&app_data_dir);
             let _ = map_manager_download::cleanup_stale_part_files(&app_data_dir);
-            let db_path = app_data_dir.join("athena_index.db");
+            let db_path = athena_paths.resolve_db_path();
+            if let Some(parent) = db_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
             let db = Arc::new(Mutex::new(Database::new(&db_path)?));
             {
                 let g = db.lock().map_err(|e| e.to_string())?;
@@ -6160,6 +6466,7 @@ pub fn run() {
                 power_save_mode: Arc::clone(&power_save_mode),
                 ingestion_queue: background_ingestion::IngestionQueue::default(),
             });
+            app.manage(ptt_record::managed_state());
             let _ = watcher_tx.send(WatchCommand::SetFolders(folders));
 
             // Telemetry + power-save toggling (dedicated thread).
@@ -6271,11 +6578,15 @@ pub fn run() {
                 let config_for_ollama = config.clone();
                 let app_handle_for_ollama = app.handle().clone();
                 std::thread::spawn(move || {
+                    let ollama_models = crate::athena_paths::AthenaPaths::new(&app_data_for_ollama)
+                        .user_ollama_models_dir();
+                    let _ = std::fs::create_dir_all(&ollama_models);
+                    let models = Some(ollama_models.as_path());
                     std::thread::sleep(std::time::Duration::from_millis(800));
                     if !is_ollama_running() {
                         let prefs =
                             ollama_setup::resolve_launch_paths(&app_data_for_ollama, &config_for_ollama);
-                        try_launch_ollama_server_with_preferences(&prefs);
+                        try_launch_ollama_server_with_preferences(&prefs, models);
                         std::thread::sleep(std::time::Duration::from_secs(3));
                     }
                     if is_ollama_running() {
@@ -6293,7 +6604,7 @@ pub fn run() {
                     if managed.is_file() {
                         let prefs =
                             ollama_setup::resolve_launch_paths(&app_data_for_ollama, &config_for_ollama);
-                        try_launch_ollama_server_with_preferences(&prefs);
+                        try_launch_ollama_server_with_preferences(&prefs, models);
                         return;
                     }
                     let _ = app_handle_for_ollama.emit(
@@ -6313,7 +6624,7 @@ pub fn run() {
                                 &app_data_for_ollama,
                                 &config_for_ollama,
                             );
-                            try_launch_ollama_server_with_preferences(&prefs);
+                            try_launch_ollama_server_with_preferences(&prefs, models);
                         }
                         Err(e) => {
                             let _ = app_handle_for_ollama.emit(
@@ -6447,6 +6758,9 @@ pub fn run() {
             set_connectivity_mode,
             marketplace_overview,
             marketplace_install,
+            marketplace_recreate,
+            marketplace_set_auto_update,
+            marketplace_tick_auto_updates,
             marketplace_start,
             marketplace_stop,
             marketplace_open_url,
@@ -6465,6 +6779,9 @@ pub fn run() {
             probe_openai_compatible_connection,
             is_inference_ready,
             moondream_describe_image,
+            describe_vision_frames,
+            get_vision_capability,
+            pull_ollama_model,
             kiwix_search_with_tool,
             get_offline_route_geojson,
             get_memory_messages,
@@ -6670,6 +6987,10 @@ pub fn run() {
             lan_chat::lan_chat_list_messages,
             lan_chat::lan_chat_send_message,
             portable::oobe_set_athena_data_root,
+            ptt_record::start_ptt_recording,
+            ptt_record::stop_ptt_recording,
+            ptt_record::stop_ptt_and_transcribe,
+            ptt_record::cancel_ptt_recording,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -6691,6 +7012,9 @@ pub fn run() {
                 }
                 lan_chat::stop_lan_chat_listener();
                 sdr_manager::stop_sdr_internal(app_handle);
+                if let Some(st) = app_handle.try_state::<std::sync::Arc<ptt_record::PttRecordState>>() {
+                    st.request_stop();
+                }
             }
         });
 }

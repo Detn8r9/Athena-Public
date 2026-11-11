@@ -181,6 +181,9 @@ pub struct ModelInfo {
 pub struct ModelOptions {
     pub temperature: f32,
     pub num_ctx: u32,
+    /// Cap generated tokens (Ollama `num_predict`). Shorter = faster Conversation turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_predict: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -196,6 +199,26 @@ pub struct OllamaChatRequest {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// Ollama vision: raw base64 image payloads (no `data:` prefix).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
+}
+
+impl ChatMessage {
+    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            images: None,
+        }
+    }
+
+    pub fn with_images(mut self, images: Vec<String>) -> Self {
+        if !images.is_empty() {
+            self.images = Some(images);
+        }
+        self
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -353,14 +376,19 @@ pub async fn ollama_http_ready_after_sidecar(max_attempts: u32, delay_ms: u64) -
     false
 }
 
-fn try_spawn_ollama_serve(program: impl AsRef<std::ffi::OsStr>) -> bool {
-    Command::new(program.as_ref())
-        .arg("serve")
+fn try_spawn_ollama_serve(
+    program: impl AsRef<std::ffi::OsStr>,
+    models_dir: Option<&Path>,
+) -> bool {
+    let mut cmd = Command::new(program.as_ref());
+    cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .is_ok()
+        .stderr(Stdio::null());
+    if let Some(dir) = models_dir {
+        cmd.env("OLLAMA_MODELS", dir);
+    }
+    cmd.spawn().is_ok()
 }
 
 fn ollama_binary_paths() -> Vec<&'static str> {
@@ -378,7 +406,11 @@ fn ollama_binary_paths() -> Vec<&'static str> {
 }
 
 /// Prefer `extra_paths_first` (configured or managed CLI), then well-known locations / PATH, then macOS app bundle.
-pub fn try_launch_ollama_server_with_preferences(extra_paths_first: &[std::path::PathBuf]) {
+/// When `models_dir` is set, Ollama writes/reads models there (`OLLAMA_MODELS` = AthenaData/user/models/ollama).
+pub fn try_launch_ollama_server_with_preferences(
+    extra_paths_first: &[std::path::PathBuf],
+    models_dir: Option<&Path>,
+) {
     if is_ollama_running() {
         return;
     }
@@ -386,12 +418,12 @@ pub fn try_launch_ollama_server_with_preferences(extra_paths_first: &[std::path:
         if p.as_os_str().is_empty() {
             continue;
         }
-        if try_spawn_ollama_serve(p) {
+        if try_spawn_ollama_serve(p, models_dir) {
             return;
         }
     }
     for bin in ollama_binary_paths() {
-        if try_spawn_ollama_serve(bin) {
+        if try_spawn_ollama_serve(bin, models_dir) {
             return;
         }
     }
@@ -449,11 +481,27 @@ pub fn select_model_for_tier(available: &[ModelInfo], tier: &str) -> Option<Stri
     }
 }
 
-/// Small instruct model used when Ollama is running but the library is empty (first-run assist).
-const DEFAULT_OLLAMA_INSTRUCT_MODEL: &str = "llama3.2:3b";
-
-/// Best-effort: if Ollama responds on HTTP but `/api/tags` is empty, pull a default model and pin it in config.
+/// Prefer the bundled app seed tag; network pull is last resort when `app/models/ollama` has no blobs.
 pub fn maybe_ensure_default_ollama_model(app_data_dir: &Path) {
+    let paths = crate::athena_paths::AthenaPaths::new(app_data_dir);
+    let _ = crate::athena_paths::ensure_layout(app_data_dir);
+    let tag = crate::athena_paths::bundled_default_ollama_tag(&paths);
+
+    // Offline-first: copy bundled Ollama blobs into the writable user store.
+    if let Ok(true) = crate::athena_paths::seed_user_ollama_from_app(&paths) {
+        let mut c = load_config(app_data_dir);
+        let empty_explicit = c
+            .explicit_ollama_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_none();
+        if empty_explicit {
+            c.explicit_ollama_model = Some(tag.clone());
+            let _ = save_config(app_data_dir, &c);
+        }
+    }
+
     if !is_ollama_running() {
         return;
     }
@@ -463,6 +511,8 @@ pub fn maybe_ensure_default_ollama_model(app_data_dir: &Path) {
     if !models.is_empty() {
         return;
     }
+
+    // No local seed and empty library — last-resort network pull (setup with connectivity).
     let Ok(client) = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(900))
         .build()
@@ -470,7 +520,7 @@ pub fn maybe_ensure_default_ollama_model(app_data_dir: &Path) {
         return;
     };
     let url = format!("{}/api/pull", ollama_base_url());
-    let body = serde_json::json!({ "name": DEFAULT_OLLAMA_INSTRUCT_MODEL, "stream": false });
+    let body = serde_json::json!({ "name": tag, "stream": false });
     let Ok(resp) = client.post(url).json(&body).send() else {
         return;
     };
@@ -492,7 +542,7 @@ pub fn maybe_ensure_default_ollama_model(app_data_dir: &Path) {
         .filter(|s| !s.is_empty())
         .is_none();
     if empty_explicit {
-        c.explicit_ollama_model = Some(DEFAULT_OLLAMA_INSTRUCT_MODEL.to_string());
+        c.explicit_ollama_model = Some(tag);
         let _ = save_config(app_data_dir, &c);
     }
 }

@@ -1,0 +1,10 @@
+{
+  "name": "athena-mcp",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Local stdio MCP server for read-only Athena health, config, and model probes.",
+  "bin": {
+    "athena-mcp": "./server.mjs"
+  }
+}

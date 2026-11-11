@@ -45,6 +45,7 @@
     "resources": [
       "resources/embedding",
       "resources/reranker",
+      "resources/ollama",
       "resources/tessdata/*",
       "payload/**/*"
     ]

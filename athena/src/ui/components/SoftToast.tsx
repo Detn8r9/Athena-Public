@@ -10,18 +10,26 @@ export function SoftToast({
   message,
   onClose,
   durationMs = 2400,
+  actionLabel,
+  onAction,
+  actionBusy = false,
 }: {
   open: boolean;
   tone: SoftToastTone;
   message: string;
   onClose: () => void;
   durationMs?: number;
+  actionLabel?: string;
+  onAction?: () => void;
+  actionBusy?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
-    const id = window.setTimeout(() => onClose(), Math.max(600, durationMs));
+    // Keep open longer when an action is offered.
+    const ms = actionLabel ? Math.max(durationMs, 12_000) : durationMs;
+    const id = window.setTimeout(() => onClose(), Math.max(600, ms));
     return () => window.clearTimeout(id);
-  }, [open, durationMs, onClose]);
+  }, [open, durationMs, onClose, actionLabel]);
 
   const Icon = tone === "success" ? CheckCircle2 : AlertTriangle;
 
@@ -38,7 +46,17 @@ export function SoftToast({
           aria-live="polite"
         >
           <Icon size={16} aria-hidden />
-          <span>{message}</span>
+          <span className="soft-toast__msg">{message}</span>
+          {actionLabel && onAction ? (
+            <button
+              type="button"
+              className="soft-toast__action"
+              disabled={actionBusy}
+              onClick={() => onAction()}
+            >
+              {actionBusy ? "Working…" : actionLabel}
+            </button>
+          ) : null}
           <button type="button" className="soft-toast__x" aria-label="Dismiss" onClick={onClose}>
             ×
           </button>
@@ -47,4 +65,3 @@ export function SoftToast({
     </AnimatePresence>
   );
 }
-

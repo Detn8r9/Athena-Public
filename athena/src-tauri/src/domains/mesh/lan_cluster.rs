@@ -493,15 +493,18 @@ pub fn execute_worker_ai_job_blocking(offer: &LanPacket) -> LanPacket {
         ChatMessage {
             role: "system".to_string(),
             content: sys,
+        images: None,
         },
         ChatMessage {
             role: "user".to_string(),
             content: chunk_text.clone(),
+        images: None,
         },
     ];
     let opts = ModelOptions {
         temperature: *temperature,
         num_ctx: *num_ctx,
+        num_predict: None,
     };
     match ollama::chat(None, model, msgs, Some(opts)) {
         Ok(text) => LanPacket::AiJobResult {
@@ -587,10 +590,12 @@ pub async fn run_cluster_stream(
         ChatMessage {
             role: "system".to_string(),
             content: synth_system,
+        images: None,
         },
         ChatMessage {
             role: "user".to_string(),
             content: synth_user,
+        images: None,
         },
     ];
 

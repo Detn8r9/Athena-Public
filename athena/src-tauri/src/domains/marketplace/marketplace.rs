@@ -104,12 +104,21 @@ pub struct InstalledItem {
     pub health_path: Option<String>,
     #[serde(default)]
     pub volume_names: Vec<String>,
+    /// Fingerprint of catalog image+env applied at last create/Update.
+    #[serde(default)]
+    pub applied_fingerprint: Option<String>,
+    /// Computed for the UI (not persisted meaningfully; always refreshed).
+    #[serde(default)]
+    pub update_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct MarketplaceState {
     installed: HashMap<String, InstalledItem>,
+    /// When true, outdated installed items are recreated automatically.
+    #[serde(default)]
+    auto_update: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,6 +137,7 @@ pub struct MarketplaceOverview {
     pub internet_allowed: bool,
     pub catalog: Vec<CatalogEntry>,
     pub installed: Vec<InstalledItem>,
+    pub auto_update: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,7 +236,11 @@ fn load_catalog() -> Result<Vec<CatalogEntry>, String> {
 }
 
 fn state_path(app_data: &Path) -> PathBuf {
-    app_data.join(STATE_FILENAME)
+    crate::athena_paths::AthenaPaths::new(app_data).resolve_marketplace_state_path()
+}
+
+fn save_state_path(app_data: &Path) -> PathBuf {
+    crate::athena_paths::AthenaPaths::new(app_data).marketplace_state_path()
 }
 
 fn load_state(app_data: &Path) -> MarketplaceState {
@@ -241,7 +255,7 @@ fn load_state(app_data: &Path) -> MarketplaceState {
 }
 
 fn save_state(app_data: &Path, state: &MarketplaceState) -> Result<(), String> {
-    let path = state_path(app_data);
+    let path = save_state_path(app_data);
     if let Some(p) = path.parent() {
         fs::create_dir_all(p).map_err(|e| e.to_string())?;
     }
@@ -318,9 +332,23 @@ fn allocate_host_port(preferred: Option<u16>, container_port: u16) -> Result<u16
 }
 
 fn refresh_installed(app_data: &Path) -> Result<Vec<InstalledItem>, String> {
+    let catalog = load_catalog().unwrap_or_else(|_| Vec::new());
+    let catalog_by_id: HashMap<String, CatalogEntry> =
+        catalog.into_iter().map(|e| (e.id.clone(), e)).collect();
     let mut state = load_state(app_data);
     for item in state.installed.values_mut() {
         item.status = container_status(&item.container_name);
+        item.update_available = false;
+        if item.status == "missing" {
+            continue;
+        }
+        if let Some(entry) = catalog_by_id.get(&item.id) {
+            item.update_available = item_needs_update(item, entry);
+            // Backfill fingerprint for legacy installs that already match.
+            if !item.update_available && item.applied_fingerprint.is_none() {
+                item.applied_fingerprint = Some(catalog_fingerprint(entry));
+            }
+        }
     }
     save_state(app_data, &state)?;
     let mut list: Vec<_> = state.installed.values().cloned().collect();
@@ -328,11 +356,76 @@ fn refresh_installed(app_data: &Path) -> Result<Vec<InstalledItem>, String> {
     Ok(list)
 }
 
+fn catalog_fingerprint(entry: &CatalogEntry) -> String {
+    let mut pairs: Vec<String> = entry
+        .env
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    pairs.sort();
+    format!("v1|{}|{}", entry.image, pairs.join("\n"))
+}
+
+fn container_env_map(container: &str) -> Option<HashMap<String, String>> {
+    let raw = docker_cmd(&["inspect", "-f", "{{json .Config.Env}}", container]).ok()?;
+    let list: Vec<String> = serde_json::from_str(&raw).ok()?;
+    let mut map = HashMap::new();
+    for line in list {
+        if let Some((k, v)) = line.split_once('=') {
+            map.insert(k.to_string(), v.to_string());
+        }
+    }
+    Some(map)
+}
+
+fn container_image(container: &str) -> Option<String> {
+    let img = docker_cmd(&["inspect", "-f", "{{.Config.Image}}", container]).ok()?;
+    let trimmed = img.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn item_needs_update(item: &InstalledItem, entry: &CatalogEntry) -> bool {
+    let want = catalog_fingerprint(entry);
+    if let Some(applied) = item.applied_fingerprint.as_deref() {
+        return applied != want;
+    }
+    // Legacy installs (no fingerprint): compare live container image + catalog env.
+    let image = container_image(&item.container_name).unwrap_or_else(|| item.image.clone());
+    if !images_compatible(&image, &entry.image) {
+        return true;
+    }
+    let Some(env) = container_env_map(&item.container_name) else {
+        return true;
+    };
+    for (k, v) in &entry.env {
+        if env.get(k).map(|x| x.as_str()) != Some(v.as_str()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn images_compatible(running: &str, catalog: &str) -> bool {
+    if running == catalog {
+        return true;
+    }
+    if let Some(rest) = running.strip_prefix(catalog) {
+        return rest.is_empty() || rest.starts_with('@');
+    }
+    false
+}
+
 pub fn overview(app: &tauri::AppHandle) -> Result<MarketplaceOverview, String> {
     let app_data = portable::resolved_app_data_dir(app)?;
     let cfg = load_config(&app_data);
     let docker = docker_available();
     let catalog = load_catalog()?;
+    let state = load_state(&app_data);
+    let auto_update = state.auto_update;
     let installed = if docker.available {
         refresh_installed(&app_data).unwrap_or_default()
     } else {
@@ -343,7 +436,44 @@ pub fn overview(app: &tauri::AppHandle) -> Result<MarketplaceOverview, String> {
         internet_allowed: connectivity::internet_allowed(&cfg),
         catalog,
         installed,
+        auto_update,
     })
+}
+
+pub fn set_auto_update(app: &tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let app_data = portable::resolved_app_data_dir(app)?;
+    let mut state = load_state(&app_data);
+    state.auto_update = enabled;
+    save_state(&app_data, &state)?;
+    if enabled {
+        let _ = tick_auto_updates(app);
+    }
+    Ok(enabled)
+}
+
+/// Recreate any installed items whose catalog fingerprint/env is behind (when auto-update is on).
+pub fn tick_auto_updates(app: &tauri::AppHandle) -> Result<usize, String> {
+    let app_data = portable::resolved_app_data_dir(app)?;
+    let state = load_state(&app_data);
+    if !state.auto_update {
+        return Ok(0);
+    }
+    if !docker_available().available {
+        return Ok(0);
+    }
+    let installed = refresh_installed(&app_data).unwrap_or_default();
+    let mut started = 0usize;
+    for item in installed {
+        if !item.update_available || item.status == "missing" {
+            continue;
+        }
+        match recreate_async(app, &item.id) {
+            Ok(()) => started += 1,
+            Err(e) if e.contains("already updating") || e.contains("already installing") => {}
+            Err(_) => {}
+        }
+    }
+    Ok(started)
 }
 
 fn find_entry(id: &str) -> Result<CatalogEntry, String> {
@@ -468,8 +598,30 @@ fn run_install_job(app: &tauri::AppHandle, id: &str) -> Result<InstalledItem, St
 
     emit_progress(app, id, "create", "Creating container…", Some(92.0), None);
     let host_port = allocate_host_port(entry.preferred_host_port, entry.container_port)?;
-    let container_name = format!("athena-mp-{}", entry.id);
+    let item = create_container_from_catalog(&entry, host_port, None)?;
+    state.installed.insert(entry.id.clone(), item.clone());
+    save_state(&app_data, &state)?;
+    emit_progress(app, id, "start", "Starting…", Some(98.0), None);
+    Ok(item)
+}
 
+fn image_present_locally(image: &str) -> bool {
+    docker_cmd(&["image", "inspect", image]).is_ok()
+}
+
+fn remove_container(name: &str) {
+    let _ = docker_cmd(&["stop", name]);
+    let _ = docker_cmd(&["rm", "-f", name]);
+}
+
+/// Create (or recreate) a container from the live catalog entry.
+/// Named volumes are kept/reused so Whisper weights survive an Update.
+fn create_container_from_catalog(
+    entry: &CatalogEntry,
+    host_port: u16,
+    preferred_volume_names: Option<&[String]>,
+) -> Result<InstalledItem, String> {
+    let container_name = format!("athena-mp-{}", entry.id);
     let mut volume_names = Vec::new();
     let mut args: Vec<String> = vec![
         "run".into(),
@@ -485,12 +637,17 @@ fn run_install_job(app: &tauri::AppHandle, id: &str) -> Result<InstalledItem, St
         args.push("-e".into());
         args.push(format!("{k}={v}"));
     }
+
+    let mut named_idx = 0usize;
     for vol in &entry.volumes {
         if vol.bind {
             args.push("-v".into());
             args.push(format!("{}:{}:rw", vol.source, vol.target));
         } else {
-            let vol_name = format!("athena_mp_{}", vol.source);
+            let vol_name = preferred_volume_names
+                .and_then(|names| names.get(named_idx).cloned())
+                .unwrap_or_else(|| format!("athena_mp_{}", vol.source));
+            named_idx += 1;
             let _ = docker_cmd(&["volume", "create", &vol_name]);
             volume_names.push(vol_name.clone());
             args.push("-v".into());
@@ -502,9 +659,7 @@ fn run_install_job(app: &tauri::AppHandle, id: &str) -> Result<InstalledItem, St
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     docker_cmd(&arg_refs)?;
 
-    emit_progress(app, id, "start", "Starting…", Some(98.0), None);
-
-    let item = InstalledItem {
+    Ok(InstalledItem {
         id: entry.id.clone(),
         name: entry.name.clone(),
         kind: entry.kind.clone(),
@@ -515,9 +670,68 @@ fn run_install_job(app: &tauri::AppHandle, id: &str) -> Result<InstalledItem, St
         status: "running".to_string(),
         health_path: entry.health_path.clone(),
         volume_names,
+        applied_fingerprint: Some(catalog_fingerprint(entry)),
+        update_available: false,
+    })
+}
+
+/// Recreate an installed module/app with the current catalog image + env (keeps named volumes + port).
+/// Offline-friendly when the image is already local — Stop/Start alone cannot apply catalog pins.
+fn run_recreate_job(app: &tauri::AppHandle, id: &str) -> Result<InstalledItem, String> {
+    require_docker()?;
+    let app_data = portable::resolved_app_data_dir(app)?;
+    let entry = find_entry(id)?;
+    let mut state = load_state(&app_data);
+    let existing = state
+        .installed
+        .get(id)
+        .cloned()
+        .ok_or_else(|| "Item is not installed. Use Get first.".to_string())?;
+
+    emit_progress(
+        app,
+        id,
+        "validating",
+        "Applying catalog settings…",
+        Some(5.0),
+        None,
+    );
+
+    if !image_present_locally(&entry.image) {
+        let cfg = load_config(&app_data);
+        connectivity::ensure_marketplace_download_allowed(&cfg)?;
+        emit_progress(
+            app,
+            id,
+            "pull",
+            &format!("Downloading {}…", entry.image),
+            Some(10.0),
+            None,
+        );
+        docker_pull_streaming(app, id, &entry.image)?;
+    }
+
+    emit_progress(app, id, "create", "Recreating container…", Some(85.0), None);
+    remove_container(&existing.container_name);
+
+    // Prefer the previous host port so Conversation URLs stay stable.
+    let host_port = {
+        let used = used_host_ports();
+        if !used.contains(&existing.host_port) {
+            existing.host_port
+        } else {
+            allocate_host_port(Some(existing.host_port), entry.container_port)?
+        }
     };
+
+    let item = create_container_from_catalog(
+        &entry,
+        host_port,
+        Some(&existing.volume_names),
+    )?;
     state.installed.insert(entry.id.clone(), item.clone());
     save_state(&app_data, &state)?;
+    emit_progress(app, id, "start", "Starting…", Some(98.0), None);
     Ok(item)
 }
 
@@ -576,6 +790,66 @@ pub fn install_async(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
                     &id,
                     "done",
                     &format!("{} is ready on port {}.", item.name, item.host_port),
+                    Some(100.0),
+                    None,
+                );
+            }
+            Err(e) => {
+                emit_progress(
+                    &app_handle,
+                    &id,
+                    "error",
+                    &e,
+                    None,
+                    Some(e.clone()),
+                );
+            }
+        }
+        if let Ok(mut guard) = INSTALL_IN_FLIGHT.lock() {
+            if let Some(set) = guard.as_mut() {
+                set.remove(&id);
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Recreate with current catalog env/image. Works offline when the Docker image is already local.
+pub fn recreate_async(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Err("Missing Marketplace id.".to_string());
+    }
+    find_entry(&id)?;
+    require_docker()?;
+
+    {
+        let mut guard = install_inflight();
+        let set = guard.as_mut().expect("inflight set");
+        if !set.insert(id.clone()) {
+            return Err(format!("{id} is already updating."));
+        }
+    }
+
+    emit_progress(
+        app,
+        &id,
+        "validating",
+        "Preparing update…",
+        Some(0.0),
+        None,
+    );
+
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let result = run_recreate_job(&app_handle, &id);
+        match result {
+            Ok(item) => {
+                emit_progress(
+                    &app_handle,
+                    &id,
+                    "done",
+                    &format!("{} updated on port {}.", item.name, item.host_port),
                     Some(100.0),
                     None,
                 );
@@ -724,7 +998,11 @@ pub fn copy_volumes_to_usb(dest_root: &Path, app_data: &Path) -> Result<(), Stri
                 .to_string(),
         );
     }
-    let out_dir = dest_root.join("docker_volumes");
+    let out_dir = dest_root
+        .join("data")
+        .join("user")
+        .join("apps")
+        .join("docker_volumes");
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     for name in names {
         let dest = out_dir.join(format!("{name}.tar"));
@@ -766,7 +1044,17 @@ pub fn copy_volumes_to_usb(dest_root: &Path, app_data: &Path) -> Result<(), Stri
 
 #[allow(dead_code)]
 pub fn verify_usb_volumes(dest_root: &Path) -> Result<(), String> {
-    let out_dir = dest_root.join("docker_volumes");
+    let out_dir = dest_root
+        .join("data")
+        .join("user")
+        .join("apps")
+        .join("docker_volumes");
+    // Dual-read legacy USB layout
+    let out_dir = if out_dir.is_dir() {
+        out_dir
+    } else {
+        dest_root.join("docker_volumes")
+    };
     if !out_dir.is_dir() {
         return Err(format!(
             "Verification failed: Docker volumes folder missing on USB: {}",

@@ -14,8 +14,8 @@ export type AIAndKnowledgeProps = {
   globalSystemModel: string;
   chatAnalysisModel: string;
   tacticalMapModel: string;
-  /** Basenames from `get_downloaded_models` / disk scan (`.gguf` under models/chat). */
-  downloadedGgufFilenames: string[];
+  /** Installed chat model ids: Ollama tags and/or `.gguf` basenames. */
+  installedChatModelIds: string[];
   onChangeModelRouting: (patch: Partial<ModelRoutingPrefs>) => void;
 };
 
@@ -23,18 +23,18 @@ export function AIAndKnowledgeSystemModelRouting({
   globalSystemModel,
   chatAnalysisModel,
   tacticalMapModel,
-  downloadedGgufFilenames,
+  installedChatModelIds,
   onChangeModelRouting,
 }: AIAndKnowledgeProps) {
-  const options = modelRoutingSelectOptions(downloadedGgufFilenames);
+  const options = modelRoutingSelectOptions(installedChatModelIds);
 
   return (
     <section className="library-section">
       <h3>System model routing</h3>
       <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
-        Assign which GGUF weights ATHENA prefers for <strong>global</strong> work, <strong>chat / analysis</strong>, and{" "}
-        <strong>tactical map</strong> contexts. ATHENA uses background caching to hot-swap weights when you change these
-        routes or use the header override — expect a short warm-up on first use after a switch.
+        Assign which installed model ATHENA prefers for <strong>global</strong> work, <strong>chat / analysis</strong>, and{" "}
+        <strong>tactical map</strong> contexts. Lists include Ollama tags and local GGUF files. Background caching may warm
+        briefly after a switch or header override.
       </p>
       <div
         className="glass-panel"

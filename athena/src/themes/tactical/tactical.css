@@ -1,0 +1,5 @@
+/* Tactical / default survival guide package ownership hook.
+ * Palette tokens remain in App.css (.app[data-theme="…"]) for compatibility. */
+[data-athena-theme="default"] {
+  /* Ownership hook — tactical look via existing palette + persona default. */
+}

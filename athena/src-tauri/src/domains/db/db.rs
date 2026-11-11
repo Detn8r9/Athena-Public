@@ -8880,10 +8880,21 @@ impl Database {
         let Some(owner) = default_uid else {
             return Ok(());
         };
-        let chats_dir = app_data_dir.join("chats");
+        let chats_dir = crate::athena_paths::AthenaPaths::new(app_data_dir).user_chats_dir();
         if !chats_dir.is_dir() {
-            return Ok(());
+            // Dual-read: legacy flat chats/ before migration completes.
+            let legacy = app_data_dir.join("chats");
+            if legacy.is_dir() {
+                // fall through with legacy below
+            } else {
+                return Ok(());
+            }
         }
+        let chats_dir = if chats_dir.is_dir() {
+            chats_dir
+        } else {
+            app_data_dir.join("chats")
+        };
         let entries = std::fs::read_dir(&chats_dir).map_err(|e| e.to_string())?;
         for entry in entries.flatten() {
             let path = entry.path();

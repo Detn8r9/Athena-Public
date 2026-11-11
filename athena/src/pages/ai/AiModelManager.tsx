@@ -12,18 +12,24 @@ interface CatalogEntry {
 
 interface AiModelManagerProps {
   onActiveModelChange?: (model: string) => void;
+  /** Called after a successful local-model refresh (including post-pull). */
+  onModelsChanged?: (models: string[]) => void;
   initialActiveModel?: string;
   /** When false, NSFW-tagged catalog rows are hidden. */
   showUnrestrictedCatalog?: boolean;
   /** User is 18+ (birthdate set); required together with allowNsfw for NSFW rows. */
   isAdult?: boolean;
+  /** Optional panel title override (e.g. Marketplace). */
+  title?: string;
 }
 
 export function AiModelManager({
   onActiveModelChange,
+  onModelsChanged,
   initialActiveModel = "",
   showUnrestrictedCatalog = false,
   isAdult = false,
+  title = "AI Model Foundry",
 }: AiModelManagerProps) {
   const [models, setModels] = useState<string[]>([]);
   const [activeModel, setActiveModel] = useState(initialActiveModel);
@@ -50,9 +56,11 @@ export function AiModelManager({
         if (prev && normalized.includes(prev)) return prev;
         return normalized[0] ?? "";
       });
+      onModelsChanged?.(normalized);
     } catch (e) {
       setError(e != null ? String(e) : "Could not load local models.");
       setModels([]);
+      onModelsChanged?.([]);
     } finally {
       setLoadingModels(false);
     }
@@ -133,7 +141,7 @@ export function AiModelManager({
 
   return (
     <div className="glass-panel" style={{ padding: "0.9rem", borderRadius: "12px", marginTop: "0.8rem" }}>
-      <h4 style={{ margin: "0 0 0.6rem", color: "var(--primary)" }}>AI Model Foundry</h4>
+      <h4 style={{ margin: "0 0 0.6rem", color: "var(--primary)" }}>{title}</h4>
       <div style={{ display: "grid", gap: "0.65rem" }}>
         <label style={{ display: "grid", gap: "0.35rem" }}>
           <span className="text-muted small">Active model (explicit)</span>
@@ -160,9 +168,8 @@ export function AiModelManager({
           </select>
         </label>
         <p className="text-muted small" style={{ margin: 0 }}>
-          The selected model is saved and used for chat instead of automatic tier pick when it exists in Ollama. Leave empty
-          by clearing your selection after choosing tier under <strong>Model size</strong> above (pick a model from the list
-          that matches an installed name).
+          The selected model is saved and used for chat instead of automatic tier pick when it exists in Ollama. You can also
+          choose the active model under Settings → AI.
         </p>
 
         <div style={{ display: "grid", gap: "0.45rem" }}>

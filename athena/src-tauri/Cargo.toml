@@ -44,7 +44,7 @@ crossbeam-channel = "0.5"
 sysinfo = "0.30"
 keepawake = "0.6"
 ureq = { version = "2", features = ["json"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "blocking", "multipart"] }
 axum = { version = "0.7", default-features = false, features = ["json", "http1", "tokio", "query"] }
 tower-http = { version = "0.5", default-features = false, features = ["fs", "cors"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "io"] }
@@ -82,6 +82,7 @@ osmpbfreader = "0.16"
 polyline = "0.3"
 sqlite-vec = "0.1.8-alpha.1"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "ndarray", "tls-rustls"] }
+cpal = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"

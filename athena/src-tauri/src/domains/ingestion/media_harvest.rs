@@ -7,7 +7,6 @@ use std::process::Command;
 
 use serde::Serialize;
 use tauri::Emitter;
-use tauri::Manager;
 
 pub const HARVEST_PROGRESS_EVENT: &str = "athena:harvest-progress";
 
@@ -427,8 +426,11 @@ pub async fn harvest_local_documents(
 
 #[tauri::command]
 pub async fn resolve_media_harvest_dir(app: tauri::AppHandle) -> Result<String, String> {
-    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let dir = base.join("downloads").join("documents").join("harvest_staging");
+    let base = crate::portable::resolved_app_data_dir(&app)?;
+    let dir = crate::athena_paths::AthenaPaths::new(&base)
+        .user_downloads_dir()
+        .join("documents")
+        .join("harvest_staging");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.to_string_lossy().to_string())
 }

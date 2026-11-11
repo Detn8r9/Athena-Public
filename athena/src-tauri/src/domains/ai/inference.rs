@@ -174,6 +174,7 @@ pub fn generate_chat_title_unified(
         ChatMessage {
             role: "system".to_string(),
             content: system.to_string(),
+        images: None,
         },
         ChatMessage {
             role: "user".to_string(),
@@ -181,6 +182,7 @@ pub fn generate_chat_title_unified(
                 "Generate a short title for this question or topic:\n\n{}",
                 prompt
             ),
+        images: None,
         },
     ];
     let out = chat_unified(config, ollama_models, messages, None)?;
@@ -229,6 +231,7 @@ pub fn generate_chat_description_unified(
         ChatMessage {
             role: "system".to_string(),
             content: system.to_string(),
+        images: None,
         },
         ChatMessage {
             role: "user".to_string(),
@@ -236,6 +239,7 @@ pub fn generate_chat_description_unified(
                 "Summarize this conversation in one short sentence:\n\n{}",
                 combined
             ),
+        images: None,
         },
     ];
     let out = chat_unified(config, ollama_models, msgs, None)?;

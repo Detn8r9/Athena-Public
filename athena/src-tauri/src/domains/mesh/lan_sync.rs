@@ -78,7 +78,18 @@ struct LanPeerAddr {
 }
 
 fn resolve_or_create_lan_identity(app_data_dir: &Path) -> (u32, u64) {
-    let identity_path = app_data_dir.join("athena_lan_identity.json");
+    let paths = crate::athena_paths::AthenaPaths::new(app_data_dir);
+    let identity_path = paths.user_config_dir().join("athena_lan_identity.json");
+    let identity_path = if identity_path.exists() {
+        identity_path
+    } else {
+        let legacy = app_data_dir.join("athena_lan_identity.json");
+        if legacy.exists() {
+            legacy
+        } else {
+            identity_path
+        }
+    };
     if let Ok(s) = fs::read_to_string(&identity_path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
             let node_id = v.get("node_id").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
@@ -96,9 +107,10 @@ fn resolve_or_create_lan_identity(app_data_dir: &Path) -> (u32, u64) {
         .as_millis() as u64;
 
     let payload = serde_json::json!({ "node_id": node_id, "created_at_ms": created_at_ms });
-    let _ = fs::create_dir_all(app_data_dir);
+    let write_path = paths.user_config_dir().join("athena_lan_identity.json");
+    let _ = fs::create_dir_all(paths.user_config_dir());
     if let Ok(s) = serde_json::to_string_pretty(&payload) {
-        let _ = fs::write(&identity_path, s);
+        let _ = fs::write(&write_path, s);
     }
     (node_id, created_at_ms)
 }

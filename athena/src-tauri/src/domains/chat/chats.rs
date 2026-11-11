@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-const CHATS_DIR: &str = "chats";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedMessage {
     pub role: String,
@@ -37,7 +35,7 @@ pub struct ChatSummary {
 }
 
 fn chats_dir(app_data_dir: &Path) -> std::path::PathBuf {
-    app_data_dir.join(CHATS_DIR)
+    crate::athena_paths::AthenaPaths::new(app_data_dir).user_chats_dir()
 }
 
 fn chat_path(app_data_dir: &Path, id: &str) -> std::path::PathBuf {

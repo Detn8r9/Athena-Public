@@ -384,10 +384,10 @@ export function ExportModal({
             Pick a removable drive, review measured sizes, then choose the Hive Mind role you want this USB to deploy.
           </p>
           <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
-            <strong>Outpost (Fast Node):</strong> slim clone — one chat model, slim DB, minimal map; no full library mirrors.
+            <strong>Outpost (Fast Node):</strong> slim clone — copies <code>AthenaData/app</code> (bundled defaults / Ollama seed), slim DB, one chat model if present, minimal map; does not copy full <code>user/</code> library or model trees.
           </p>
           <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
-            <strong>Sister Server (Citadel):</strong> full clone (app data, models, library mirrors) for serving the Hive Mind network.
+            <strong>Sister Server (Citadel):</strong> full clone (<code>app/</code> + selected <code>user/</code> data, models, library mirrors) for serving the Hive Mind network.
           </p>
 
           {loading ? (
@@ -474,8 +474,8 @@ export function ExportModal({
             <div style={{ marginBottom: "0.75rem" }}>
               <div className="text-muted small" style={{ marginBottom: "0.35rem" }}>
                 {needsExternalModelScan
-                  ? "No local chat models found in ATHENA’s models directory. Select a `.gguf` from this device to include as Outpost’s single model."
-                  : "Outpost will include one small local chat model (smallest `.gguf` under ATHENA’s models directory)."}
+                  ? "No local chat .gguf under AthenaData/user/models/chat and no bundled Ollama seed under AthenaData/app/models/ollama. Select a `.gguf` from this device to include as Outpost’s single model."
+                  : "Outpost copies AthenaData/app (bundled defaults) and includes one small local chat model when present (smallest `.gguf` under user/models/chat)."}
               </div>
               {discoveringModels ? <p className="text-muted small">Scanning this device for `.gguf` models…</p> : null}
               {discoverErr ? (

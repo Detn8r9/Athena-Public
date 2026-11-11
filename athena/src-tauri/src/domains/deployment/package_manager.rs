@@ -60,7 +60,7 @@ pub struct ModelEntry {
     pub url: String,
 }
 
-/// Emitted to the frontend with camelCase JSON keys (matches ChatConsoleView / LibraryInstaller).
+/// Emitted to the frontend with camelCase JSON keys (matches LibraryInstaller download UI).
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageDownloadProgressPayload {

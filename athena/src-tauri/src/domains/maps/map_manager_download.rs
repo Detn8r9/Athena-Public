@@ -39,7 +39,7 @@ pub struct MapDownloadErrorPayload {
 }
 
 pub fn offline_maps_directory(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join(MAPS_SUBDIR)
+    crate::athena_paths::AthenaPaths::new(app_data_dir).user_maps_dir()
 }
 
 pub fn ensure_offline_maps_directory(app_data_dir: &Path) -> Result<(), String> {

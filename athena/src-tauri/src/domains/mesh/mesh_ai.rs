@@ -84,6 +84,7 @@ fn build_ollama_messages(
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
         content: system.to_string(),
+    images: None,
     }];
     let max = max_messages.max(1);
     let start = history_before_user.len().saturating_sub(max);
@@ -91,11 +92,13 @@ fn build_ollama_messages(
         messages.push(ChatMessage {
             role: m.role.clone(),
             content: m.content.clone(),
+        images: None,
         });
     }
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: new_user.to_string(),
+    images: None,
     });
     messages
 }
@@ -206,6 +209,7 @@ pub fn generate_mesh_slash_ai_reply(
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
         content: system,
+    images: None,
     }];
 
     for row in rows.iter() {
@@ -219,12 +223,14 @@ pub fn generate_mesh_slash_ai_reply(
                 messages.push(ChatMessage {
                     role: "user".to_string(),
                     content: content.to_string(),
+                images: None,
                 });
             }
             ("ai", "response") => {
                 messages.push(ChatMessage {
                     role: "assistant".to_string(),
                     content: content.to_string(),
+                images: None,
                 });
             }
             _ => {}

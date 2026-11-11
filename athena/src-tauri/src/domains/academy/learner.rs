@@ -65,10 +65,12 @@ Keep it under ~1200 words."#;
         ChatMessage {
             role: "system".to_string(),
             content: system.to_string(),
+        images: None,
         },
         ChatMessage {
             role: "user".to_string(),
             content: user,
+        images: None,
         },
     ];
 

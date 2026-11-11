@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 
-export type LexiconThemeId = "survival" | "fallout";
+export type LexiconThemeId = "survival" | "fallout" | "fruit";
 
 /** Replace `{{key}}` placeholders in lexicon strings. */
 export function substLexicon(template: string, vars: Record<string, string | number>): string {
@@ -1268,8 +1268,80 @@ const FALLOUT_LEXICON: Lexicon = {
   radioAriaDemodMode: "Demodulation mode",
 };
 
+const FRUIT_LEXICON: Lexicon = {
+  ...SURVIVAL_LEXICON,
+  navArchiveView: "Library",
+  archiveScreenTitle: "Library",
+  archiveScreenSubtitle:
+    "Everything Athena keeps offline for you — documents, maps, courses, and downloads in one place.",
+  tabLocalArchive: "On This Device",
+  tabDownloadNetwork: "Get Content",
+  archiveHubIntro:
+    "On This Device: what you already have (filter by Packages, Documents, Maps, Academy; search and sort). Get Content: install tiers, Academy ZIMs, documents, and maps.",
+  archivePrimaryTablistAria: "Library: on this device or get content",
+  archiveNetworkTablistAria: "Get content sections",
+  archiveLocalTitle: "On this device",
+  archiveLocalSubtitle:
+    "Folders and files Athena can use offline. Search and sort to find what you already have.",
+  sectionTierPackages: "Collections",
+  sectionAlacarte: "Individual files",
+  dataSources: "Folders",
+  actionDeployTier: "Install",
+  actionRequisitionFile: "Download",
+  emptyLocalArchive:
+    "Nothing here yet. Add a folder under Folders, or install content from Get Content.",
+  noDataSourcesHint:
+    "Add at least one folder so downloads know where to save. Network and shared volumes work if they appear as a path on this Mac.",
+  addDataSource: "Add Folder",
+  regionalMaps: "Maps for your area",
+  setDownloadArea: "Choose your area",
+  setDownloadAreaBody:
+    "Athena can add offline state maps for where you are, plus nearby states when you are close to a border.",
+  noAreaWarning:
+    "No area set — regional maps will not download until you choose a US location.",
+  destinationSummary: "Save location",
+  watchFoldersLabel: "Library folders",
+  catalogDuplicateNote: "Individual files also appear below.",
+
+  navHome: "Home",
+  navChat: "Chat",
+  navMap: "Maps",
+  navArchive: "Library",
+  navMeshTitle: "Mesh network",
+  navMeshAria: "Open mesh network inbox",
+  navRadio: "Radio",
+  navLogbook: "Logistics",
+  navCalendar: "Calendar",
+  navSettings: "Settings",
+  navHelpTitle: "Help",
+  navHelpAria: "Help and how to use Athena",
+
+  settingsMenuTitle: "Settings",
+  settingsPanelGeneral: "General",
+  settingsPanelMe: "You",
+  settingsPanelAi: "AI & Models",
+  settingsPanelAppearance: "Display",
+  settingsPanelThemes: "Appearance",
+  settingsPanelThemeStudio: "Theme Studio",
+  settingsNavIntroLead:
+    "Account and calendar first, then AI, maps, radio, and how Athena looks. New here? Start with You, then General for the product name and library folder.",
+  settingsMePaneDesc:
+    "Sign-in, display name, PIN, and the name Athena uses for you in chat.",
+  settingsNavMeAccountHint: "Your account",
+  settingsNavAiModelsDesc: "Models, personality, memory, and citations",
+  settingsNavThemes: "Appearance",
+  settingsNavThemesDesc: "Themes, colors, and light or dark for Fruit",
+
+  mapDisabledTitle: "Maps are turned off",
+  mapDisabledBodyBefore: "Turn on Maps under ",
+  mapDisabledOpenLocation: "Open Location settings",
+  mapDisabledBackHome: "Back to Home",
+};
+
 export function getLexicon(themeId: LexiconThemeId): Lexicon {
-  return themeId === "fallout" ? FALLOUT_LEXICON : SURVIVAL_LEXICON;
+  if (themeId === "fallout") return FALLOUT_LEXICON;
+  if (themeId === "fruit") return FRUIT_LEXICON;
+  return SURVIVAL_LEXICON;
 }
 
 const LexiconContext = createContext<Lexicon>(SURVIVAL_LEXICON);
