@@ -160,6 +160,7 @@ mod quarantine;
 mod radio_manager;
 #[path = "domains/vector/rag_indexer.rs"]
 mod rag_indexer;
+mod field_ops;
 mod library_rag_gate;
 mod library_context;
 #[cfg(test)]
@@ -6583,6 +6584,30 @@ pub fn run() {
             inventory::list_inventory,
             runway::get_supply_runway,
             watch_officer::get_watch_brief,
+            field_ops::skills::get_skills_overview,
+            field_ops::skills::save_skill_entry,
+            field_ops::skills::delete_skill_entry,
+            field_ops::intake::list_intake_records,
+            field_ops::intake::save_intake_record,
+            field_ops::intake::set_intake_status,
+            field_ops::intake::delete_intake_record,
+            field_ops::roster::get_roster_setup,
+            field_ops::roster::save_roster_duty,
+            field_ops::roster::delete_roster_duty,
+            field_ops::roster::set_roster_exclusion,
+            field_ops::roster::generate_duty_roster,
+            field_ops::ledger::list_decisions,
+            field_ops::ledger::save_decision,
+            field_ops::ledger::cast_decision_vote,
+            field_ops::ledger::close_decision,
+            field_ops::ledger::delete_decision,
+            field_ops::ledger::get_ledger,
+            field_ops::ledger::save_ledger_entry,
+            field_ops::ledger::delete_ledger_entry,
+            field_ops::checkins::list_checkin_plans,
+            field_ops::checkins::save_checkin_plan,
+            field_ops::checkins::record_checkin,
+            field_ops::checkins::delete_checkin_plan,
             inventory::add_inventory_item,
             inventory::update_inventory_quantity,
             inventory::update_inventory_category,

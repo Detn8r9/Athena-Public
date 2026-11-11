@@ -86,6 +86,8 @@ pub struct StationSnapshot {
     pub ai_unavailable: Option<String>,
     /// False when library search is running on placeholder embeddings.
     pub search_models_ready: bool,
+    /// Findings from feature modules that keep their own rules (check-ins, skills, intake).
+    pub extra: Vec<Finding>,
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -316,6 +318,7 @@ pub fn evaluate(snapshot: &StationSnapshot) -> Vec<Finding> {
     }
     station_findings(snapshot, &mut out);
     schedule_findings(snapshot, &mut out);
+    out.extend(snapshot.extra.iter().cloned());
     out.sort_by_key(|f| f.severity);
     out
 }
@@ -368,7 +371,7 @@ fn build_snapshot(app: &tauri::AppHandle, state: &AppState) -> Result<StationSna
     let app_data_dir = crate::portable::resolved_app_data_dir(app)?;
     let config = crate::load_config(&app_data_dir);
 
-    let (runway_report, nodes, events) = {
+    let (runway_report, nodes, events, extra) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
 
         let items: Vec<runway::StockItem> = db
@@ -443,7 +446,9 @@ fn build_snapshot(app: &tauri::AppHandle, state: &AppState) -> Result<StationSna
             })
             .collect();
 
-        (runway_report, nodes, events)
+        let extra = crate::field_ops::watch_findings(&db, now);
+
+        (runway_report, nodes, events, extra)
     };
 
     let storage = crate::storage::check_available_storage(app.clone(), None).ok();
@@ -464,6 +469,7 @@ fn build_snapshot(app: &tauri::AppHandle, state: &AppState) -> Result<StationSna
         ai_unavailable,
         search_models_ready: crate::neural_embed::global_is_onnx_loaded()
             && crate::rerank::global_is_onnx_loaded(),
+        extra,
     })
 }
 

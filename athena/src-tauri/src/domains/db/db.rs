@@ -916,12 +916,23 @@ impl Database {
         db.migrate_perf_indices_v1()?;
         db.migrate_geocode_v1()?;
         db.migrate_routing_region_geocode_meta()?;
+        crate::field_ops::store::ensure_schema(&db)?;
         Ok(db)
     }
 
     /// Opens an in-memory database with the same schema as on-disk installs. Used when swapping the
     /// on-disk file during restore so the previous [`Connection`] is fully dropped.
-    pub fn new_in_memory_placeholder() -> Result<Self, String> {
+/// Run `f` with the SQLite connection. For feature modules that own their own tables
+    /// (see `field_ops::store`) so this file does not have to grow for every new feature.
+    pub(crate) fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        f(&conn)
+    }
+
+        pub fn new_in_memory_placeholder() -> Result<Self, String> {
         ensure_sqlite_vec_auto_extension();
         let conn = Connection::open(":memory:").map_err(|e| e.to_string())?;
         conn.execute_batch(
@@ -960,6 +971,7 @@ impl Database {
         db.migrate_perf_indices_v1()?;
         db.migrate_geocode_v1()?;
         db.migrate_routing_region_geocode_meta()?;
+        crate::field_ops::store::ensure_schema(&db)?;
         Ok(db)
     }
 
