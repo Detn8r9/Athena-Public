@@ -10,6 +10,7 @@ pub mod needs;
 pub mod patients;
 pub mod power;
 pub mod roster;
+pub mod simple;
 pub mod skills;
 pub mod store;
 

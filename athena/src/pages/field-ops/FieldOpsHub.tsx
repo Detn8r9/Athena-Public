@@ -4,6 +4,7 @@ import "./fieldOps.css";
 const ProtocolsTab = lazy(() => import("./ProtocolsTab").then((m) => ({ default: m.ProtocolsTab })));
 const PatientsTab = lazy(() => import("./PatientsTab").then((m) => ({ default: m.PatientsTab })));
 const SuppliesTab = lazy(() => import("./SuppliesTab").then((m) => ({ default: m.SuppliesTab })));
+const ToolsTab = lazy(() => import("./ToolsTab").then((m) => ({ default: m.ToolsTab })));
 const CheckinsTab = lazy(() => import("./CheckinsTab").then((m) => ({ default: m.CheckinsTab })));
 const RosterTab = lazy(() => import("./RosterTab").then((m) => ({ default: m.RosterTab })));
 const SkillsTab = lazy(() => import("./SkillsTab").then((m) => ({ default: m.SkillsTab })));
@@ -23,6 +24,7 @@ const TABS = [
   { id: "memory", label: "Group memory", Component: MemoryTab },
   { id: "decisions", label: "Decisions", Component: DecisionsTab },
   { id: "ledger", label: "Ledger", Component: LedgerTab },
+  { id: "tools", label: "Field tools", Component: ToolsTab },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
