@@ -5,6 +5,7 @@ const ProtocolsTab = lazy(() => import("./ProtocolsTab").then((m) => ({ default:
 const PatientsTab = lazy(() => import("./PatientsTab").then((m) => ({ default: m.PatientsTab })));
 const SuppliesTab = lazy(() => import("./SuppliesTab").then((m) => ({ default: m.SuppliesTab })));
 const ToolsTab = lazy(() => import("./ToolsTab").then((m) => ({ default: m.ToolsTab })));
+const RadioPlanTab = lazy(() => import("./RadioPlanTab").then((m) => ({ default: m.RadioPlanTab })));
 const CheckinsTab = lazy(() => import("./CheckinsTab").then((m) => ({ default: m.CheckinsTab })));
 const RosterTab = lazy(() => import("./RosterTab").then((m) => ({ default: m.RosterTab })));
 const SkillsTab = lazy(() => import("./SkillsTab").then((m) => ({ default: m.SkillsTab })));
@@ -24,6 +25,7 @@ const TABS = [
   { id: "memory", label: "Group memory", Component: MemoryTab },
   { id: "decisions", label: "Decisions", Component: DecisionsTab },
   { id: "ledger", label: "Ledger", Component: LedgerTab },
+  { id: "radio", label: "Radio plan", Component: RadioPlanTab },
   { id: "tools", label: "Field tools", Component: ToolsTab },
 ] as const;
 

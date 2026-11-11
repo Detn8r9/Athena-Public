@@ -639,6 +639,7 @@ fn background_pass(app: &tauri::AppHandle) -> Result<(usize, bool), String> {
     let local_hour = chrono::Timelike::hour(&local);
 
     let db = state.db.lock().map_err(|e| e.to_string())?;
+    crate::field_ops::radio_discipline::refresh_from_db(&db);
     let mut watch_state = load_watch_state(&db);
     let before = watch_state.clone();
 
@@ -677,6 +678,10 @@ pub fn spawn_background_watch(app: tauri::AppHandle) {
     std::thread::Builder::new()
         .name("athena-watch-officer".to_string())
         .spawn(move || {
+            // The radio thread reads the silence plan from memory; load it before anything sends.
+            if let Ok(db) = app.state::<AppState>().db.lock() {
+                crate::field_ops::radio_discipline::refresh_from_db(&db);
+            }
             // Let startup, migrations and the first login finish before the first check.
             std::thread::sleep(std::time::Duration::from_secs(90));
             loop {

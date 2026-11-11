@@ -606,6 +606,43 @@ pub fn spawn_network_job(
             return;
         }
 
+        // Station commands (`?inv rice`, `?runway`, `?checkin`): answered from station data,
+        // with no AI model, so they work when the model is off or asleep.
+        if let Some(query) = crate::field_ops::mesh_query::parse(trimmed) {
+            let reply = {
+                let g = match db.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let _ = g.mesh_chat_insert(
+                    &Uuid::new_v4().to_string(),
+                    node_i64,
+                    "remote",
+                    "chat",
+                    trimmed,
+                    now_ms,
+                );
+                let reply = crate::field_ops::mesh_query::answer(&g, node_i64, &query, now_ms / 1000);
+                let _ = g.mesh_chat_insert(
+                    &Uuid::new_v4().to_string(),
+                    node_i64,
+                    "ai",
+                    "response",
+                    &reply,
+                    now_ms + 1,
+                );
+                reply
+            };
+            let _ = app.emit(
+                MESH_NETWORK_CHAT_UPDATED,
+                MeshNetworkChatUpdatedPayload { node_id: from },
+            );
+            let chunks = crate::mesh_ai::chunk_mesh_utf8(&reply, 190);
+            let lines: Vec<&str> = chunks.iter().map(String::as_str).collect();
+            send_dm_chunks(&sink, &lines, channel, from).await;
+            return;
+        }
+
         let cfg_ai = load_config(app_data_dir.as_path());
         if !cfg_ai.mesh_ai_auto_reply.unwrap_or(true) {
             let _ = sink

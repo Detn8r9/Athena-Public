@@ -1131,6 +1131,15 @@ async fn mesh_radio_main_loop(
                                 ));
                                 continue;
                             }
+                            // Planned radio silence. This is the one place every transmission
+                            // passes through (operator sends, AI replies, logbook and calendar
+                            // sync), so nothing can slip past it. Distress traffic is exempt.
+                            if let Err(reason) =
+                                crate::field_ops::radio_discipline::check_transmit(&text)
+                            {
+                                let _ = reply.send(Err(reason));
+                                continue;
+                            }
                             let idx = channel.clamp(0, 7);
                             let mesh_ch =
                                 MeshChannel::new(idx).expect("channel index clamped to 0..=7");
