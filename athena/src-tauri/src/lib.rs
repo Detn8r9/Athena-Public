@@ -6322,6 +6322,7 @@ pub fn run() {
                     }
                 });
             }
+            watch_officer::spawn_background_watch(app.handle().clone());
             let mesh_control = mesh_listener::spawn_mesh_radio_listener(
                 app.handle().clone(),
                 app_data_dir.clone(),

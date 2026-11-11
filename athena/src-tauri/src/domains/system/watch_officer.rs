@@ -542,6 +542,157 @@ pub async fn get_watch_brief(
     .map_err(|e| e.to_string())?
 }
 
+// ---------------------------------------------------------------------------------------------
+// Background watch: raise new urgent items as notifications, and write one brief a day.
+// ---------------------------------------------------------------------------------------------
+
+/// How often the background watch re-checks the station.
+pub const BACKGROUND_INTERVAL_SECS: u64 = 10 * 60;
+/// An urgent item that has not changed is raised again after this long.
+pub const REALERT_AFTER_SECS: i64 = 12 * 3_600;
+/// Local hour after which the day's brief is written to the logbook.
+pub const DAILY_BRIEF_HOUR: u32 = 6;
+const WATCH_STATE_KIND: &str = "watch_state";
+const WATCH_STATE_ID: &str = "watch_state";
+
+/// What the background watch remembers between checks.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchState {
+    /// Alert key to the Unix second it was last raised.
+    #[serde(default)]
+    pub alerted: std::collections::HashMap<String, i64>,
+    /// Local date (`YYYY-MM-DD`) of the last brief written to the logbook.
+    #[serde(default)]
+    pub last_brief_day: Option<String>,
+}
+
+/// Identity of an alert. The detail is part of it, so a situation that changes (another item runs
+/// out, another person goes overdue) is raised again straight away.
+fn alert_key(f: &Finding) -> String {
+    format!("{}|{}|{}", f.id, f.title, f.detail)
+}
+
+/// Urgent findings that have not been raised yet, or not for [`REALERT_AFTER_SECS`]. Updates
+/// `state` and forgets alerts whose cause has gone away, so a problem that returns is raised again.
+pub fn take_new_alerts<'a>(findings: &'a [Finding], state: &mut WatchState, now: i64) -> Vec<&'a Finding> {
+    let urgent: Vec<&Finding> = findings.iter().filter(|f| f.severity == Severity::Critical).collect();
+    let live: std::collections::HashSet<String> = urgent.iter().map(|f| alert_key(f)).collect();
+    state.alerted.retain(|key, _| live.contains(key));
+    let mut fresh = Vec::new();
+    for f in urgent {
+        let key = alert_key(f);
+        let due = match state.alerted.get(&key) {
+            Some(last) => now - *last >= REALERT_AFTER_SECS,
+            None => true,
+        };
+        if due {
+            state.alerted.insert(key, now);
+            fresh.push(f);
+        }
+    }
+    fresh
+}
+
+/// True when today's brief has not been written and the brief hour has passed.
+pub fn daily_brief_due(state: &WatchState, local_date: &str, local_hour: u32) -> bool {
+    local_hour >= DAILY_BRIEF_HOUR && state.last_brief_day.as_deref() != Some(local_date)
+}
+
+/// The brief as it is written into the logbook.
+pub fn brief_logbook_text(local_date: &str, findings: &[Finding]) -> String {
+    let mut out = format!("Watch officer brief, {local_date}\n{}\n", headline(findings));
+    for (label, severity) in [
+        ("Act now", Severity::Critical),
+        ("Watch", Severity::Warning),
+        ("Today", Severity::Info),
+    ] {
+        let group: Vec<&Finding> = findings.iter().filter(|f| f.severity == severity).collect();
+        if group.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n{label}:\n"));
+        for f in group {
+            out.push_str(&format!("- {}: {}\n", f.title, f.detail));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+fn load_watch_state(db: &crate::db::Database) -> WatchState {
+    crate::field_ops::store::get::<WatchState>(db, WATCH_STATE_KIND, WATCH_STATE_ID)
+        .ok()
+        .flatten()
+        .map(|r| r.data)
+        .unwrap_or_default()
+}
+
+/// One pass of the background watch. Returns how many alerts were raised and whether a brief was
+/// written, for logging.
+fn background_pass(app: &tauri::AppHandle) -> Result<(usize, bool), String> {
+    use tauri::Emitter;
+    let state = app.state::<AppState>();
+    let snapshot = build_snapshot(app, &state)?;
+    let findings = evaluate(&snapshot);
+    let local = chrono::Local::now();
+    let local_date = local.format("%Y-%m-%d").to_string();
+    let local_hour = chrono::Timelike::hour(&local);
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut watch_state = load_watch_state(&db);
+    let before = watch_state.clone();
+
+    let fresh = take_new_alerts(&findings, &mut watch_state, snapshot.now);
+    for f in &fresh {
+        if let Ok(row) = db.command_notification_insert("watch", "high", &f.title, Some(&f.detail), Some(&f.id)) {
+            let _ = app.emit(crate::mesh_listener::ATHENA_COMMAND_NOTIFICATION, &row);
+        }
+    }
+
+    let wrote_brief = daily_brief_due(&watch_state, &local_date, local_hour);
+    if wrote_brief {
+        let body = brief_logbook_text(&local_date, &findings);
+        let id = format!("lb-watch-{local_date}");
+        db.insert_logbook_local(
+            &id,
+            &body,
+            chrono::Utc::now().timestamp_millis(),
+            "Watch officer",
+            "ATHENA",
+            None,
+            "general",
+        )?;
+        watch_state.last_brief_day = Some(local_date);
+        let _ = app.emit("athena:logbook-updated", ());
+    }
+
+    if watch_state != before {
+        crate::field_ops::store::put(&db, WATCH_STATE_KIND, Some(WATCH_STATE_ID), &watch_state)?;
+    }
+    Ok((fresh.len(), wrote_brief))
+}
+
+/// Start the background watch. It runs rules only (no model), so it costs almost nothing.
+pub fn spawn_background_watch(app: tauri::AppHandle) {
+    std::thread::Builder::new()
+        .name("athena-watch-officer".to_string())
+        .spawn(move || {
+            // Let startup, migrations and the first login finish before the first check.
+            std::thread::sleep(std::time::Duration::from_secs(90));
+            loop {
+                match background_pass(&app) {
+                    Ok((alerts, brief)) if alerts > 0 || brief => {
+                        eprintln!("[athena] watch officer: {alerts} new alert(s), brief written: {brief}");
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[athena] watch officer pass failed: {e}"),
+                }
+                std::thread::sleep(std::time::Duration::from_secs(BACKGROUND_INTERVAL_SECS));
+            }
+        })
+        .ok();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,6 +859,79 @@ mod tests {
         s.ai_unavailable = Some("down".into());
         let f = evaluate(&s);
         assert_eq!(headline(&f), "1 thing needs action now, and 2 to watch.");
+    }
+
+    fn finding(id: &str, severity: Severity, title: &str, detail: &str) -> Finding {
+        Finding {
+            id: id.to_string(),
+            severity,
+            area: "supplies",
+            title: title.to_string(),
+            detail: detail.to_string(),
+            go_to: None,
+        }
+    }
+
+    #[test]
+    fn urgent_items_alert_once_then_again_after_twelve_hours() {
+        let findings = vec![
+            finding("supplies.out", Severity::Critical, "1 item is out of stock", "Water"),
+            finding("supplies.low", Severity::Warning, "1 item runs out within a month", "Rice"),
+        ];
+        let mut state = WatchState::default();
+        let first = take_new_alerts(&findings, &mut state, NOW);
+        assert_eq!(first.len(), 1, "only urgent items alert");
+        assert_eq!(first[0].id, "supplies.out");
+        assert!(take_new_alerts(&findings, &mut state, NOW + 600).is_empty());
+        assert!(take_new_alerts(&findings, &mut state, NOW + REALERT_AFTER_SECS - 1).is_empty());
+        assert_eq!(take_new_alerts(&findings, &mut state, NOW + REALERT_AFTER_SECS).len(), 1);
+    }
+
+    #[test]
+    fn a_changed_or_returning_problem_alerts_again_immediately() {
+        let mut state = WatchState::default();
+        let one = vec![finding("supplies.out", Severity::Critical, "1 item is out of stock", "Water")];
+        assert_eq!(take_new_alerts(&one, &mut state, NOW).len(), 1);
+
+        // A second item runs out: the situation changed.
+        let two = vec![finding("supplies.out", Severity::Critical, "2 items are out of stock", "Water, Fuel")];
+        assert_eq!(take_new_alerts(&two, &mut state, NOW + 60).len(), 1);
+
+        // Resolved, then back: alert again rather than staying silent for twelve hours.
+        assert!(take_new_alerts(&[], &mut state, NOW + 120).is_empty());
+        assert!(state.alerted.is_empty());
+        assert_eq!(take_new_alerts(&one, &mut state, NOW + 180).len(), 1);
+    }
+
+    #[test]
+    fn brief_is_written_once_a_day_after_the_brief_hour() {
+        let mut state = WatchState::default();
+        assert!(!daily_brief_due(&state, "2027-01-15", DAILY_BRIEF_HOUR - 1));
+        assert!(daily_brief_due(&state, "2027-01-15", DAILY_BRIEF_HOUR));
+        state.last_brief_day = Some("2027-01-15".to_string());
+        assert!(!daily_brief_due(&state, "2027-01-15", 23));
+        assert!(!daily_brief_due(&state, "2027-01-16", 2));
+        assert!(daily_brief_due(&state, "2027-01-16", 7));
+    }
+
+    #[test]
+    fn logbook_brief_groups_items_by_urgency() {
+        let text = brief_logbook_text(
+            "2027-01-15",
+            &[
+                finding("a", Severity::Critical, "1 item is out of stock", "Water"),
+                finding("b", Severity::Warning, "Storage is nearly full", "3.0 GB free"),
+                finding("c", Severity::Info, "1 event in the next 24 hours", "Supply run (in 5 h)"),
+            ],
+        );
+        assert_eq!(
+            text,
+            "Watch officer brief, 2027-01-15\n1 thing needs action now, and 1 to watch.\n\nAct now:\n- 1 item is out of stock: Water\n\nWatch:\n- Storage is nearly full: 3.0 GB free\n\nToday:\n- 1 event in the next 24 hours: Supply run (in 5 h)"
+        );
+        assert_eq!(
+            brief_logbook_text("2027-01-15", &[]),
+            "Watch officer brief, 2027-01-15\nAll clear. Nothing needs attention right now."
+        );
     }
 
     #[test]
