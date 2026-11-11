@@ -10,9 +10,11 @@ pub mod memory;
 pub mod mesh_query;
 pub mod needs;
 pub mod patients;
+pub mod picture;
 pub mod power;
 pub mod radio_discipline;
 pub mod roster;
+pub mod sensors;
 pub mod simple;
 pub mod skills;
 pub mod store;
@@ -40,6 +42,7 @@ pub fn watch_findings(db: &crate::db::Database, now: i64) -> Vec<crate::watch_of
     out.extend(skills::findings(&skills::load(db)));
     out.extend(intake::findings(&intake::load(db), now));
     out.extend(needs::findings(&needs::report_from_db(db)));
+    out.extend(sensors::findings(&sensors::load_with_latest(db), now));
     if let Some(budget) = power::budget_from_db(db) {
         out.extend(power::findings(&budget));
     }

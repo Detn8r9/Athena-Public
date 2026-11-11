@@ -613,6 +613,51 @@ fn try_decode_mesh_text(from_radio: &protobufs::FromRadio) -> Option<(u32, u32, 
 
 
 
+/// Store sensor readings carried by a telemetry packet (battery, temperature, pressure, …).
+fn ingest_mesh_telemetry_from_packet(
+    packet: &protobufs::FromRadio,
+    db: &Arc<Mutex<Database>>,
+    node_labels: &Arc<Mutex<HashMap<u32, String>>>,
+) {
+    let Some(protobufs::from_radio::PayloadVariant::Packet(mesh_packet)) = packet.payload_variant.as_ref()
+    else {
+        return;
+    };
+    let Some(protobufs::mesh_packet::PayloadVariant::Decoded(data)) = mesh_packet.payload_variant.as_ref()
+    else {
+        return;
+    };
+    if data.portnum != protobufs::PortNum::TelemetryApp as i32 {
+        return;
+    }
+    let Ok(telemetry) = protobufs::Telemetry::decode(data.payload.as_slice()) else {
+        return;
+    };
+    let Some(variant) = telemetry.variant.as_ref() else {
+        return;
+    };
+    let metrics = crate::field_ops::sensors::metrics_from_telemetry(variant);
+    if metrics.is_empty() {
+        return;
+    }
+    let label = node_labels
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&mesh_packet.from).cloned())
+        .unwrap_or_else(|| format!("Node {}", mesh_packet.from));
+    if let Ok(g) = db.lock() {
+        if let Err(e) = crate::field_ops::sensors::ingest_node_metrics(
+            &g,
+            i64::from(mesh_packet.from),
+            &label,
+            &metrics,
+            chrono::Utc::now().timestamp(),
+        ) {
+            eprintln!("[mesh] telemetry store failed: {e}");
+        }
+    }
+}
+
 fn ingest_mesh_position_from_packet(
     packet: &protobufs::FromRadio,
     db: &Arc<Mutex<Database>>,
@@ -921,6 +966,7 @@ async fn mesh_radio_main_loop(
                             }
                             ingest_node_display_name(&packet, &node_names, &my_node_num);
                             ingest_mesh_position_from_packet(&packet, &db, &node_names);
+                            ingest_mesh_telemetry_from_packet(&packet, &db, &node_names);
 
                             if let Some((from, to, channel, text)) = try_decode_mesh_text(&packet) {
                                 let sink_sos: std::sync::Arc<dyn MeshDmSink> =
@@ -1029,6 +1075,17 @@ async fn mesh_radio_main_loop(
                                                         eprintln!("[mesh] calendar insert skipped: database lock poisoned");
                                                     }
                                                 }
+                                            }
+                                        }
+                                    } else if crate::field_ops::picture::is_marker_packet(&text) {
+                                        // A map report shared by another station.
+                                        if let Some((marker, _)) = crate::field_ops::picture::decode_marker(&text) {
+                                            match db.lock().ok().map(|g| crate::field_ops::picture::ingest_marker(&g, &marker)) {
+                                                Some(Ok(true)) => {
+                                                    let _ = app.emit("peer-marker-rx", &marker);
+                                                }
+                                                Some(Ok(false)) | None => {}
+                                                Some(Err(e)) => eprintln!("[mesh] map marker store failed: {e}"),
                                             }
                                         }
                                     } else {

@@ -177,6 +177,20 @@ pub fn remove(db: &Database, kind: &str, id: &str) -> Result<bool, String> {
     })
 }
 
+/// Delete records outright, with no tombstone. Only for high-volume local data that is never
+/// synced (sensor readings), where keeping a tombstone per reading would grow without bound.
+pub fn purge(db: &Database, kind: &str, ids: &[String]) -> Result<usize, String> {
+    db.with_conn(|conn| {
+        let mut n = 0;
+        for id in ids {
+            n += conn
+                .execute("DELETE FROM field_records WHERE id = ?1 AND kind = ?2", params![id, kind])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(n)
+    })
+}
+
 /// Every record of the given kinds, including tombstones, for export to another station.
 pub fn export_raw(db: &Database, kinds: &[&str]) -> Result<Vec<RawRecord>, String> {
     let mut out = Vec::new();
