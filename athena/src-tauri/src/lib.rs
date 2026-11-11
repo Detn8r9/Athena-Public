@@ -6824,6 +6824,7 @@ pub fn run() {
             calendar_request_mesh_sync,
             rag_indexer::ingest_local_document,
             rag_indexer::search_rag_chunks,
+            rag_indexer::test_library_search,
             rag_indexer::download_knowledge_package,
             rag_indexer::list_rag_documents,
             media_harvest::harvest_media_url,

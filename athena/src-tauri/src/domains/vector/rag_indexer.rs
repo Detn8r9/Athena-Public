@@ -708,6 +708,78 @@ pub async fn search_rag_chunks(
     .map_err(|e| e.to_string())?
 }
 
+/// One candidate from [`test_library_search`], with the retrieval pipeline's verdict.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySearchTestHit {
+    pub title: String,
+    pub file_path: String,
+    pub page_number: Option<u32>,
+    /// Cross-encoder relevance logit, or fused rank score when no reranker model is installed.
+    pub score: f32,
+    /// True when chat would be given this passage for the same question.
+    pub relevant: bool,
+    /// True when `score` came from the reranker model.
+    pub reranked: bool,
+    pub preview: String,
+}
+
+/// Run the exact retrieval chat uses and return what it found, so the operator can check that a
+/// document is findable without spending a model turn on it.
+#[tauri::command]
+pub async fn test_library_search(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<LibrarySearchTestHit>, String> {
+    let q = query.trim().to_string();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let db_arc = std::sync::Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || -> Result<Vec<LibrarySearchTestHit>, String> {
+        let db = db_arc.lock().map_err(|e| e.to_string())?;
+        let scored = db.hybrid_search_scored(&q)?;
+        Ok(scored
+            .into_iter()
+            .take(12)
+            .map(|h| {
+                let title = h
+                    .hit
+                    .display_title
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        Path::new(&h.hit.file_path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("Library document")
+                            .to_string()
+                    });
+                let preview: String = h
+                    .hit
+                    .expanded_text
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(280)
+                    .collect();
+                LibrarySearchTestHit {
+                    title,
+                    file_path: h.hit.file_path,
+                    page_number: h.hit.page_number.and_then(|p| u32::try_from(p).ok()),
+                    score: h.hit.score,
+                    relevant: h.relevant,
+                    reranked: h.reranked,
+                    preview,
+                }
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn list_rag_documents(
     app_handle: tauri::AppHandle,

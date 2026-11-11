@@ -5,6 +5,7 @@ import { type Event } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FileText, Link2, Youtube } from "lucide-react";
 import { useTauriListen } from "../../shared/hooks/useTauriListen";
+import { LibrarySearchTest } from "./LibrarySearchTest";
 
 type CatalogCategory = "Medical" | "Tactical" | "Maps" | "Tech" | "History" | "Local";
 
@@ -57,13 +58,6 @@ function formatTypeHeading(t: string): string {
   return t.toUpperCase();
 }
 
-interface RagSearchFilters {
-  file_types?: string[];
-  source_contains?: string;
-  content_type?: string;
-  tags?: string[];
-}
-
 type HarvestUiStatus = "Pending" | "Downloading" | "Ingesting" | "Complete" | "Error";
 
 type HarvestSourceKind = "clip" | "youtube" | "local";
@@ -112,7 +106,6 @@ function shouldAutoIngestPath(p: string): boolean {
 }
 
 const CATEGORIES: CatalogCategory[] = ["Medical", "Tactical", "Maps", "Tech", "History", "Local"];
-const RAG_FILTERS_STORAGE_KEY = "athena-rag-search-filters-v1";
 
 const MOCK_CATALOG: CatalogPackage[] = [
   {
@@ -179,9 +172,6 @@ export function KnowledgeCatalogView() {
   const [watchFolder, setWatchFolder] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [ingestingLocalPaths, setIngestingLocalPaths] = useState<string[]>([]);
-  const [sourceFilter, setSourceFilter] = useState("");
-  const [tagFilter, setTagFilter] = useState("");
-  const [contentTypeFilter, setContentTypeFilter] = useState("any");
 
   const [harvestStagingDir, setHarvestStagingDir] = useState<string | null>(null);
   const [webClipUrl, setWebClipUrl] = useState("");
@@ -331,37 +321,7 @@ export function KnowledgeCatalogView() {
     void invoke<string | null>("get_watch_folder")
       .then((folder) => setWatchFolder(folder))
       .catch(() => setWatchFolder(null));
-    try {
-      const raw = window.localStorage.getItem(RAG_FILTERS_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as RagSearchFilters;
-        setSourceFilter(parsed.source_contains ?? "");
-        setContentTypeFilter(parsed.content_type ?? "any");
-        setTagFilter(Array.isArray(parsed.tags) ? parsed.tags.join(", ") : "");
-      }
-    } catch {
-      // ignore
-    }
   }, []);
-
-  useEffect(() => {
-    const tags = tagFilter
-      .split(",")
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-    const payload: RagSearchFilters = {};
-    if (sourceFilter.trim().length > 0) payload.source_contains = sourceFilter.trim();
-    if (contentTypeFilter !== "any") {
-      payload.content_type = contentTypeFilter;
-      payload.file_types = [contentTypeFilter];
-    }
-    if (tags.length > 0) payload.tags = tags;
-    try {
-      window.localStorage.setItem(RAG_FILTERS_STORAGE_KEY, JSON.stringify(payload));
-    } catch {
-      // ignore
-    }
-  }, [sourceFilter, tagFilter, contentTypeFilter]);
 
   const ingestDroppedDocumentPaths = async (paths: string[]) => {
     const uniquePaths = Array.from(new Set(paths.filter((p) => p.trim().length > 0)));
@@ -611,34 +571,7 @@ export function KnowledgeCatalogView() {
               <div className="text-muted small">Ingesting {ingestingLocalPaths.length} file(s)</div>
             ) : null}
           </div>
-          <div className="glass-panel" style={{ padding: "0.6rem", display: "grid", gap: "0.45rem" }}>
-            <div style={{ color: "var(--primary)" }}>RAG Filters</div>
-            <input
-              type="text"
-              value={sourceFilter}
-              onChange={(e) => setSourceFilter(e.target.value)}
-              placeholder="Source contains"
-              className="map-chat-input"
-            />
-            <select
-              className="theme-select"
-              value={contentTypeFilter}
-              onChange={(e) => setContentTypeFilter(e.target.value)}
-            >
-              <option value="any">Any file type</option>
-              <option value="txt">TXT</option>
-              <option value="md">MD</option>
-              <option value="pdf">PDF</option>
-              <option value="csv">CSV</option>
-            </select>
-            <input
-              type="text"
-              value={tagFilter}
-              onChange={(e) => setTagFilter(e.target.value)}
-              placeholder="Tags csv: tactical,field"
-              className="map-chat-input"
-            />
-          </div>
+          <LibrarySearchTest />
         </aside>
 
         <main className="glass-panel" style={{ padding: "0.7rem", overflow: "auto", display: "grid", gap: "0.85rem" }}>
