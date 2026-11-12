@@ -88,7 +88,108 @@ impl Default for AuthSession {
     }
 }
 
+// --- Per-request identity for the LAN server -------------------------------------------------
+//
+// The desktop app has one signed-in user, held in [`AuthSession`]. Browsers on the LAN each have
+// their own session token, and the LAN bridge runs the same commands on their behalf. Two paths
+// carry the caller's identity into a command:
+// - immediate (non-async) commands run on the bridge's thread, which sets [`with_request_user`];
+// - async commands are parsed inside a spawned task, so they take [`CallerSession`], which reads
+//   the [`LAN_SESSION_HEADER`] the bridge puts on the request.
+// With neither present (the desktop window), the shared desktop session is used as before.
+
+/// Request header the LAN bridge sets to the caller's session token.
+pub const LAN_SESSION_HEADER: &str = "x-athena-lan-session";
+
+thread_local! {
+    static REQUEST_USER: std::cell::RefCell<Option<AuthenticatedPersonnel>> = const { std::cell::RefCell::new(None) };
+}
+
+type TokenResolver = fn(&str) -> Option<AuthenticatedPersonnel>;
+type SessionUpdater = fn(&AuthenticatedPersonnel);
+static TOKEN_RESOLVER: std::sync::OnceLock<TokenResolver> = std::sync::OnceLock::new();
+static SESSION_UPDATER: std::sync::OnceLock<SessionUpdater> = std::sync::OnceLock::new();
+
+/// Called once by the LAN bridge so commands can resolve its tokens and keep its sessions current.
+pub fn register_lan_sessions(resolve: TokenResolver, update: SessionUpdater) {
+    let _ = TOKEN_RESOLVER.set(resolve);
+    let _ = SESSION_UPDATER.set(update);
+}
+
+fn request_user() -> Option<AuthenticatedPersonnel> {
+    REQUEST_USER.with(|u| u.borrow().clone())
+}
+
+/// Run `f` as `user` on this thread (immediate commands called by the LAN bridge).
+pub fn with_request_user<T>(user: AuthenticatedPersonnel, f: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            REQUEST_USER.with(|u| *u.borrow_mut() = None);
+        }
+    }
+    REQUEST_USER.with(|u| *u.borrow_mut() = Some(user));
+    let _reset = Reset;
+    f()
+}
+
+/// Change who is signed in: the desktop session, or (for a LAN request) that browser's session.
+pub fn set_session_user(session: &AuthSession, user: Option<AuthenticatedPersonnel>) -> Result<(), String> {
+    if request_user().is_some() {
+        if let Some(u) = user {
+            REQUEST_USER.with(|r| *r.borrow_mut() = Some(u.clone()));
+            if let Some(update) = SESSION_UPDATER.get() {
+                update(&u);
+            }
+        }
+        return Ok(());
+    }
+    *session.0.lock().map_err(|e| e.to_string())? = user;
+    Ok(())
+}
+
+/// The caller's session for async commands: the LAN browser's when the request came through the
+/// bridge, otherwise the desktop session. Use in place of `State<'_, AuthSession>`.
+pub struct CallerSession(AuthSession);
+
+impl std::ops::Deref for CallerSession {
+    type Target = AuthSession;
+    fn deref(&self) -> &AuthSession {
+        &self.0
+    }
+}
+
+impl<'de, R: tauri::Runtime> tauri::ipc::CommandArg<'de, R> for CallerSession {
+    fn from_command(cmd: tauri::ipc::CommandItem<'de, R>) -> Result<Self, tauri::ipc::InvokeError> {
+        use tauri::Manager;
+        let from_lan = cmd
+            .message
+            .headers()
+            .get(LAN_SESSION_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(|token| TOKEN_RESOLVER.get().and_then(|resolve| resolve(token)));
+        let user = match (request_user(), from_lan) {
+            (Some(u), _) => Some(u),
+            // A LAN request whose token is unknown or expired is signed out, never the desktop user.
+            (None, Some(resolved)) => resolved,
+            (None, None) => cmd
+                .message
+                .webview()
+                .try_state::<AuthSession>()
+                .and_then(|s| s.0.lock().ok().and_then(|g| g.clone())),
+        };
+        Ok(CallerSession(AuthSession(Mutex::new(user))))
+    }
+}
+
 pub fn authenticated_user(session: &AuthSession) -> Result<AuthenticatedPersonnel, String> {
+    if let Some(u) = request_user() {
+        let st = u.operational_status.trim().to_ascii_lowercase();
+        if st == "mia" || st == "kia" {
+            return Err("This account is locked (MIA/KIA). Contact Command.".to_string());
+        }
+        return Ok(u);
+    }
     let guard = session.0.lock().map_err(|e| e.to_string())?;
     let u = guard
         .clone()
@@ -421,7 +522,7 @@ pub fn set_my_personnel_display_name(
         .personnel_fetch_by_id(&u.id)?
         .ok_or_else(|| "Personnel record missing.".to_string())?;
     let out = session_personnel_from_row(&row);
-    *session.0.lock().map_err(|e| e.to_string())? = Some(out.clone());
+    set_session_user(&session, Some(out.clone()))?;
     Ok(out)
 }
 
@@ -438,7 +539,7 @@ pub fn set_my_personnel_login_name(
         .personnel_fetch_by_id(&u.id)?
         .ok_or_else(|| "Personnel record missing.".to_string())?;
     let out = session_personnel_from_row(&row);
-    *session.0.lock().map_err(|e| e.to_string())? = Some(out.clone());
+    set_session_user(&session, Some(out.clone()))?;
     Ok(out)
 }
 
@@ -495,11 +596,11 @@ pub fn set_personnel_display_name(
             .personnel_fetch_by_id(pid)?
             .ok_or_else(|| "Personnel record missing.".to_string())?;
         if is_locked_status(&row.operational_status) {
-            *session.0.lock().map_err(|e| e.to_string())? = None;
+            set_session_user(&session, None)?;
             return Err("This account is locked (MIA/KIA). Contact Command.".to_string());
         }
         let out = session_personnel_from_row(&row);
-        *session.0.lock().map_err(|e| e.to_string())? = Some(out);
+        set_session_user(&session, Some(out))?;
     }
     Ok(())
 }
@@ -515,11 +616,11 @@ pub fn refresh_auth_session(
         .personnel_fetch_by_id(&u.id)?
         .ok_or_else(|| "Personnel record missing.".to_string())?;
     if is_locked_status(&row.operational_status) {
-        *session.0.lock().map_err(|e| e.to_string())? = None;
+        set_session_user(&session, None)?;
         return Err("This account is locked (MIA/KIA). Contact Command.".to_string());
     }
     let out = session_personnel_from_row(&row);
-    *session.0.lock().map_err(|e| e.to_string())? = Some(out.clone());
+    set_session_user(&session, Some(out.clone()))?;
     Ok(out)
 }
 

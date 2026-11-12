@@ -48,7 +48,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 axum = { version = "0.7", default-features = false, features = ["json", "http1", "tokio", "query"] }
 tower-http = { version = "0.5", default-features = false, features = ["fs", "cors"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "io"] }
-zim = "0.4"
+zim = "0.5"
+# Vault: MD5 is the checksum the ZIM format requires; ChaCha20-Poly1305 seals fleet relay messages.
+md-5 = "0.10"
+chacha20poly1305 = "0.10"
 quick-xml = "0.36"
 urlencoding = "2"
 sunrise = "1.2"

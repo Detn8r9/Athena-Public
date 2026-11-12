@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { safeUnlisten } from "./athenaIpc";
+import { safeUnlisten, withCamelCaseArgs } from "./athenaIpc";
 
 describe("safeUnlisten", () => {
   it("calls the underlying unlisten once however many times it is invoked", () => {
@@ -23,5 +23,23 @@ describe("safeUnlisten", () => {
     const un = safeUnlisten((() => rejection) as unknown as () => void);
     expect(() => un()).not.toThrow();
     await expect(rejection.catch(() => "handled")).resolves.toBe("handled");
+  });
+});
+
+describe("withCamelCaseArgs", () => {
+  it("adds a camelCase copy of snake_case keys and keeps the original", () => {
+    expect(withCamelCaseArgs({ item_name: "Rice", quantity: 3 })).toEqual({
+      item_name: "Rice",
+      itemName: "Rice",
+      quantity: 3,
+    });
+  });
+  it("does not overwrite a camelCase key that is already there", () => {
+    expect(withCamelCaseArgs({ item_id: 1, itemId: 2 })).toEqual({ item_id: 1, itemId: 2 });
+  });
+  it("leaves nested objects and undefined args alone", () => {
+    const plan = { interval_hours: 1 };
+    expect(withCamelCaseArgs({ plan })).toEqual({ plan });
+    expect(withCamelCaseArgs(undefined)).toBeUndefined();
   });
 });

@@ -195,6 +195,17 @@ pub fn execute_map_tool(
                 },
             }
         }
+        "add_marker" => {
+            let title = args.get("title").or_else(|| args.get("name")).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let lat = args.get("lat").and_then(|v| v.as_f64());
+            let lng = args.get("lng").or_else(|| args.get("lon")).and_then(|v| v.as_f64());
+            let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("");
+            let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            match marker_proposal(&title, lat.zip(lng), category, description) {
+                Ok(data) => MapToolResult { tool: tool.to_string(), ok: true, data: Some(data), error: None },
+                Err(e) => MapToolResult { tool: tool.to_string(), ok: false, data: None, error: Some(e) },
+            }
+        }
         "search_markers" => {
             let q = args
                 .get("query")
@@ -553,6 +564,111 @@ pub fn execute_map_tool(
     };
     println!("TOOL RESULT SUCCESS: {}", result.ok);
     result
+}
+
+/// A marker the assistant suggests. Nothing is saved: the map shows it and the user confirms.
+/// `at` is (lat, lng); `None` means "where the map is centred", which the map fills in.
+pub fn marker_proposal(
+    title: &str,
+    at: Option<(f64, f64)>,
+    category: &str,
+    description: &str,
+) -> Result<serde_json::Value, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("A marker needs a name.".to_string());
+    }
+    if let Some((lat, lng)) = at {
+        if !lat.is_finite() || !lng.is_finite() || lat.abs() > 90.0 || lng.abs() > 180.0 {
+            return Err("That position is not on the map.".to_string());
+        }
+    }
+    let category = match category.trim().to_lowercase().as_str() {
+        c @ ("water" | "cache" | "med" | "hazard") => c.to_string(),
+        _ => guess_marker_category(title).to_string(),
+    };
+    Ok(serde_json::json!({
+        "proposal": {
+            "title": title.chars().take(80).collect::<String>(),
+            "lat": at.map(|p| p.0),
+            "lng": at.map(|p| p.1),
+            "category": category,
+            "description": description.trim().chars().take(400).collect::<String>(),
+        }
+    }))
+}
+
+fn guess_marker_category(title: &str) -> &'static str {
+    let t = title.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
+    if has(&["water", "well", "spring", "stream", "river", "pump", "cistern"]) {
+        "water"
+    } else if has(&["cache", "supply", "supplies", "stash", "store", "depot", "fuel"]) {
+        "cache"
+    } else if has(&["clinic", "medic", "hospital", "pharmacy", "aid"]) {
+        "med"
+    } else {
+        "hazard"
+    }
+}
+
+/// Understand plain requests such as "add a marker here called North well" without asking the
+/// model: small local models rarely produce the tool line, so the request used to do nothing.
+/// Returns the marker name.
+pub fn parse_add_marker_request(message: &str) -> Option<String> {
+    let lower = message.to_lowercase();
+    let verb = ["add", "place", "drop", "put", "create", "set", "mark", "save"]
+        .iter()
+        .any(|v| lower.split(|c: char| !c.is_alphanumeric()).any(|w| w == *v));
+    let noun = ["marker", "pin", "waypoint"].iter().any(|n| lower.contains(n)) || lower.starts_with("mark ");
+    if !verb || !noun {
+        return None;
+    }
+    for key in [" called ", " named ", " labelled ", " labeled ", " titled ", " for "] {
+        if let Some(i) = lower.find(key) {
+            let name = message[i + key.len()..].trim().trim_matches(|c: char| c == '"' || c == '\'' || c == '.' || c == '!');
+            let name = name.strip_suffix(" here").unwrap_or(name).trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    // Quoted name anywhere: add a marker "North well" here.
+    let mut parts = message.split('"');
+    if let (Some(_), Some(q)) = (parts.next(), parts.next()) {
+        if !q.trim().is_empty() {
+            return Some(q.trim().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    #[test]
+    fn plain_requests_name_the_marker() {
+        assert_eq!(parse_add_marker_request("Add a marker here called North well").as_deref(), Some("North well"));
+        assert_eq!(parse_add_marker_request("drop a pin named Fuel cache.").as_deref(), Some("Fuel cache"));
+        assert_eq!(parse_add_marker_request("place a marker \"Clinic\" here").as_deref(), Some("Clinic"));
+    }
+
+    #[test]
+    fn other_requests_are_left_to_the_model() {
+        assert_eq!(parse_add_marker_request("find markers near the river"), None);
+        assert_eq!(parse_add_marker_request("directions to the marker called Camp"), None);
+        assert_eq!(parse_add_marker_request("add a marker"), None);
+    }
+
+    #[test]
+    fn proposals_guess_a_category_and_reject_bad_positions() {
+        let p = marker_proposal("North well", None, "", "").unwrap();
+        assert_eq!(p["proposal"]["category"], "water");
+        assert!(p["proposal"]["lat"].is_null());
+        assert!(marker_proposal("", None, "", "").is_err());
+        assert!(marker_proposal("X", Some((120.0, 0.0)), "", "").is_err());
+    }
 }
 
 /// Parse `TOOL: {...}` lines from model output; returns (cleaned user text, tool results).

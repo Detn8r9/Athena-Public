@@ -74,7 +74,7 @@ export function MapLeftRail({
           aria-label="Open directions"
         >
           <Route size={20} />
-          <span>Directions</span>
+          <span>Route</span>
         </button>
         {showApprovalInbox && onOpenApprovalInbox ? (
           <button
@@ -103,7 +103,7 @@ export function MapLeftRail({
           aria-label="Territories"
         >
           <Hexagon size={20} />
-          <span>Territories</span>
+          <span>Areas</span>
         </button>
         <button
           type="button"

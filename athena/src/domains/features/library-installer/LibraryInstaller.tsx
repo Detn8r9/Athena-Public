@@ -68,7 +68,9 @@ function formatDownloadSizeGb(bytes: number): string {
   const gb = bytes / 1024 ** 3;
   if (gb >= 1) return `${gb.toFixed(2)} GB`;
   const mb = bytes / 1024 ** 2;
-  return `${mb.toFixed(0)} MB`;
+  if (mb >= 1) return `${mb.toFixed(0)} MB`;
+  // Notes and short documents were all shown as "0 MB".
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 function formatThroughput(bytesPerSec: number): string {

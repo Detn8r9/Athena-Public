@@ -72,9 +72,9 @@
 | S2 | Radio intelligence | Keyword alerts; intercept log; digest. | Intercepts tab. | **Needs hardware** (SDR) and the speech-to-text service. |
 | S1 | Camp intranet | Request queue so many people can use the AI at once. | Phone-friendly layout for the LAN web view. | **Needs a phone** on the same network to check. |
 | S6 | Survive hardware loss | Binder contents selection. | Print binder (PDF). | Cross-platform installers need the binaries for each system. |
-| S16 | Rebuild library tiers | Tier selection by available disk space. | Tiered install in the Knowledge Catalog. | **Needs vetted content**: the actual download list. |
+| S16 | Rebuild library tiers | Tier selection by available disk space. | Tiered install in the Knowledge Catalog. | Vetted list done (`LIBRARY_CONTENT.md`); tier picker not built. |
 | S17 | Camera as expert's eyes | — | Camera lookup that searches the library for what it sees. | Needs a vision model; always shows candidates, never a safety verdict. |
-| S27 | Education and morale | — | Private journal; children's curriculum slot in Academy. | **Needs content.** |
+| S27 | Education and morale | — | Private journal; children's curriculum slot in Academy. | Content collected (`LIBRARY_CONTENT.md`); journal and curriculum slot not built. |
 
 ## Order of work
 
@@ -103,7 +103,11 @@ Phases run in the order above. Within a phase, features are built one at a time 
 | S13 | Federation | Built | Needs/offers board and people finder, carried by courier. No radio exchange. |
 | S14 | Group memory | Built | Typed notes only. Dictation is not wired in. |
 | S15 | Skills registry | Built | — |
-| S16 | Rebuild library tiers | **Not built** | Needs a vetted download list. |
+| S16 | Rebuild library tiers | **Partly built** | Vetted list, catalog fixes, and the Library Vault: topic coverage with suggested downloads for thin topics, packs, and update checks. A tier picker by disk space is still to build. |
+| V1 | Library Vault: coverage and device scan | Built | Sorts the library into 13 survival topics. The device scan copies useful files, puts personal or location files on a private shelf, and never copies secrets. |
+| V2 | Library Vault: packs | Built | Packs documents into a ZIM file. Text shrinks to about 30%; PDFs stay about the same size. Each pack is checked and its chat search is switched on separately. |
+| V3 | Library Vault: stations and fleet | Partly built | Nearby stations answer library questions over the mesh. A Cloudflare relay (`cloud/fleet-relay`) carries sealed messages between groups. The relay is not deployed, and the mesh search is untested between two real stations. |
+| V4 | Library Vault: updates and alerts | Built | Finds newer Kiwix releases and removes the old file once the new one opens. Reads USGS, GDACS, NOAA and NWS feeds; off by default. Hunker-down is manual. |
 | S17 | Camera as expert's eyes | **Not built** | Needs a vision model to test against. |
 | S18 | Daily brief | Built | Written to the logbook after 06:00. The hour is fixed, not a setting. |
 | S19 | Sensor network | Built | Manual readings and Meshtastic telemetry. Telemetry path untested on hardware. |
@@ -114,4 +118,4 @@ Phases run in the order above. Within a phase, features are built one at a time 
 | S24 | Duty roster | Built | No radio reminders. |
 | S25 | Newcomer intake | Built | Does not create a personnel record or guest account automatically. |
 | S26 | Decision log and ledger | Built | — |
-| S27 | Education and morale | **Not built** | Needs content. |
+| S27 | Education and morale | **Partly built** | Content collected and Kiwix browsing in Academy works; journal and children's curriculum slot still to build. |

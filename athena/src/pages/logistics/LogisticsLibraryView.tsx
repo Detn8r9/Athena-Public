@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
-import { emit } from "@tauri-apps/api/event";
+import { athenaEmit as emit } from "../../shared/ipc/athenaIpc";
 import { useAuth } from "../../domains/auth/AuthContext";
 import { useLexicon } from "../../shared/lexicon";
 import { InvNewItemPromptModal, applyInventoryProposal, type NewItemLine } from "../../domains/features/logistics/InvNewItemPromptModal";
@@ -204,7 +204,8 @@ export function LogisticsLibraryView({
       if (res?.entry?.entry_id) setSelectedId(res.entry.entry_id);
 
       const newItems: NewItemLine[] = (res.lineOutcomes || [])
-        .filter((o) => o.kind === "newItemPrompt")
+        // Using up something that is not in stock leaves nothing to add; the log entry still records it.
+        .filter((o) => o.kind === "newItemPrompt" && (o.delta == null || o.delta > 0))
         .map((o) => ({
           lineId: o.lineId ?? null,
           proposalId: o.proposalId ?? res.entry.proposal_id,

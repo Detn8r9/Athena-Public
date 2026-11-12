@@ -8,7 +8,6 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
-use tauri::Manager;
 
 const PACKS_FILENAME: &str = "athena_tile_packs.json";
 pub const TILE_PACKS_SUBDIR: &str = "tile_packs";
@@ -237,7 +236,7 @@ pub fn download_tile_pack_background(
 ) {
     std::thread::spawn(move || {
         let run = || -> Result<(), String> {
-            let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let app_data = crate::portable::resolved_app_data_dir(&app)?;
             let root = app_data.join(TILE_PACKS_SUBDIR).join(&pack_id);
             fs::create_dir_all(&root).map_err(|e| e.to_string())?;
 
@@ -341,7 +340,7 @@ pub fn export_pack_to_mbtiles_background(
     let progress_id = format!("mbtiles_export:{pack_id}");
     std::thread::spawn(move || {
         let run = || -> Result<(), String> {
-            let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let app_data = crate::portable::resolved_app_data_dir(&app)?;
             let packs = load_packs(&app_data);
             let pack = packs
                 .iter()
@@ -399,7 +398,7 @@ pub fn import_mbtiles_background(
     let progress_id = format!("import:{job_id}");
     std::thread::spawn(move || {
         let run = || -> Result<(), String> {
-            let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let app_data = crate::portable::resolved_app_data_dir(&app)?;
             let dest_root = app_data.join(TILE_PACKS_SUBDIR).join(&job_id);
             if dest_root.exists() {
                 fs::remove_dir_all(&dest_root).map_err(|e| e.to_string())?;
@@ -463,7 +462,7 @@ pub fn import_pmtiles_background(
     let progress_id = format!("import:{job_id}");
     std::thread::spawn(move || {
         let run = || -> Result<(), String> {
-            let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let app_data = crate::portable::resolved_app_data_dir(&app)?;
             let dest_root = app_data.join(TILE_PACKS_SUBDIR).join(&job_id);
             if dest_root.exists() {
                 fs::remove_dir_all(&dest_root).map_err(|e| e.to_string())?;

@@ -194,7 +194,7 @@ pub async fn share_marker_over_mesh(
     channel: Option<u32>,
     control: State<'_, crate::mesh_listener::MeshRadioControl>,
     app: State<'_, AppState>,
-    session: State<'_, AuthSession>,
+    session: crate::auth::CallerSession,
 ) -> Result<(), String> {
     super::require_member(&session)?;
     let packet = {

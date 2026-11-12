@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from "react";
 import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 
 /** Fields every stored Field Ops record carries, alongside its own data. */
@@ -49,12 +49,31 @@ export function messageOf(e: unknown): string {
   return "Something went wrong.";
 }
 
+let busyCount = 0;
+const busyListeners = new Set<() => void>();
+function setBusy(delta: number) {
+  busyCount = Math.max(0, busyCount + delta);
+  busyListeners.forEach((l) => l());
+}
+
+/** True while a Field Ops change is being saved, so the screen can block double submits. */
+export function useFieldOpsBusy(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      busyListeners.add(l);
+      return () => busyListeners.delete(l);
+    },
+    () => busyCount > 0,
+  );
+}
+
 /** Run a change, then reload; report failure through `setError`. */
 export async function runAction(
   action: () => Promise<unknown>,
   setError: (message: string | null) => void,
   after?: () => Promise<unknown> | void,
 ): Promise<boolean> {
+  setBusy(1);
   try {
     await action();
     setError(null);
@@ -63,6 +82,8 @@ export async function runAction(
   } catch (e) {
     setError(messageOf(e));
     return false;
+  } finally {
+    setBusy(-1);
   }
 }
 
@@ -99,11 +120,24 @@ export function usePeople(): Person[] {
   return people;
 }
 
+/**
+ * A labelled form control. The label is tied to the control by id as well as by wrapping it, so
+ * screen readers and voice control name the field the same way in every browser engine.
+ */
 export function Field({ label, grow, children }: { label: string; grow?: boolean; children: ReactNode }) {
+  const id = useId();
+  const control =
+    isValidElement(children) && typeof children.type === "string"
+      ? cloneElement(children as ReactElement<{ id?: string; "aria-label"?: string }>, {
+          id: (children.props as { id?: string }).id ?? id,
+          "aria-label": (children.props as { "aria-label"?: string })["aria-label"] ?? label,
+        })
+      : children;
+  const controlId = isValidElement(control) ? (control.props as { id?: string }).id : undefined;
   return (
-    <label className={grow ? "fo-field fo-field--grow" : "fo-field"}>
+    <label className={grow ? "fo-field fo-field--grow" : "fo-field"} htmlFor={controlId}>
       {label}
-      {children}
+      {control}
     </label>
   );
 }

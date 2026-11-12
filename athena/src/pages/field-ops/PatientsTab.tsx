@@ -58,6 +58,11 @@ export function PatientsTab() {
     }
   };
 
+  // With a single patient on file there is nothing to choose: open their chart.
+  useEffect(() => {
+    if (!selectedId && patients.length === 1) setSelectedId(patients[0].id);
+  }, [patients, selectedId]);
+
   useEffect(() => {
     if (selectedId) void loadEntries(selectedId);
     else setEntries([]);

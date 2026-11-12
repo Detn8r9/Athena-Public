@@ -1,5 +1,8 @@
 const TOKEN_KEY = "athena_lan_session_token";
-const INVOKE_TIMEOUT_MS = 20_000;
+const INVOKE_TIMEOUT_MS = 120_000;
+/** Jobs whose command returns only when the work ends (packing, scanning, downloads, indexing). */
+const LONG_JOB = /^(vault_|download_|index|reindex|harvest|import_|export_|install_|pull_|ollama_pull|ingest)/;
+const LONG_JOB_TIMEOUT_MS = 60 * 60_000;
 
 /** Base URL for the LAN bridge API (empty = same origin, e.g. served from :8787). */
 export function lanApiBase(): string {
@@ -23,11 +26,27 @@ export function getLanSessionToken(): string | null {
 }
 
 export function setLanSessionToken(token: string | null): void {
+  const before = getLanSessionToken();
   try {
     if (token) sessionStorage.setItem(TOKEN_KEY, token);
     else sessionStorage.removeItem(TOKEN_KEY);
   } catch {
     /* ignore */
+  }
+  // The event stream identifies the browser by the token it opened with; reopen it on sign-in or
+  // sign-out so this browser receives its own chat replies and station events.
+  if (before !== token && sharedEs) {
+    sharedEs.close();
+    sharedEs = null;
+    ensureSharedEventSource();
+  }
+}
+
+/** Deliver an event to this browser's own listeners (front-end events, not sent to the station). */
+export function lanEmitLocal(event: string, payload: unknown): void {
+  for (const name of [event, "*"]) {
+    const set = handlersByEvent.get(name);
+    if (set) for (const h of set) h(payload);
   }
 }
 
@@ -46,7 +65,7 @@ export async function lanInvoke(cmd: string, args?: Record<string, unknown>): Pr
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), INVOKE_TIMEOUT_MS);
+  const timer = window.setTimeout(() => controller.abort(), LONG_JOB.test(cmd) ? LONG_JOB_TIMEOUT_MS : INVOKE_TIMEOUT_MS);
   let res: Response;
   try {
     res = await fetch(url, {
@@ -58,7 +77,7 @@ export async function lanInvoke(cmd: string, args?: Record<string, unknown>): Pr
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       throw new Error(
-        `Request timed out talking to the host (${cmd}). Is Allow LAN access still enabled?`,
+        `The station did not answer in time (${cmd}). Check that it is still running.`,
       );
     }
     throw err instanceof Error ? err : new Error(String(err));

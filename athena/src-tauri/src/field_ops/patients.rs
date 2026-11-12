@@ -81,6 +81,14 @@ pub fn validate_vitals(v: &Vitals) -> Result<(), String> {
     }
     check("Pulse", v.pulse, 0.0, 300.0)?;
     check("Breathing rate", v.breathing, 0.0, 100.0)?;
+    if let Some(t) = v.temp_c {
+        if (68.0..=113.0).contains(&t) {
+            let c = (t - 32.0) * 5.0 / 9.0;
+            return Err(format!(
+                "Temperature of {t} looks like Fahrenheit. Enter it in °C: {t} °F is {c:.1} °C."
+            ));
+        }
+    }
     check("Temperature", v.temp_c, 20.0, 45.0)?;
     check("Systolic pressure", v.systolic, 30.0, 300.0)?;
     check("Diastolic pressure", v.diastolic, 10.0, 200.0)?;
@@ -250,6 +258,7 @@ mod tests {
     fn impossible_readings_are_rejected_with_the_field_named() {
         let err = validate_vitals(&Vitals { temp_c: Some(98.6), ..Default::default() }).unwrap_err();
         assert!(err.starts_with("Temperature of 98.6"), "{err}");
+        assert!(err.contains("37.0 °C"), "{err}");
         let err = validate_vitals(&Vitals { pulse: Some(720.0), ..Default::default() }).unwrap_err();
         assert!(err.starts_with("Pulse of 720"), "{err}");
         assert!(validate_vitals(&Vitals { spo2: Some(104.0), ..Default::default() }).is_err());

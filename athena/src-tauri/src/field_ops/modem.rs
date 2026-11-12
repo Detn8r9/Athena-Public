@@ -361,7 +361,7 @@ pub fn modem_read_audio(path: String, session: State<'_, AuthSession>) -> Result
 /// Play a message out of the computer's sound output, for a radio held to the speaker or wired
 /// to the headphone jack. Returns when the audio has finished.
 #[tauri::command]
-pub async fn modem_transmit(text: String, session: State<'_, AuthSession>) -> Result<f64, String> {
+pub async fn modem_transmit(text: String, session: crate::auth::CallerSession) -> Result<f64, String> {
     super::require_member(&session)?;
     let payload = text.trim().as_bytes().to_vec();
     tokio::task::spawn_blocking(move || audio::play(&payload))
@@ -371,7 +371,7 @@ pub async fn modem_transmit(text: String, session: State<'_, AuthSession>) -> Re
 
 /// Listen on the computer's sound input for up to `seconds` and return the first message heard.
 #[tauri::command]
-pub async fn modem_listen(seconds: u32, session: State<'_, AuthSession>) -> Result<String, String> {
+pub async fn modem_listen(seconds: u32, session: crate::auth::CallerSession) -> Result<String, String> {
     super::require_member(&session)?;
     let seconds = seconds.clamp(2, 120);
     tokio::task::spawn_blocking(move || audio::listen(seconds))

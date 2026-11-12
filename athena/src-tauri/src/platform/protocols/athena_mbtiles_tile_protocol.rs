@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use tauri::http::header::{self, HeaderValue};
 use tauri::http::{Method, Request, Response, StatusCode};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Runtime};
 
 use crate::mbtiles_io;
 
@@ -148,7 +148,8 @@ fn resolve_tile_request<R: Runtime>(
     application_handle: &AppHandle<R>,
     uri_path: &str,
 ) -> Result<(PathBuf, u32, u32, u32), Response<Vec<u8>>> {
-    let application_data_directory = match application_handle.path().app_data_dir() {
+    // Portable installs keep tiles beside the executable, not in the host user folder.
+    let application_data_directory = match crate::portable::resolved_app_data_dir(application_handle) {
         Ok(directory) => directory,
         Err(error) => {
             return Err(plain_text_response(

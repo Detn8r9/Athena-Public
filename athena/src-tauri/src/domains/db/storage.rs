@@ -3,7 +3,6 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use sysinfo::Disks;
-use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +20,7 @@ pub fn check_available_storage(
     path: Option<String>,
 ) -> Result<AvailableStorage, String> {
     let target: PathBuf = match path.as_deref() {
-        None | Some("") => app.path().app_data_dir().map_err(|e| e.to_string())?,
+        None | Some("") => crate::portable::resolved_app_data_dir(&app)?,
         Some(s) => Path::new(s).to_path_buf(),
     };
 

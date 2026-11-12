@@ -229,7 +229,7 @@ pub async fn import_courier_bundle(
     apply: bool,
     accept_unverified: Option<bool>,
     app: tauri::AppHandle,
-    session: State<'_, AuthSession>,
+    session: crate::auth::CallerSession,
 ) -> Result<ImportSummary, String> {
     super::require_member(&session)?;
     tokio::task::spawn_blocking(move || -> Result<ImportSummary, String> {

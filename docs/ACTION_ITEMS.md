@@ -12,6 +12,27 @@ cd "/Users/you/Coding Projects/Project A.T.H.E.N.A/athena" && npm run tauri dev
 
 If something looks wrong, tell me which screen, what you did, and what you saw. A screenshot helps.
 
+## New on 2026-11-12: run ATHENA on the Windows server
+
+Guide: `docs/WINDOWS_SERVER_SETUP.md`. Tested on the Mac in server mode with two browser users;
+**the Windows build and the install script have not been run on Windows yet.**
+
+- [ ] **Build on Windows.** `npm ci` then `npm run tauri build` in `athena`, and run the installer from `src-tauri\target\release\bundle\nsis\`.
+- [ ] **Run the setup script** as administrator: `athena\server\windows\install-athena-server.ps1 -DataDir "D:\AthenaData"`. Tell me any error it prints.
+- [ ] **Turn on automatic sign-in** for the server's Windows account, so ATHENA starts after a reboot.
+- [ ] **From a phone or laptop**, open the address the script prints, sign in, and ask a question. Then sign in as a second person on another device and check neither sees the other's chat.
+- [ ] **Watch the load.** While Minecraft and Plex run, check Task Manager: ATHENA should show below-normal priority, and the model should leave memory about 2 minutes after the last question.
+
+## New on 2026-11-12: Library Vault and the 13 fixes
+
+Results are in `docs/qa/TEST_REPORT_2026-11-12.md`. Nothing is committed.
+
+- [ ] **Vault coverage.** Library → Vault. Check the topics match what you have.
+- [ ] **Device scan.** Find on this computer → Scan now. It looks in Documents, Downloads and Desktop and copies finds straight away into "Found on this device" or the private shelf. Choose other folders first if you prefer.
+- [ ] **Make a pack.** Packs → pick a folder → Make pack, then Turn search on and ask chat about it.
+- [ ] **Fleet relay (optional).** Needs your Cloudflare account: `cd cloud/fleet-relay && npx wrangler@4 deploy`, then paste the address in Vault settings on each station.
+- [ ] **Alerts (optional).** Vault settings → switch alerts on and set your position and state.
+
 ---
 
 ## 1. Test first: these underpin everything else (about 15 minutes)

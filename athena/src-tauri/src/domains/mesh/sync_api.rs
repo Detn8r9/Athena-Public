@@ -92,7 +92,12 @@ async fn mesh_manifest(State(s): State<MeshHttpState>) -> impl IntoResponse {
     let node_id = s.node_id;
     let json_bytes: Result<Vec<u8>, String> = tokio::task::spawn_blocking(move || {
         let g = db.lock().map_err(|e| e.to_string())?;
-        let entries = g.list_mesh_manifest_rows(50_000)?;
+        // The private shelf is for this station only: it is not listed and not served.
+        let entries: Vec<MeshManifestRow> = g
+            .list_mesh_manifest_rows(50_000)?
+            .into_iter()
+            .filter(|row| !crate::vault::scan::is_private_path(&row.path))
+            .collect();
         let body = MeshManifestBody {
             node_id,
             generated_at_rfc3339: chrono::Utc::now().to_rfc3339(),
@@ -160,6 +165,12 @@ async fn mesh_download(
     State(s): State<MeshHttpState>,
     axum::extract::Query(q): axum::extract::Query<MeshDownloadQuery>,
 ) -> impl IntoResponse {
+    // This endpoint has no login, so it must never hand out the database (accounts, patient
+    // records), settings, chats or the private shelf to whoever is on the network.
+    let decoded = urlencoding::decode(&q.p).map(|c| c.into_owned()).unwrap_or_else(|_| q.p.clone());
+    if crate::vault::mesh_library::is_served_path_forbidden(&decoded) {
+        return (StatusCode::FORBIDDEN, "This file is not shared with other stations.").into_response();
+    }
     let root = s.athena_data_root.clone();
     let rel = q.p.clone();
     let resolved = match tokio::task::spawn_blocking(move || safe_path_under_athena_root(&root, &rel)).await {
@@ -241,6 +252,7 @@ pub fn spawn_mesh_http_server(
             .route("/mesh/ping", get(mesh_ping))
             .route("/mesh/manifest", get(mesh_manifest))
             .route("/mesh/download", get(mesh_download))
+            .route("/mesh/library/search", get(crate::vault::mesh_library::http_search))
             .with_state(state);
 
         eprintln!("[mesh-p2p] REST listening on 0.0.0.0:{port}");

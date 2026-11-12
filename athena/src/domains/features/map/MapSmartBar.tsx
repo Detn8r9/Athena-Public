@@ -10,7 +10,7 @@ type MapToolResult = { tool: string; ok: boolean; error?: string; data?: unknown
 export function MapSmartBar({
   onSend,
   onResult,
-  placeholder = "Ask the map assistant… (markers, route, search)",
+  placeholder = "Ask the map assistant… (find markers or places, directions, route)",
 }: {
   onSend: (msg: string) => Promise<{ reply: string; toolResults: MapToolResult[] }>;
   onResult?: (r: { reply: string; toolResults: MapToolResult[] }) => void;

@@ -31,9 +31,9 @@ type Roster = {
   spreadHours: number;
 };
 
-function dayLabel(offset: number): string {
+function dayLabel(offset: number, startOffset: number): string {
   const d = new Date();
-  d.setDate(d.getDate() + offset);
+  d.setDate(d.getDate() + startOffset + offset);
   return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
 
@@ -43,6 +43,8 @@ export function RosterTab() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [roster, setRoster] = useState<Roster | null>(null);
   const [days, setDays] = useState("7");
+  // Most rosters are built for the days ahead; after midday, starting today would put shifts in the past.
+  const [startOffset, setStartOffset] = useState(() => (new Date().getHours() >= 12 ? 1 : 0));
   const [dutyName, setDutyName] = useState("");
   const [shifts, setShifts] = useState("3");
   const [perShift, setPerShift] = useState("1");
@@ -201,6 +203,12 @@ export function RosterTab() {
       )}
 
       <div className="fo-row">
+        <Field label="Starting">
+          <select className="fo-input" value={startOffset} onChange={(e) => setStartOffset(Number(e.target.value))}>
+            <option value={0}>Today</option>
+            <option value={1}>Tomorrow</option>
+          </select>
+        </Field>
         <Field label="Days to plan">
           <input className="fo-input fo-input--narrow" type="number" min={1} max={31} value={days} onChange={(e) => setDays(e.target.value)} />
         </Field>
@@ -247,7 +255,7 @@ export function RosterTab() {
           </div>
           {[...byDay.entries()].map(([day, list]) => (
             <div key={day} className="fo-table-wrap">
-              <h3>{dayLabel(day)}</h3>
+              <h3>{dayLabel(day, startOffset)}</h3>
               <table className="fo-table">
                 <thead>
                   <tr>

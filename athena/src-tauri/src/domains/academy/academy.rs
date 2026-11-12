@@ -150,7 +150,7 @@ fn find_lesson<'a>(root: &'a AcademyCurriculumRoot, lesson_id: &str) -> Option<&
 }
 
 fn library_scan_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(app)?;
     let config = load_config(&app_data_dir);
     let mut roots: Vec<PathBuf> = if let Some(state) = app.try_state::<AppState>() {
         let g = state.db.lock().map_err(|e| e.to_string())?;
@@ -176,24 +176,47 @@ fn library_scan_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     Ok(roots)
 }
 
-fn pick_zim(zims: &[DiscoveredZim], hint: &str) -> Option<PathBuf> {
-    if zims.is_empty() {
-        return None;
-    }
+/// Candidate ZIMs for a lesson, best first: name matches the hint, English before other languages
+/// (an Adyghe Wikipedia was picked for an English lesson), then everything else as a fallback.
+fn rank_zims(zims: &[DiscoveredZim], hint: &str) -> Vec<PathBuf> {
     let h = hint.trim().to_lowercase();
-    if h.is_empty() {
-        return Some(PathBuf::from(zims[0].path.clone()));
-    }
-    zims.iter()
-        .find(|z| z.name.to_lowercase().contains(&h) || z.path.to_lowercase().contains(&h))
-        .map(|z| PathBuf::from(z.path.clone()))
-        .or_else(|| Some(PathBuf::from(zims[0].path.clone())))
+    let score = |z: &DiscoveredZim| {
+        let name = z.name.to_lowercase();
+        let hit = !h.is_empty() && (name.contains(&h) || z.path.to_lowercase().contains(&h));
+        let english = name.contains("_en_");
+        (!hit, !english)
+    };
+    let mut v: Vec<&DiscoveredZim> = zims.iter().collect();
+    v.sort_by_key(|z| score(z));
+    v.into_iter().map(|z| PathBuf::from(z.path.clone())).collect()
 }
 
-fn urls_match(a: &str, b: &str) -> bool {
-    let a = a.trim().trim_start_matches('/').to_lowercase();
-    let b = b.trim().trim_start_matches('/').to_lowercase();
-    a == b
+/// Split a curriculum URL such as `A/Water_purification` into its article path. Older ZIMs keep
+/// articles in namespace `A`, current ones in `C`; the lookup tries both.
+fn lesson_article_path(url: &str) -> &str {
+    let u = url.trim().trim_start_matches('/');
+    match u.split_once('/') {
+        Some((ns, rest)) if ns.len() == 1 => rest,
+        _ => u,
+    }
+}
+
+fn read_lesson_from_zim(zim: &zim::Zim, path: &str) -> Result<Option<(String, String)>, String> {
+    for ns in [zim::Namespace::UserContent, zim::Namespace::Articles] {
+        let Some(entry) = zim.get_by_path(ns, path).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let entry = zim.resolve(entry).map_err(|e| e.to_string())?;
+        if !matches!(&entry.mime_type, zim::MimeType::Type(s) if s.contains("html")) {
+            continue;
+        }
+        let Some(content) = zim.entry_content(&entry).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let bytes = content.to_vec().map_err(|e| e.to_string())?;
+        return Ok(Some((entry.title.clone(), String::from_utf8_lossy(&bytes).into_owned())));
+    }
+    Ok(None)
 }
 
 /// Load HTML for a curriculum lesson from a local ZIM (same discovery roots as Library Kiwix scan).
@@ -204,48 +227,33 @@ pub fn fetch_lesson_html(app: &AppHandle, lesson_id: &str) -> Result<AcademyLess
 
     let roots = library_scan_roots(app)?;
     let zims = scan_kiwix_zim_files_multi(&roots).map_err(|e| format!("ZIM scan: {e}"))?;
-    let zim_path = pick_zim(&zims, &lesson.zim_name_hint).ok_or_else(|| {
-        "No .zim files found under the library / Kiwix folder. Add a ZIM to test lessons."
-            .to_string()
-    })?;
-
-    let zim =
-        zim::Zim::new(&zim_path).map_err(|e| format!("Open ZIM {}: {e}", zim_path.display()))?;
-
-    let target_url = lesson.article_url.trim();
-    for entry in zim.iterate_by_urls() {
-        if !urls_match(&entry.url, target_url) {
-            continue;
-        }
-        let is_html = matches!(&entry.mime_type, zim::MimeType::Type(s) if s.contains("html"));
-        if !is_html {
-            return Err(format!(
-                "Article \"{}\" is not HTML in this ZIM (mime {:?}).",
-                target_url, entry.mime_type
-            ));
-        }
-        let (cluster_idx, blob_idx) = match &entry.target {
-            Some(zim::Target::Cluster(c, b)) => (*c, *b),
-            _ => continue,
-        };
-        let cluster = zim
-            .get_cluster(cluster_idx)
-            .map_err(|e| format!("ZIM cluster read: {e}"))?;
-        let blob = cluster
-            .get_blob(blob_idx)
-            .map_err(|e| format!("ZIM blob read: {e}"))?;
-        let html = String::from_utf8_lossy(blob.as_ref()).into_owned();
-        let title = if entry.title.trim().is_empty() {
-            lesson.title.clone()
-        } else {
-            entry.title.clone()
-        };
-        return Ok(AcademyLessonHtml { title, html });
+    let candidates = rank_zims(&zims, &lesson.zim_name_hint);
+    if candidates.is_empty() {
+        return Err("No .zim files found under the library / Kiwix folder. Add a ZIM to use lessons.".to_string());
     }
-
+    let path = lesson_article_path(&lesson.article_url);
+    let mut last_err: Option<String> = None;
+    for zim_path in &candidates {
+        let zim = match crate::indexer::open_zim(zim_path) {
+            Ok(z) => z,
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        };
+        match read_lesson_from_zim(&zim, path) {
+            Ok(Some((title, html))) => {
+                let title = if title.trim().is_empty() { lesson.title.clone() } else { title };
+                return Ok(AcademyLessonHtml { title, html });
+            }
+            Ok(None) => {}
+            Err(e) => last_err = Some(e),
+        }
+    }
     Err(format!(
-        "Article URL \"{}\" was not found in {}. Adjust academy_curriculum.json to match your ZIM.",
-        target_url,
-        zim_path.display()
+        "The article \"{}\" for this lesson is not in any installed ZIM ({} checked{}). Install an English Wikipedia ZIM from Library, Download Network.",
+        path,
+        candidates.len(),
+        last_err.map(|e| format!("; last problem: {e}")).unwrap_or_default()
     ))
 }

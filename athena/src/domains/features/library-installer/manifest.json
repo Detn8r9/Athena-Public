@@ -5,7 +5,7 @@
     "description": "The largest comprehensive offline medical encyclopedia.",
     "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_medicine_maxi_2026-04.zim",
     "fileName": "library/medical/wikipedia_en_medicine_maxi_2026-04.zim",
-    "sizeBytes": 2200000000,
+    "sizeBytes": 2215520569,
     "defaultTiers": [
       "small",
       "medium",
@@ -19,7 +19,7 @@
     "description": "Open Source Ecology blueprints for the 50 machines that build a civilization.",
     "url": "https://archive.org/download/osewiki_en_all_2019-08/osewiki_en_all_2019-08.zim",
     "fileName": "library/engineering/osewiki_en_all_2019-08.zim",
-    "sizeBytes": 1800000000,
+    "sizeBytes": 2964551754,
     "defaultTiers": [
       "small",
       "medium",
@@ -28,12 +28,12 @@
     ]
   },
   {
-    "id": "survivor-library",
-    "name": "The Survivor Library",
-    "description": "Complete repository of 19th-century industrial and agricultural technology.",
-    "url": "https://archive.org/download/SurvivorLibrary/SurvivorLibrary.zip",
-    "fileName": "library/survival/SurvivorLibrary.zip",
-    "sizeBytes": 85000000000,
+    "id": "kiwix-appropedia",
+    "name": "Appropedia (practical self-reliance)",
+    "description": "Appropriate technology and sustainable living: water, energy, food, shelter and repair, written for low-resource settings.",
+    "url": "https://download.kiwix.org/zim/other/appropedia_en_all_maxi_2026-02.zim",
+    "fileName": "library/survival/appropedia_en_all_maxi_2026-02.zim",
+    "sizeBytes": 581641351,
     "defaultTiers": [
       "medium",
       "large",
@@ -46,7 +46,7 @@
     "description": "Offline teardown and repair manuals for thousands of electronics and vehicles.",
     "url": "https://download.kiwix.org/zim/ifixit/ifixit_en_all_2025-12.zim",
     "fileName": "library/repair/ifixit_en_all_2025-12.zim",
-    "sizeBytes": 3500000000,
+    "sizeBytes": 3570695757,
     "defaultTiers": [
       "medium",
       "large",
@@ -59,7 +59,7 @@
     "description": "Complete offline archive of Stack Overflow and technical exchanges.",
     "url": "https://download.kiwix.org/zim/stack_exchange/stackoverflow.com_en_all_2023-11.zim",
     "fileName": "library/engineering/stackoverflow.com_en_all_2023-11.zim",
-    "sizeBytes": 75000000000,
+    "sizeBytes": 80484655525,
     "defaultTiers": [
       "large",
       "xl"
@@ -71,7 +71,7 @@
     "description": "Over 70,000 free eBooks containing classic human literature and philosophy.",
     "url": "https://download.kiwix.org/zim/gutenberg/gutenberg_en_all_2025-11.zim",
     "fileName": "library/books/gutenberg_en_all_2025-11.zim",
-    "sizeBytes": 206000000000,
+    "sizeBytes": 221251590584,
     "defaultTiers": [
       "xl"
     ]
@@ -80,9 +80,9 @@
     "id": "kiwix-wikipedia-full-en",
     "name": "Wikipedia (Full English)",
     "description": "Complete text and images of the entirety of English Wikipedia.",
-    "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_maxi_2025-08.zim",
-    "fileName": "library/knowledge/wikipedia_en_all_maxi_2025-08.zim",
-    "sizeBytes": 111000000000,
+    "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_maxi_2026-08.zim",
+    "fileName": "library/knowledge/wikipedia_en_all_maxi_2026-08.zim",
+    "sizeBytes": 127418087648,
     "defaultTiers": [
       "xl"
     ]

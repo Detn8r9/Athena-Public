@@ -280,7 +280,7 @@ pub async fn transcribe_intercept_recording(
     path: String,
     whisper_base_url: String,
     app: tauri::AppHandle,
-    session: State<'_, AuthSession>,
+    session: crate::auth::CallerSession,
 ) -> Result<String, String> {
     super::require_member(&session)?;
     let _ = app.state::<AppState>();

@@ -184,10 +184,10 @@ pub fn findings(report: &NeedsReport) -> Vec<Finding> {
                 id: format!("needs.{}", r.label.to_lowercase()),
                 severity,
                 area: "supplies",
-                title: format!("{} {phrase}", r.label),
+                title: format!("All {} together {phrase}", r.label.to_lowercase()),
                 detail: format!(
-                    "{:.0} {} on hand; {} people need {:.0} {} a day.",
-                    r.total, r.unit, report.headcount, r.daily_need, r.unit
+                    "{:.0} {} on hand across {} counted item{}; {} people need {:.0} {} a day.",
+                    r.total, r.unit, r.item_count, if r.item_count == 1 { "" } else { "s" }, report.headcount, r.daily_need, r.unit
                 ),
                 go_to: Some("field_ops"),
             })
@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].id, "needs.water");
         assert_eq!(f[0].severity, Severity::Critical);
-        assert_eq!(f[0].title, "Water lasts 2 more days");
-        assert_eq!(f[0].detail, "40 litres on hand; 4 people need 15 litres a day.");
+        assert_eq!(f[0].title, "All water together lasts 2 more days");
+        assert_eq!(f[0].detail, "40 litres on hand across 1 counted item; 4 people need 15 litres a day.");
     }
 }

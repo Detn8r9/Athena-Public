@@ -52,10 +52,13 @@ pub fn note_document(note: &MemoryNote, recorded_at: i64) -> String {
     out
 }
 
+/// Folder inside the user library that holds group memory notes.
+pub const MEMORY_DIR_NAME: &str = "group-memory";
+
 fn note_path(app_data_dir: &Path, id: &str) -> PathBuf {
     crate::athena_paths::AthenaPaths::new(app_data_dir)
         .user_library_dir()
-        .join("group-memory")
+        .join(MEMORY_DIR_NAME)
         .join(format!("{id}.md"))
 }
 
@@ -111,7 +114,7 @@ pub async fn save_memory_note(
     id: Option<String>,
     mut note: MemoryNote,
     app: tauri::AppHandle,
-    session: State<'_, AuthSession>,
+    session: crate::auth::CallerSession,
 ) -> Result<Record<MemoryNote>, String> {
     let user = super::require_member(&session)?;
     note.title = note.title.trim().to_string();

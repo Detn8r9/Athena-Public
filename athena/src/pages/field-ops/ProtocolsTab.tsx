@@ -262,7 +262,7 @@ export function ProtocolsTab() {
       {protocol.doList.length > 0 ? (
         <details>
           <summary className="fo-small fo-muted" style={{ cursor: "pointer" }}>
-            Do
+            Full checklist (all steps on one page)
           </summary>
           <ul className="fo-small">
             {protocol.doList.map((d) => (

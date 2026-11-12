@@ -90,7 +90,7 @@ pub fn checkin_status(plan: &CheckinPlan, radio_last_heard: Option<i64>, now: i6
         CheckinState::Overdue
     } else if late_by_secs > 0 {
         CheckinState::Late
-    } else if due_at - now <= DUE_SOON_SECS {
+    } else if due_at - now <= DUE_SOON_SECS.min(interval / 4) {
         CheckinState::DueSoon
     } else {
         CheckinState::Ok
@@ -274,6 +274,14 @@ mod tests {
         assert_eq!(late.state, CheckinState::Late);
         assert_eq!(late.late_by_secs, 15 * MINUTE);
         assert_eq!(checkin_status(&p(13.0), None, NOW).state, CheckinState::Overdue);
+    }
+
+    #[test]
+    fn a_short_plan_is_on_time_right_after_a_check_in() {
+        // 15-minute plan: "due soon" is the last quarter of the interval, not the last 30 minutes.
+        let p = |ago| plan("Gate", 0.25, 0, Some(ago));
+        assert_eq!(checkin_status(&p(0.0), None, NOW).state, CheckinState::Ok);
+        assert_eq!(checkin_status(&p(0.2), None, NOW).state, CheckinState::DueSoon);
     }
 
     #[test]

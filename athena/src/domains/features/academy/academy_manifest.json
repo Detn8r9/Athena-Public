@@ -5,7 +5,7 @@
     "description": "Complete OpenStreetMap routing and building data for the continent.",
     "url": "https://download.geofabrik.de/north-america-latest.osm.pbf",
     "fileName": "maps/vector/north-america-latest.osm.pbf",
-    "sizeBytes": 13500000000,
+    "sizeBytes": 19554662507,
     "defaultTiers": [
       "small",
       "medium",
@@ -19,7 +19,7 @@
     "description": "The complete English text of Wikipedia for historical preservation.",
     "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_all_nopic_2026-03.zim",
     "fileName": "library/encyclopedia/wikipedia_en_all_nopic_2026-03.zim",
-    "sizeBytes": 55000000000,
+    "sizeBytes": 51927559581,
     "defaultTiers": [
       "medium",
       "large",
@@ -32,7 +32,7 @@
     "description": "Over 60,000 public domain literature and reference books.",
     "url": "https://download.kiwix.org/zim/gutenberg/gutenberg_en_all_2025-11.zim",
     "fileName": "library/literature/gutenberg_en_all_2025-11.zim",
-    "sizeBytes": 70000000000,
+    "sizeBytes": 221251590584,
     "defaultTiers": [
       "large",
       "xl"
@@ -47,17 +47,6 @@
     "sizeBytes": 288604160,
     "defaultTiers": [
       "large",
-      "xl"
-    ]
-  },
-  {
-    "id": "satellite-imagery-na",
-    "name": "High-Res Continental Satellite Imagery",
-    "description": "Offline MBTiles for North America down to zoom level 15.",
-    "url": "magnet:?xt=urn:btih:placeholder_for_mbtiles",
-    "fileName": "maps/satellite/na_satellite_z15.mbtiles",
-    "sizeBytes": 1500000000000,
-    "defaultTiers": [
       "xl"
     ]
   }

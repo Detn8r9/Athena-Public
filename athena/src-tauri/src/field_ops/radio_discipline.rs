@@ -187,6 +187,15 @@ pub fn delete_silence_window(
     view(&db)
 }
 
+/// Silence the radio for `minutes` from now (0 lifts a manual silence). For other features that
+/// need to quiet the station, such as hunker-down.
+pub fn silence_for_minutes(db: &crate::db::Database, minutes: u32) -> Result<(), String> {
+    let until = (minutes > 0).then(|| chrono::Utc::now().timestamp() + i64::from(minutes.min(7 * 24 * 60)) * 60);
+    store::put(db, OVERRIDE_KIND, Some(OVERRIDE_ID), &SilenceOverride { until })?;
+    refresh_from_db(db);
+    Ok(())
+}
+
 /// Silence the radio for `minutes` from now, or lift a manual silence with `None` or 0.
 #[tauri::command]
 pub fn set_radio_silence(
