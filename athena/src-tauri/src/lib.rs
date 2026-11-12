@@ -6629,6 +6629,7 @@ pub fn run() {
             field_ops::simple::list_field_records,
             field_ops::simple::save_field_record,
             field_ops::simple::delete_field_record,
+            field_ops::simple::save_binder_file,
             field_ops::radio_discipline::get_radio_discipline,
             field_ops::radio_discipline::save_silence_window,
             field_ops::radio_discipline::delete_silence_window,

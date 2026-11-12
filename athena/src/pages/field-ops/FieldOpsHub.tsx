@@ -9,6 +9,7 @@ const RadioPlanTab = lazy(() => import("./RadioPlanTab").then((m) => ({ default:
 const StationsTab = lazy(() => import("./StationsTab").then((m) => ({ default: m.StationsTab })));
 const SensorsTab = lazy(() => import("./SensorsTab").then((m) => ({ default: m.SensorsTab })));
 const RadioDataTab = lazy(() => import("./RadioDataTab").then((m) => ({ default: m.RadioDataTab })));
+const BinderTab = lazy(() => import("./BinderTab").then((m) => ({ default: m.BinderTab })));
 const CheckinsTab = lazy(() => import("./CheckinsTab").then((m) => ({ default: m.CheckinsTab })));
 const RosterTab = lazy(() => import("./RosterTab").then((m) => ({ default: m.RosterTab })));
 const SkillsTab = lazy(() => import("./SkillsTab").then((m) => ({ default: m.SkillsTab })));
@@ -33,6 +34,7 @@ const TABS = [
   { id: "radiodata", label: "Radio data & intercepts", Component: RadioDataTab },
   { id: "stations", label: "Other stations", Component: StationsTab },
   { id: "tools", label: "Field tools", Component: ToolsTab },
+  { id: "binder", label: "Paper binder", Component: BinderTab },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
