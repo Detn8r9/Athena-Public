@@ -79,3 +79,39 @@
 ## Order of work
 
 Phases run in the order above. Within a phase, features are built one at a time and committed separately, so any one can be reverted without touching the others. `docs/ACTION_ITEMS.md` gets a test step for each feature as it lands.
+
+---
+
+## Status as of 2026-11-11
+
+"Built" means the logic passes automated tests and the screen compiles and builds. No screen has been opened in the running app yet.
+
+| ID | Feature | Status | What is not done |
+|----|---------|--------|------------------|
+| S1 | Camp intranet | **Not built** | Found that AI replies are broadcast to every connected screen, so chat is not private or separable between users. Needs a phone to fix and test. |
+| S2 | Radio intelligence | Built (manual) | Intercept log, watch words, digest, notifications, transcription of a recording. Automatic SDR scanning is not built. |
+| S3 | Data over any radio | Built | Modem tested in simulation only. Sound-card play and listen have not been run on real audio hardware or a real radio. |
+| S4 | Guided protocols and patient charts | Built | No drug doses or interaction lookup (needs a vetted reference). Only the five existing checklists are converted. |
+| S5 | Runway | Built | Observed-use runway, needs-based water/food/fuel, power budget. No planting calendar (needs vetted data). |
+| S6 | Survive hardware loss | Partly built | Library-only answers with no model, and the paper binder. No cross-platform installer bundle, no defined low-power mode. |
+| S7 | Roll call and check-ins | Built | Check-in plans, overdue detection, check-in by radio message or `?checkin`. No one-button "all stations report" broadcast. |
+| S8 | Shared live picture | Built | Freshness by category, marker sharing over mesh, duplicate protection. Fading is not applied on the map screen itself. Radio path untested on hardware. |
+| S9 | Courier sync | Built | — |
+| S10 | Ask the base | Built | Untested on hardware. No protocol steps over radio (protocols live in the UI). |
+| S11 | Trust and authentication | Built | Shared-key signing and duress word. Untested between two real stations. Tags are not stripped from the plain mesh message list, only from routed commands. |
+| S12 | Emission discipline | Built | Silence windows and manual silence. No low-power or burst mode, no "what a listener learns" indicator. Untested on hardware. |
+| S13 | Federation | Built | Needs/offers board and people finder, carried by courier. No radio exchange. |
+| S14 | Group memory | Built | Typed notes only. Dictation is not wired in. |
+| S15 | Skills registry | Built | — |
+| S16 | Rebuild library tiers | **Not built** | Needs a vetted download list. |
+| S17 | Camera as expert's eyes | **Not built** | Needs a vision model to test against. |
+| S18 | Daily brief | Built | Written to the logbook after 06:00. The hour is fixed, not a setting. |
+| S19 | Sensor network | Built | Manual readings and Meshtastic telemetry. Telemetry path untested on hardware. |
+| S20 | Local weather | Built | Manual barometer readings. Pressure from sensors is not fed in automatically. |
+| S21 | Hazard modelling | Built | Downwind direction, arrival time, escape bearings. Not drawn on the map. No flood modelling. |
+| S22 | Navigation without GPS | Built | Dead reckoning, bearings, sun compass. No star fixes. |
+| S23 | Trusted time | Built | Manual time checks. No automatic GPS or radio time signal. |
+| S24 | Duty roster | Built | No radio reminders. |
+| S25 | Newcomer intake | Built | Does not create a personnel record or guest account automatically. |
+| S26 | Decision log and ledger | Built | — |
+| S27 | Education and morale | **Not built** | Needs content. |
