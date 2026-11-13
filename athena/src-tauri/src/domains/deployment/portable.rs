@@ -991,7 +991,9 @@ pub fn resolve_athena_root_from_portable_athena_marker(marker: &Path) -> Result<
             marker.display()
         )
     })?;
+    // Windows PowerShell 5 and Notepad can save a UTF-8 byte-order mark; it is not part of the path.
     let line = raw
+        .trim_start_matches('\u{feff}')
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
@@ -1112,7 +1114,8 @@ pub fn discover_portable_root_for_exe(exe: &Path) -> Result<Option<PathBuf>, Str
 }
 
 fn user_override_marker_path() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
+    // Windows sets USERPROFILE rather than HOME.
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
     Some(PathBuf::from(home).join(".athena").join(PORTABLE_ATHENA_MARKER_FILENAME))
 }
 
@@ -4229,6 +4232,18 @@ mod athena_data_portable_tests {
         let marker = dir.path().join(PORTABLE_ATHENA_MARKER_FILENAME);
         let abs = fs::canonicalize(&athena).unwrap();
         fs::write(&marker, format!("{}\n", abs.display())).unwrap();
+        let root = resolve_athena_root_from_portable_athena_marker(&marker).unwrap();
+        assert_eq!(root, abs);
+    }
+
+    #[test]
+    fn marker_with_utf8_byte_order_mark() {
+        let dir = tempdir().unwrap();
+        let athena = dir.path().join("AthenaData");
+        fs::create_dir_all(&athena).unwrap();
+        let marker = dir.path().join(PORTABLE_ATHENA_MARKER_FILENAME);
+        let abs = fs::canonicalize(&athena).unwrap();
+        fs::write(&marker, format!("\u{feff}{}\r\n", abs.display())).unwrap();
         let root = resolve_athena_root_from_portable_athena_marker(&marker).unwrap();
         assert_eq!(root, abs);
     }

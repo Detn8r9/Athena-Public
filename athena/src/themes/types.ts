@@ -1,5 +1,5 @@
 /** Built-in theme package ids (compat: `default` is the tactical survival guide). */
-export type BuiltInThemeId = "default" | "fallout" | "fieldguide" | "fruit";
+export type BuiltInThemeId = "default" | "fallout" | "fieldguide" | "fruit" | "modern";
 
 export type ThemePackageId = BuiltInThemeId | string;
 
@@ -54,6 +54,13 @@ export type ThemeChromeFlags = {
   /** Force fixed RGB triple for `--theme-bg-rgb` / accent (Fallout CRT). */
   forceThemeBgRgb?: string;
   forceThemeAccentRgb?: string;
+  /** Appearance-aware `--theme-bg-rgb` / `--theme-accent-rgb` (packages that own their surfaces). */
+  rgbByAppearance?: Partial<Record<ResolvedAppearance, { bg: string; accent: string }>>;
+  /**
+   * When true the package's CSS file defines its tokens (scoped by `data-athena-theme` +
+   * `data-appearance`), so they are not written inline and night vision can still override them.
+   */
+  cssOwnsTokens?: boolean;
 };
 
 /**

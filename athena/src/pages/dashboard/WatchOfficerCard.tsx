@@ -71,13 +71,13 @@ export function WatchOfficerCard({ onNavigate }: { onNavigate: (view: AppView) =
   return (
     <section
       className="glass-panel dashboard-widget-sidebar__block"
-      aria-label="Watch officer"
+      aria-label="What needs attention"
       style={{ padding: "0.7rem 0.85rem", display: "grid", gap: "0.55rem" }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", flexWrap: "wrap", alignItems: "baseline" }}>
         <div>
           <div style={{ color: "var(--primary)", fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", fontSize: "0.72rem" }}>
-            Watch officer
+            What needs attention <span className="text-muted" style={{ fontWeight: 600 }}>· Watch officer</span>
           </div>
           <div style={{ fontWeight: 700 }} aria-live="polite">
             {error ? "Watch brief unavailable" : brief ? brief.headline : "Checking the station…"}

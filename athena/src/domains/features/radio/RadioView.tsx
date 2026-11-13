@@ -707,7 +707,7 @@ export function RadioView({ onOpenMeshNetwork, meshRadioConnected }: RadioViewPr
             </p>
           )}
           <button type="button" className="glass-action-btn" onClick={onOpenMeshNetwork} style={{ justifySelf: "start" }}>
-            Open Communications Hub (mesh inbox)
+            Open Comms (mesh inbox)
           </button>
         </section>
       ) : null}

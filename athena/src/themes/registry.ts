@@ -9,12 +9,14 @@ import { tacticalPackage } from "./tactical";
 import { falloutPackage } from "./fallout";
 import { fieldguidePackage } from "./fieldguide";
 import { fruitPackage } from "./fruit";
+import { modernPackage } from "./modern";
 
 const BUILTIN: ThemePackage[] = [
   tacticalPackage,
   falloutPackage,
   fieldguidePackage,
   fruitPackage,
+  modernPackage,
 ];
 
 const BY_ID = new Map<string, ThemePackage>(BUILTIN.map((p) => [p.id, p]));
@@ -63,4 +65,4 @@ export function tokensForPackage(
   return pkg.tokens ?? null;
 }
 
-export { tacticalPackage, falloutPackage, fieldguidePackage, fruitPackage };
+export { tacticalPackage, falloutPackage, fieldguidePackage, fruitPackage, modernPackage };

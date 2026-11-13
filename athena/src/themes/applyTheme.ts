@@ -10,6 +10,7 @@ const KNOWN_BODY_CLASSES = [
   "theme-fallout",
   "theme-survival-manual",
   "theme-fruit",
+  "theme-modern",
 ] as const;
 
 const TOKEN_VAR_MAP: Record<keyof ThemeTokenMap, string> = {
@@ -66,6 +67,8 @@ export function applyTheme(opts: ApplyThemeOptions): {
   resolvedAppearance: ResolvedAppearance | null;
   isFruit: boolean;
   isFalloutChrome: boolean;
+  /** True when the package set `--theme-bg-rgb` / accent itself (callers skip palette RGB). */
+  ownsThemeRgb: boolean;
 } {
   const pkg = getThemePackage(opts.themeId);
   const isFruit = pkg?.id === "fruit";
@@ -91,7 +94,7 @@ export function applyTheme(opts: ApplyThemeOptions): {
   if (isSurvivalManual) {
     body.classList.add(survivalManualChromeBodyClass);
   }
-  if (isFruit && pkg?.chrome.bodyClass) {
+  if (pkg?.supportsAppearanceModes && pkg.chrome.bodyClass) {
     body.classList.add(pkg.chrome.bodyClass);
   }
 
@@ -124,8 +127,8 @@ export function applyTheme(opts: ApplyThemeOptions): {
     }
 
     const tokens =
-      isFruit && resolvedAppearance
-        ? tokensForPackage(pkg!, resolvedAppearance)
+      pkg?.supportsAppearanceModes && !pkg.chrome.cssOwnsTokens && resolvedAppearance
+        ? tokensForPackage(pkg, resolvedAppearance)
         : null;
     applyTokenMap(app, tokens, true);
   }
@@ -135,7 +138,15 @@ export function applyTheme(opts: ApplyThemeOptions): {
     root.style.setProperty("--theme-accent-rgb", FALLOUT_PACKAGE_ACCENT_RGB);
   }
 
-  return { resolvedAppearance, isFruit, isFalloutChrome };
+  let ownsThemeRgb = false;
+  const pkgRgb = resolvedAppearance ? pkg?.chrome.rgbByAppearance?.[resolvedAppearance] : undefined;
+  if (pkgRgb && !isFalloutChrome) {
+    root.style.setProperty("--theme-bg-rgb", pkgRgb.bg);
+    root.style.setProperty("--theme-accent-rgb", pkgRgb.accent);
+    ownsThemeRgb = true;
+  }
+
+  return { resolvedAppearance, isFruit, isFalloutChrome, ownsThemeRgb };
 }
 
 export function clearFruitTokenOverrides(appEl?: HTMLElement | null) {

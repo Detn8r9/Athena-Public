@@ -23,6 +23,7 @@ export {
   falloutPackage,
   fieldguidePackage,
   fruitPackage,
+  modernPackage,
 } from "./registry";
 
 export {
@@ -38,3 +39,4 @@ import "./tactical/tactical.css";
 import "./fallout/fallout.css";
 import "./fieldguide/fieldguide.css";
 import "./fruit/fruit.css";
+import "./modern/modern.css";

@@ -35,6 +35,12 @@ const PRESETS: &[ThemePreset] = &[
         personality_id: "fruit",
         description: "Calm, clear modern assistant — clean phrasing, no tactical jargon or terminal theater.",
     },
+    ThemePreset {
+        id: "modern",
+        name: "Modern",
+        personality_id: "default",
+        description: "Clean, elevated, high-contrast look with the calm survival-guide voice.",
+    },
 ];
 
 #[allow(dead_code)] // For future theme-picker commands / sync with the frontend
