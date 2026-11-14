@@ -34,6 +34,9 @@ use crate::portable;
 use crate::tile_pack;
 use crate::AppState;
 
+#[path = "handheld.rs"]
+mod handheld;
+
 /// Fan-out channel for SSE clients (JSON lines for `athena` events).
 static SSE_CLIENTS: OnceLock<Mutex<Vec<mpsc::UnboundedSender<String>>>> = OnceLock::new();
 
@@ -816,6 +819,7 @@ fn lan_bridge_status_inner(app: &AppHandle) -> LanBridgeStatus {
 
 pub fn stop_lan_bridge() {
     LAN_ENABLED.store(false, Ordering::SeqCst);
+    handheld::stop_advertising();
     if let Ok(mut g) = LAN_CANCEL.lock() {
         if let Some(c) = g.take() {
             c.cancel();
@@ -857,6 +861,7 @@ pub fn start_lan_bridge(app: AppHandle, port: Option<u16>) -> Result<LanBridgeSt
             }
         };
         eprintln!("[athena-lan] listening on http://0.0.0.0:{port} (dist={})", dist_dir.display());
+        handheld::advertise(port);
 
         let cors = CorsLayer::new()
             .allow_origin(Any)
@@ -873,6 +878,7 @@ pub fn start_lan_bridge(app: AppHandle, port: Option<u16>) -> Result<LanBridgeSt
             .route("/api/health", get(health))
             .route("/api/invoke", post(invoke_handler))
             .route("/api/events", get(events_handler))
+            .merge(handheld::router())
             .with_state(http_state.clone());
 
         let app_router = if dist_ready {
