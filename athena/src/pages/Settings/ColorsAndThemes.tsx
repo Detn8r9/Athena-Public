@@ -1,7 +1,8 @@
 import type React from "react";
 
 type ThemeOrCustom = string;
-type MasterThemeProfile = "tactical" | "fallout" | "night-vision";
+type MasterThemeProfile = "tactical" | "fallout" | "night-vision" | "modern";
+type AppearanceMode = "light" | "dark" | "auto";
 
 type PaletteOption = { id: string; label: string };
 
@@ -13,6 +14,8 @@ export function ColorsAndThemes({
   masterThemeProfile,
   paletteOptions,
   onChangeMasterThemeProfile,
+  appearance,
+  onChangeAppearance,
   handlePresetChange,
   handleCustomColorChange,
 }: {
@@ -23,6 +26,9 @@ export function ColorsAndThemes({
   masterThemeProfile: MasterThemeProfile;
   paletteOptions: PaletteOption[];
   onChangeMasterThemeProfile: (next: MasterThemeProfile) => void;
+  /** Light / Dark / Auto for themes that own their surfaces (Modern). */
+  appearance?: AppearanceMode;
+  onChangeAppearance?: (next: AppearanceMode) => void;
   handlePresetChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   handleCustomColorChange: (which: "bg" | "primary" | "text", value: string) => void;
 }) {
@@ -39,11 +45,39 @@ export function ColorsAndThemes({
           aria-label="Master theme profile"
         >
           <option value="tactical">Tactical (Default)</option>
+          <option value="modern">Modern</option>
           <option value="fallout">Fallout</option>
           <option value="night-vision">Night Vision</option>
         </select>
       </div>
 
+      {masterThemeProfile === "modern" ? (
+        <>
+          <p className="text-muted small" style={{ marginTop: "0.5rem" }}>
+            Clean, high-contrast look with large touch targets. Uses its own colors, so the palette is not used.
+          </p>
+          <div className="color-preset-wrap" style={{ marginTop: "0.75rem" }}>
+            <label htmlFor="modern-appearance-select">Appearance</label>
+            <select
+              id="modern-appearance-select"
+              className="theme-select"
+              value={appearance ?? "auto"}
+              onChange={(e) => onChangeAppearance?.(e.target.value as AppearanceMode)}
+              aria-label="Light or dark appearance"
+            >
+              <option value="light">Light (bright sun)</option>
+              <option value="dark">Dark (night)</option>
+              <option value="auto">Auto (time of day)</option>
+            </select>
+          </div>
+          <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
+            Auto follows local sunrise and sunset. Night vision (red) still takes over when it is on.
+          </p>
+        </>
+      ) : null}
+
+      {masterThemeProfile === "modern" ? null : (
+      <>
       <h3 style={{ marginTop: "1rem" }}>Palette preset</h3>
 
       <div className="colors-editor">
@@ -95,6 +129,8 @@ export function ColorsAndThemes({
           })}
         </div>
       </div>
+      </>
+      )}
     </section>
   );
 }

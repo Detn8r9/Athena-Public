@@ -94,6 +94,8 @@ type Props = {
   onChromeTitleClick?: () => void;
   closeAria: string;
   onClose: () => void;
+  /** Signed-in rank: search hides links to screens this rank cannot open. */
+  rank?: number;
   children: ReactNode;
   detailScrollRef?: RefObject<HTMLDivElement | null>;
 };
@@ -119,15 +121,17 @@ export function SettingsShell({
   onClose,
   children,
   detailScrollRef,
+  rank = Number.POSITIVE_INFINITY,
 }: Props) {
   const searching = query.trim().length > 0;
   const results = useMemo(() => {
     if (!searching) return [];
     return matchSettingsSearch(query).filter((e) => {
       if (e.hostOnly === "usbExport" && !canUseUsbExport) return false;
+      if ((e.minRank ?? 0) > rank) return false;
       return true;
     });
-  }, [query, searching, canUseUsbExport]);
+  }, [query, searching, canUseUsbExport, rank]);
 
   const sidebarByGroup = useMemo(() => {
     const items = SETTINGS_SIDEBAR_PANELS.filter((p) => {
@@ -196,6 +200,7 @@ export function SettingsShell({
                     <span className="settings-search-result__path">
                       {entry.pathLabel}
                       {entry.title !== entry.pathLabel ? ` › ${entry.title}` : ""}
+                      {entry.goTo ? " (opens that screen)" : ""}
                     </span>
                   </button>
                 ))

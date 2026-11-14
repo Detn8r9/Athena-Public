@@ -46,7 +46,8 @@
   background: color-mix(in srgb, var(--surface-solid) 80%, transparent);
 }
 
-.fo-tab[aria-selected="true"] {
+.fo-tab[aria-selected="true"],
+.fo-tab[aria-pressed="true"] {
   color: var(--text);
   border-color: color-mix(in srgb, var(--primary) 45%, transparent);
   background: color-mix(in srgb, var(--surface-solid) 82%, var(--primary) 14%);
@@ -245,4 +246,22 @@
   .fo-hub {
     padding: 0.75rem 0.75rem 1.5rem;
   }
+}
+
+/* While a change is being saved: block second clicks and show that work is under way. */
+.fo-busy button,
+.fo-busy input,
+.fo-busy select,
+.fo-busy textarea {
+  pointer-events: none;
+  opacity: 0.6;
+}
+.fo-busy-note {
+  min-height: 0;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted, inherit);
+}
+.fo-busy-note:empty {
+  display: none;
 }

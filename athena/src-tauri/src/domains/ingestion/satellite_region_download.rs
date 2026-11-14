@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::f64::consts::PI;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 use crate::config::load_config;
 use crate::map_manager_download;
@@ -14,8 +14,71 @@ pub const SATELLITE_REGION_DOWNLOAD_ERROR_EVENT: &str = "satellite_region_downlo
 
 const SATELLITE_TILESET_URL_TEMPLATE: &str =
     "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key={key}";
+/// USGS The National Map orthoimagery (USDA NAIP and others). Public domain, no key, United
+/// States only, cached to zoom 16 (about 2 m per pixel).
+const USGS_IMAGERY_URL_TEMPLATE: &str =
+    "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}";
+const USGS_MAX_ZOOM: u8 = 16;
+
+/// Where imagery comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImagerySource {
+    /// MapTiler satellite (worldwide; needs the user's key).
+    MapTiler,
+    /// USGS public imagery (US only; no key).
+    Usgs,
+}
+
+/// Rough box around the 50 states, Puerto Rico and the US Virgin Islands.
+pub fn within_us_coverage(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> bool {
+    let boxes: [(f64, f64, f64, f64); 4] = [
+        (-125.0, 24.0, -66.5, 49.5),  // lower 48
+        (-180.0, 51.0, -129.0, 71.6), // Alaska
+        (-161.0, 18.5, -154.5, 22.5), // Hawaii
+        (-68.0, 17.5, -64.5, 18.6),   // Puerto Rico and USVI
+    ];
+    boxes.iter().any(|(a, b, c, d)| min_lon >= *a && max_lon <= *c && min_lat >= *b && max_lat <= *d)
+}
+
+/// The source to use: the one asked for, else MapTiler when a key is set, else USGS for US areas.
+pub fn pick_imagery_source(requested: Option<&str>, has_key: bool, in_us: bool) -> Result<ImagerySource, String> {
+    match requested.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("usgs") => {
+            if in_us {
+                Ok(ImagerySource::Usgs)
+            } else {
+                Err("USGS imagery covers the United States only. Use MapTiler for this area.".to_string())
+            }
+        }
+        Some("maptiler") => {
+            if has_key {
+                Ok(ImagerySource::MapTiler)
+            } else {
+                Err("Satellite API key is not configured. Paste your key in Settings > API keys > MapTiler satellite imagery key, or set ATHENA_SATELLITE_API_KEY.".to_string())
+            }
+        }
+        Some("") | None => {
+            if in_us {
+                Ok(ImagerySource::Usgs)
+            } else if has_key {
+                Ok(ImagerySource::MapTiler)
+            } else {
+                Err("This area is outside USGS coverage. Add a MapTiler key in Settings > API keys to download imagery here.".to_string())
+            }
+        }
+        Some(other) => Err(format!("Unknown imagery source {other}.")),
+    }
+}
+
+fn tile_url(source: ImagerySource, z: u8, x: u32, y: u32, key: &str) -> String {
+    let t = match source {
+        ImagerySource::MapTiler => SATELLITE_TILESET_URL_TEMPLATE,
+        ImagerySource::Usgs => USGS_IMAGERY_URL_TEMPLATE,
+    };
+    t.replace("{z}", &z.to_string()).replace("{x}", &x.to_string()).replace("{y}", &y.to_string()).replace("{key}", key)
+}
 const SATELLITE_TILE_TIMEOUT_SECS: u64 = 30;
-const SATELLITE_MAX_TILES_PER_JOB: usize = 30_000;
+pub(crate) const SATELLITE_MAX_TILES_PER_JOB: usize = 30_000;
 const EARTH_MEAN_RADIUS_MILES: f64 = 3958.7613;
 const MAX_EXTRACT_HALF_SPAN_MILES: f64 = 100.0;
 
@@ -42,7 +105,7 @@ pub struct SatelliteRegionDownloadErrorPayload {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct TileCoord {
+pub(crate) struct TileCoord {
     z: u8,
     x: u32,
     y: u32,
@@ -114,7 +177,7 @@ fn lat_to_tile_y(lat_deg: f64, z: u8) -> u32 {
     y.max(0.0).min(n - 1.0) as u32
 }
 
-fn enumerate_tiles(
+pub(crate) fn enumerate_tiles(
     min_lon: f64,
     min_lat: f64,
     max_lon: f64,
@@ -211,11 +274,12 @@ pub async fn start_satellite_region_download(
     min_zoom: Option<u8>,
     max_zoom: Option<u8>,
     location_label: Option<String>,
+    source: Option<String>,
 ) -> Result<String, String> {
     validate_bounding_box(min_lon, min_lat, max_lon, max_lat)?;
     validate_bounding_box_extent_miles(min_lon, min_lat, max_lon, max_lat)?;
     let min_z = min_zoom.unwrap_or(10);
-    let max_z = max_zoom.unwrap_or(15);
+    let mut max_z = max_zoom.unwrap_or(15);
     if min_z > max_z {
         return Err("Minimum zoom must be less than or equal to maximum zoom.".to_string());
     }
@@ -223,18 +287,24 @@ pub async fn start_satellite_region_download(
         return Err("Maximum zoom above 18 is not allowed for this workflow.".to_string());
     }
 
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let api_key = config
         .satellite_api_key
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .or_else(|| std::env::var("ATHENA_SATELLITE_API_KEY").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
-        .ok_or_else(|| {
-            "Satellite API key is not configured. Paste your key in Settings > API keys > MapTiler satellite imagery key, or set ATHENA_SATELLITE_API_KEY.".to_string()
-        })?;
-    if api_key.trim().is_empty() {
-        return Err("Satellite API key is empty. Add it in Settings > Location.".to_string());
+        .unwrap_or_default();
+    let imagery = pick_imagery_source(
+        source.as_deref(),
+        !api_key.is_empty(),
+        within_us_coverage(min_lon, min_lat, max_lon, max_lat),
+    )?;
+    if imagery == ImagerySource::Usgs {
+        max_z = max_z.min(USGS_MAX_ZOOM);
+        if min_z > max_z {
+            return Err(format!("USGS imagery goes up to zoom {USGS_MAX_ZOOM}."));
+        }
     }
 
     let tiles = enumerate_tiles(min_lon, min_lat, max_lon, max_lat, min_z, max_z);
@@ -262,7 +332,11 @@ pub async fn start_satellite_region_download(
     let _ = std::fs::remove_file(&part_path);
     let bounds = format!("{min_lon:.6},{min_lat:.6},{max_lon:.6},{max_lat:.6}");
     let display_name = format!(
-        "Satellite region ({})",
+        "{} ({})",
+        match imagery {
+            ImagerySource::Usgs => "USGS aerial imagery",
+            ImagerySource::MapTiler => "Satellite region",
+        },
         location_label.unwrap_or_else(|| "saved location".to_string())
     );
     let job_id = format!(
@@ -330,11 +404,7 @@ pub async fn start_satellite_region_download(
                 .map_err(|e| e.to_string())?;
 
             for tile in tiles {
-                let url = SATELLITE_TILESET_URL_TEMPLATE
-                    .replace("{z}", &tile.z.to_string())
-                    .replace("{x}", &tile.x.to_string())
-                    .replace("{y}", &tile.y.to_string())
-                    .replace("{key}", &api_key);
+                let url = tile_url(imagery, tile.z, tile.x, tile.y, &api_key);
                 let response = client
                     .get(url)
                     .send()
@@ -441,4 +511,30 @@ pub async fn start_satellite_region_download(
     });
 
     Ok(job_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn us_areas_use_free_usgs_imagery_by_default() {
+        let rapid_city = within_us_coverage(-103.5, 43.9, -103.0, 44.3);
+        assert!(rapid_city);
+        assert!(!within_us_coverage(2.0, 48.5, 2.6, 49.0), "Paris");
+        assert_eq!(pick_imagery_source(None, false, true), Ok(ImagerySource::Usgs));
+        assert_eq!(pick_imagery_source(None, true, true), Ok(ImagerySource::Usgs));
+        assert_eq!(pick_imagery_source(None, true, false), Ok(ImagerySource::MapTiler));
+        assert!(pick_imagery_source(None, false, false).is_err());
+        assert_eq!(pick_imagery_source(Some("maptiler"), true, true), Ok(ImagerySource::MapTiler));
+        assert!(pick_imagery_source(Some("usgs"), false, false).is_err());
+    }
+
+    #[test]
+    fn usgs_tiles_use_row_then_column() {
+        assert_eq!(
+            tile_url(ImagerySource::Usgs, 16, 13970, 23500, ""),
+            "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/16/23500/13970"
+        );
+    }
 }

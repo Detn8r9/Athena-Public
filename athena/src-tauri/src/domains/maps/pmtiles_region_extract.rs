@@ -3,7 +3,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
@@ -13,9 +13,37 @@ pub const PMTILES_REGION_EXTRACT_PROGRESS_EVENT: &str = "pmtiles_region_extract_
 pub const PMTILES_REGION_EXTRACT_COMPLETE_EVENT: &str = "pmtiles_region_extract_complete";
 pub const PMTILES_REGION_EXTRACT_ERROR_EVENT: &str = "pmtiles_region_extract_error";
 
-/// Remote clustered PMTiles archive passed to `pmtiles extract` (Source Cooperative / Protomaps OpenStreetMap v3).
+/// Older fixed Protomaps archive (2024, v3 layer schema). Used only if no recent daily build answers.
 const PROTOMAPS_SOURCE_URL: &str =
     "https://data.source.coop/protomaps/openstreetmap/tiles/v3.pmtiles";
+/// Protomaps daily planet builds (v4 layer schema, which ATHENA's street style draws). Each is
+/// kept for about a week.
+const PROTOMAPS_DAILY_BUILD_BASE: &str = "https://build.protomaps.com";
+
+/// Daily build file names to try, newest first, starting the day before `today`.
+pub fn daily_build_candidates(today: chrono::NaiveDate, days: i64) -> Vec<String> {
+    (1..=days)
+        .map(|d| format!("{PROTOMAPS_DAILY_BUILD_BASE}/{}.pmtiles", (today - chrono::Duration::days(d)).format("%Y%m%d")))
+        .collect()
+}
+
+/// The newest daily build that answers, or the older fixed archive.
+fn resolve_protomaps_source() -> String {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("ATHENA-station")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return PROTOMAPS_SOURCE_URL.to_string(),
+    };
+    for url in daily_build_candidates(chrono::Utc::now().date_naive(), 8) {
+        if client.head(&url).send().map(|r| r.status().is_success()).unwrap_or(false) {
+            return url;
+        }
+    }
+    PROTOMAPS_SOURCE_URL.to_string()
+}
 
 /// WGS84 mean Earth radius in statute miles (aligned with `geographicBoundingBox.ts`).
 const EARTH_MEAN_RADIUS_MILES: f64 = 3958.7613;
@@ -139,11 +167,14 @@ pub async fn extract_pmtiles_region(
     min_lat: f64,
     max_lon: f64,
     max_lat: f64,
+    max_zoom: Option<u8>,
 ) -> Result<String, String> {
     validate_bounding_box(min_lon, min_lat, max_lon, max_lat)?;
     validate_bounding_box_extent_miles(min_lon, min_lat, max_lon, max_lat)?;
+    let max_zoom = max_zoom.unwrap_or(15).clamp(6, 15);
+    let source_url = tauri::async_runtime::spawn_blocking(resolve_protomaps_source).await.map_err(|e| e.to_string())?;
 
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let job_id = make_job_id();
     let output_path = reserve_output_path(&app_data_dir, &job_id)?;
 
@@ -153,6 +184,7 @@ pub async fn extract_pmtiles_region(
         .to_string();
 
     let bbox_argument = format!("--bbox={min_lon:.8},{min_lat:.8},{max_lon:.8},{max_lat:.8}");
+    let maxzoom_argument = format!("--maxzoom={max_zoom}");
 
     let app_handle = app.clone();
     let job_id_task = job_id.clone();
@@ -162,9 +194,10 @@ pub async fn extract_pmtiles_region(
         let command = match app_handle.shell().sidecar("pmtiles") {
             Ok(sidecar_command) => sidecar_command.args([
                 "extract",
-                PROTOMAPS_SOURCE_URL,
+                source_url.as_str(),
                 output_path_string.as_str(),
                 bbox_argument.as_str(),
+                maxzoom_argument.as_str(),
             ]),
             Err(error) => {
                 let _ = std::fs::remove_file(&output_path_for_cleanup);
@@ -267,4 +300,18 @@ pub async fn extract_pmtiles_region(
     });
 
     Ok(job_id)
+}
+
+#[cfg(test)]
+mod daily_build_tests {
+    use super::*;
+
+    #[test]
+    fn daily_builds_are_tried_newest_first_from_yesterday() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        assert_eq!(
+            daily_build_candidates(today, 2),
+            vec!["https://build.protomaps.com/20261031.pmtiles", "https://build.protomaps.com/20261030.pmtiles"]
+        );
+    }
 }

@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { ATHENA_ACRONYM_PARTS, ATHENA_FULL_NAME } from "../../shared/branding";
 import { useLexicon } from "../../shared/lexicon";
+import type { GoToTarget } from "../../shared/navigation/goTo";
+import { placesForRank, PLACES } from "../../shared/navigation/places";
 
 export type HelpSectionId =
+  | "where"
   | "overview"
   | "login_security"
   | "home"
@@ -40,15 +43,25 @@ function sectionMatches(query: string, s: SectionDef): boolean {
 interface HelpModalProps {
   open: boolean;
   onClose: () => void;
+  /** Signed-in rank (omit on the lock screen: the list shows everything, without Open buttons). */
+  rank?: number;
+  /** Opens a place; the app closes Help first. */
+  onGo?: (target: GoToTarget) => void;
 }
 
-export function HelpModal({ open, onClose }: HelpModalProps) {
+export function HelpModal({ open, onClose, rank, onGo }: HelpModalProps) {
   const lx = useLexicon();
-  const [active, setActive] = useState<HelpSectionId>("overview");
+  const [active, setActive] = useState<HelpSectionId>("where");
   const [search, setSearch] = useState("");
 
   const sections = useMemo<SectionDef[]>(
     () => [
+      {
+        id: "where",
+        label: "Where is everything?",
+        blurb: "Every screen, tab and setting, and how to get there.",
+        keywords: ["find", "where", "navigation", "vault", "settings", "map", "lost"],
+      },
       {
         id: "overview",
         label: lx.helpTopicOverviewLabel,
@@ -174,7 +187,7 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
 
   useEffect(() => {
     if (open) {
-      setActive("overview");
+      setActive("where");
       setSearch("");
     }
   }, [open]);
@@ -250,6 +263,7 @@ export function HelpModal({ open, onClose }: HelpModalProps) {
               <p className="help-modal-empty-detail text-muted">{lx.helpEmptyDetail}</p>
             ) : (
               <>
+                {active === "where" && <WherePanel rank={rank} onGo={onGo} />}
                 {active === "overview" && <OverviewPanel />}
                 {active === "login_security" && <LoginSecurityPanel />}
                 {active === "home" && <HomePanel />}
@@ -1081,5 +1095,48 @@ function AskAthenaPanel() {
         ) : null}
       </div>
     </>
+  );
+}
+
+/** "Where is everything?": the shared places list, grouped by screen, with Open buttons. */
+function WherePanel({ rank, onGo }: { rank?: number; onGo?: (target: GoToTarget) => void }) {
+  const places = rank == null ? PLACES : placesForRank(rank);
+  const byScreen = new Map<string, typeof places>();
+  for (const p of places) {
+    const screen = p.where.split("›")[0]!.trim();
+    byScreen.set(screen, [...(byScreen.get(screen) ?? []), p]);
+  }
+  return (
+    <div>
+      <h3 className="help-detail-title">Where is everything?</h3>
+      <p className="text-muted">
+        The top bar has buttons for the main screens; Home lists them all. To jump anywhere, use <strong>Find anything</strong> (the
+        magnifier in the top bar, or Ctrl/⌘ K) and type what you want: a screen, a setting, a person or an item. Settings also has{" "}
+        <strong>Settings on other screens</strong>, which lists every setting that lives on its own screen.
+      </p>
+      {Array.from(byScreen.entries()).map(([screen, items]) => (
+        <section key={screen} style={{ marginTop: "0.9rem" }}>
+          <h4>{screen}</h4>
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.35rem" }}>
+            {items.map((p) => (
+              <li key={p.id} style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 16rem", minWidth: 0 }}>
+                  <strong>{p.title}</strong>{" "}
+                  <span className="text-muted small">
+                    {p.where === p.title ? "" : `${p.where} — `}
+                    {p.detail}
+                  </span>
+                </div>
+                {onGo ? (
+                  <button type="button" className="secondary" onClick={() => onGo(p.target)} aria-label={`Open ${p.title}`}>
+                    Open
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
   );
 }

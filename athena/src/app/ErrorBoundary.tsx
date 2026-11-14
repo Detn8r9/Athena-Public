@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { athenaInvoke } from "../shared/ipc/athenaIpc";
+import { isStaleBuildError } from "./staleBuild";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -36,10 +37,28 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   private handleReload = () => {
+    // A screen file from an older build: only a page reload fetches the station's new one.
+    if (isStaleBuildError(this.state.error)) {
+      window.location.reload();
+      return;
+    }
     this.setState({ hasError: false, error: null });
   };
 
   render() {
+    if (this.state.hasError && isStaleBuildError(this.state.error)) {
+      return (
+        <div className="error-boundary-fallback" role="alert">
+          <p className="error-boundary-title">ATHENA was updated</p>
+          <p className="error-boundary-detail">
+            The station is running a newer version than this page. Reload to get it. Nothing was lost.
+          </p>
+          <button type="button" className="error-boundary-reload" onClick={this.handleReload}>
+            Reload
+          </button>
+        </div>
+      );
+    }
     if (this.state.hasError) {
       return (
         <div className="error-boundary-fallback" role="alert">

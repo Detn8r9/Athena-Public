@@ -30,10 +30,8 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Semaphore;
 use tokio::time::{interval, MissedTickBehavior};
 
-use crate::mesh_ai::{
-    should_run_mesh_ai, MESHTASTIC_BROADCAST_TO,
-    PRIMARY_MESH_CHANNEL,
-};
+use crate::mesh_ai::{MESHTASTIC_BROADCAST_TO, PRIMARY_MESH_CHANNEL};
+use crate::mesh_policy;
 use crate::mesh_router::{
     emit_mesh_emergency, parse_sos_clear_tail, send_dm_chunks, MeshDmSink,
     MeshNetworkChatUpdatedPayload, MeshOperatorQueuePayload, MESH_NETWORK_CHAT_UPDATED,
@@ -148,6 +146,10 @@ pub(crate) enum MeshCommand {
         destination: Option<u32>,
         reply: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
+    /// Create (or reuse) the private ATHENA channel on the radio. Replies with its index.
+    SetupAthenaChannel {
+        reply: tokio::sync::oneshot::Sender<Result<u32, String>>,
+    },
 }
 
 /// Enqueue outgoing mesh traffic from Tauri commands; the dedicated Meshtastic thread performs I/O.
@@ -194,6 +196,14 @@ impl MeshRadioControl {
             .map_err(|_| "Meshtastic send was cancelled.".to_string())?
     }
 
+    pub async fn setup_athena_channel(&self) -> Result<u32, String> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .try_send(MeshCommand::SetupAthenaChannel { reply })
+            .map_err(|_| "The radio link is busy or not running; try again.".to_string())?;
+        rx.await.map_err(|_| "Channel setup was cancelled.".to_string())?
+    }
+
     pub(crate) fn from_sender(cmd_tx: Sender<MeshCommand>) -> Self {
         Self { cmd_tx }
     }
@@ -204,10 +214,13 @@ fn fail_mesh_command(cmd: MeshCommand, err: String) {
         MeshCommand::SendText { reply, .. } => {
             let _ = reply.send(Err(err));
         }
+        MeshCommand::SetupAthenaChannel { reply } => {
+            let _ = reply.send(Err(err));
+        }
     }
 }
 
-/// After another device sends `ATHLB1:{"t":"req"}`, push recent local rows on Primary (paced for LoRa).
+/// After another device sends `ATHLB1:{"t":"req"}`, push recent local rows on the ATHENA channel (paced for LoRa).
 async fn respond_logbook_sync_request(
     db: Arc<Mutex<Database>>,
     cmd_tx: Sender<MeshCommand>,
@@ -216,6 +229,8 @@ async fn respond_logbook_sync_request(
     if my_node == 0 {
         return;
     }
+    // Station records go out only on the private ATHENA channel.
+    let Ok(sync_ch) = mesh_policy::sync_channel() else { return };
     let entries = match db
         .lock()
         .map_err(|e| e.to_string())
@@ -237,7 +252,7 @@ async fn respond_logbook_sync_request(
         match cmd_tx.try_send(MeshCommand::SendText {
             text: packet,
             want_ack: false,
-            channel: PRIMARY_MESH_CHANNEL,
+            channel: sync_ch,
             destination: None,
             reply: reply_tx,
         }) {
@@ -256,7 +271,7 @@ async fn respond_logbook_sync_request(
     }
 }
 
-/// After another device sends `ATHCAL1:{"t":"req"}`, push recent local calendar rows on Primary.
+/// After another device sends `ATHCAL1:{"t":"req"}`, push recent local calendar rows on the ATHENA channel.
 async fn respond_calendar_sync_request(
     db: Arc<Mutex<Database>>,
     cmd_tx: Sender<MeshCommand>,
@@ -265,6 +280,8 @@ async fn respond_calendar_sync_request(
     if my_node == 0 {
         return;
     }
+    // Station records go out only on the private ATHENA channel.
+    let Ok(sync_ch) = mesh_policy::sync_channel() else { return };
     let rows = match db
         .lock()
         .map_err(|e| e.to_string())
@@ -286,7 +303,7 @@ async fn respond_calendar_sync_request(
         match cmd_tx.try_send(MeshCommand::SendText {
             text: packet,
             want_ack: false,
-            channel: PRIMARY_MESH_CHANNEL,
+            channel: sync_ch,
             destination: None,
             reply: reply_tx,
         }) {
@@ -636,6 +653,13 @@ fn ingest_mesh_telemetry_from_packet(
     let Some(variant) = telemetry.variant.as_ref() else {
         return;
     };
+    if mesh_packet.from == MESH_MY_NODE_NUM.load(Ordering::Relaxed) {
+        if let protobufs::telemetry::Variant::DeviceMetrics(m) = variant {
+            if let Some(u) = m.channel_utilization {
+                mesh_policy::set_channel_utilization(u);
+            }
+        }
+    }
     let metrics = crate::field_ops::sensors::metrics_from_telemetry(variant);
     if metrics.is_empty() {
         return;
@@ -703,6 +727,93 @@ fn ingest_mesh_position_from_packet(
     });
 }
 
+/// Whether a packet was encrypted to this radio's public key, and the sender's key.
+fn packet_security(from_radio: &protobufs::FromRadio) -> (bool, Vec<u8>) {
+    match from_radio.payload_variant.as_ref() {
+        Some(protobufs::from_radio::PayloadVariant::Packet(p)) => (p.pki_encrypted, p.public_key.clone()),
+        _ => (false, Vec::new()),
+    }
+}
+
+/// Channels on the connected radio, as it reported them while connecting.
+fn radio_channels() -> &'static Mutex<HashMap<u32, protobufs::Channel>> {
+    static C: OnceLock<Mutex<HashMap<u32, protobufs::Channel>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn record_radio_channel(from_radio: &protobufs::FromRadio) {
+    if let Some(protobufs::from_radio::PayloadVariant::Channel(ch)) = from_radio.payload_variant.as_ref() {
+        if let (Ok(idx), Ok(mut g)) = (u32::try_from(ch.index), radio_channels().lock()) {
+            g.insert(idx, ch.clone());
+        }
+    }
+}
+
+const ATHENA_CHANNEL_NAME: &str = "ATHENA";
+
+/// What the operator sees about the private channel. The join link carries the channel key, so
+/// it is shown only to people with clearance 4 or higher.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AthenaChannelStatus {
+    pub radio_connected: bool,
+    pub configured_index: Option<u32>,
+    /// The radio has an enabled channel at that index named ATHENA.
+    pub on_radio: bool,
+    pub join_url: Option<String>,
+    pub channel_utilization: Option<f32>,
+}
+
+pub fn athena_channel_status(include_join_url: bool) -> AthenaChannelStatus {
+    let idx = mesh_policy::athena_channel();
+    let ch = idx.and_then(|i| radio_channels().lock().ok().and_then(|g| g.get(&i).cloned()));
+    let on_radio = ch.as_ref().is_some_and(|c| {
+        c.role != protobufs::channel::Role::Disabled as i32
+            && c.settings.as_ref().is_some_and(|s| s.name == ATHENA_CHANNEL_NAME && s.psk.len() == 32)
+    });
+    let join_url = if include_join_url && on_radio {
+        ch.and_then(|c| c.settings).map(|settings| join_url_for(settings))
+    } else {
+        None
+    };
+    AthenaChannelStatus {
+        radio_connected: mesh_radio_is_connected(),
+        configured_index: idx,
+        on_radio,
+        join_url,
+        channel_utilization: mesh_policy::channel_utilization(),
+    }
+}
+
+/// A Meshtastic "add channel" link, which phones scan to join the channel without changing
+/// their other channels.
+fn join_url_for(settings: protobufs::ChannelSettings) -> String {
+    use base64::Engine;
+    let set = protobufs::ChannelSet { settings: vec![settings], lora_config: None };
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(set.encode_to_vec());
+    format!("https://meshtastic.org/e/?add=true#{b64}")
+}
+
+/// Pick where the ATHENA channel goes: an existing ATHENA channel, else the first free slot.
+fn athena_channel_slot(channels: &HashMap<u32, protobufs::Channel>) -> Result<(u32, Option<protobufs::ChannelSettings>), String> {
+    for i in 1..=7u32 {
+        if let Some(c) = channels.get(&i) {
+            if c.role != protobufs::channel::Role::Disabled as i32 {
+                if let Some(s) = c.settings.as_ref().filter(|s| s.name == ATHENA_CHANNEL_NAME && s.psk.len() == 32) {
+                    return Ok((i, Some(s.clone())));
+                }
+            }
+        }
+    }
+    for i in 1..=7u32 {
+        let free = channels.get(&i).is_none_or(|c| c.role == protobufs::channel::Role::Disabled as i32);
+        if free {
+            return Ok((i, None));
+        }
+    }
+    Err("All 7 secondary channels on the radio are in use. Remove one in the Meshtastic app first.".to_string())
+}
+
 fn try_decode_mesh_alert_text(from_radio: &protobufs::FromRadio) -> Option<(u32, u32, u32, String)> {
     let payload_variant = from_radio.payload_variant.as_ref()?;
     let mesh_packet = match payload_variant {
@@ -731,7 +842,9 @@ async fn mesh_listener_handle_priority_sos(
     text: &str,
     my_node: u32,
 ) -> bool {
-    if channel != PRIMARY_MESH_CHANNEL || to != MESHTASTIC_BROADCAST_TO {
+    let on_public = channel == PRIMARY_MESH_CHANNEL && to == MESHTASTIC_BROADCAST_TO;
+    let on_private = mesh_policy::accept_sync(channel, to);
+    if !on_public && !on_private {
         return false;
     }
     if my_node != 0 && from == my_node {
@@ -740,6 +853,10 @@ async fn mesh_listener_handle_priority_sos(
     let node_i64 = i64::from(from);
     let trimmed = text.trim();
     let upper = trimmed.to_ascii_uppercase();
+    // "HELP" is common in ordinary chat on the public channel; only "SOS" counts there.
+    if upper == "HELP" && !on_private {
+        return false;
+    }
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -862,6 +979,62 @@ async fn mesh_listener_handle_priority_sos(
     false
 }
 
+enum RadioStream {
+    Serial(meshtastic::api::StreamHandle<tokio_serial::SerialStream>),
+    Tcp(meshtastic::api::StreamHandle<tokio::net::TcpStream>),
+}
+
+/// `host` or `host:port` for a radio on the network (Meshtastic's API port is 4403).
+pub fn radio_tcp_address(raw: &str) -> Option<String> {
+    let t = raw.trim().trim_start_matches("tcp://").trim_end_matches('/');
+    if t.is_empty() || t.contains(char::is_whitespace) || t.contains('/') {
+        return None;
+    }
+    let has_port = t.rsplit_once(':').is_some_and(|(h, p)| !h.is_empty() && !h.ends_with(':') && p.parse::<u16>().is_ok());
+    Some(if has_port { t.to_string() } else { format!("{t}:4403") })
+}
+
+async fn setup_athena_channel(
+    stream_api: &mut meshtastic::api::ConnectedStreamApi<meshtastic::api::state::Configured>,
+    router: &mut AthenaPacketRouter,
+    app_data_dir: &std::path::Path,
+) -> Result<u32, String> {
+    let channels = radio_channels().lock().map_err(|e| e.to_string())?.clone();
+    if channels.is_empty() {
+        return Err("The radio has not reported its channels yet. Wait a few seconds after it connects.".to_string());
+    }
+    let (index, existing) = athena_channel_slot(&channels)?;
+    if existing.is_none() {
+        use rand::RngCore;
+        let mut psk = vec![0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut psk);
+        let settings = protobufs::ChannelSettings {
+            psk,
+            name: ATHENA_CHANNEL_NAME.to_string(),
+            // Keep station traffic off the internet bridge.
+            uplink_enabled: false,
+            downlink_enabled: false,
+            ..Default::default()
+        };
+        let channel = protobufs::Channel {
+            index: index as i32,
+            settings: Some(settings),
+            role: protobufs::channel::Role::Secondary as i32,
+        };
+        stream_api.start_config_transaction().await.map_err(|e| e.to_string())?;
+        stream_api.update_channel_config(router, channel.clone()).await.map_err(|e| e.to_string())?;
+        stream_api.commit_config_transaction().await.map_err(|e| e.to_string())?;
+        if let Ok(mut g) = radio_channels().lock() {
+            g.insert(index, channel);
+        }
+    }
+    let mut cfg = crate::config::load_config(app_data_dir);
+    cfg.mesh_athena_channel = Some(index);
+    crate::config::save_config(app_data_dir, &cfg)?;
+    mesh_policy::set_athena_channel(Some(index));
+    Ok(index)
+}
+
 async fn sleep_or_command(
     duration: std::time::Duration,
     cmd_rx: &mut Receiver<MeshCommand>,
@@ -889,14 +1062,37 @@ async fn mesh_radio_main_loop(
     let my_node_num = Arc::new(AtomicU32::new(0));
     let node_names: Arc<Mutex<HashMap<u32, String>>> = Arc::new(Mutex::new(HashMap::new()));
     let ai_permits = Arc::new(Semaphore::new(3));
+    let mut last_sent: Option<std::time::Instant> = None;
 
     loop {
         notify_mesh_connected(&app, false);
+        let cfg = crate::config::load_config(app_data_dir.as_path());
+        mesh_policy::set_athena_channel(cfg.mesh_athena_channel);
+        if let Ok(mut g) = radio_channels().lock() {
+            g.clear();
+        }
         let mut serial_open_failures: u32 = 0;
+        let radio_address = cfg.mesh_radio_address.as_deref().and_then(radio_tcp_address);
         let stream_handle = 'open_serial: loop {
+            if let Some(addr) = radio_address.clone() {
+                match meshtastic::utils::stream::build_tcp_stream(addr.clone()).await {
+                    Ok(h) => break 'open_serial RadioStream::Tcp(h),
+                    Err(e) => {
+                        serial_open_failures += 1;
+                        if serial_open_failures == 1 || serial_open_failures % 30 == 0 {
+                            eprintln!("[mesh] radio at {addr} not reachable: {e}");
+                        }
+                        let delay = if serial_open_failures <= SERIAL_OPEN_BURST_ATTEMPTS { SERIAL_OPEN_BURST_DELAY_SECS } else { SERIAL_OPEN_IDLE_DELAY_SECS };
+                        if let Some(cmd) = sleep_or_command(std::time::Duration::from_secs(delay), &mut cmd_rx).await {
+                            fail_mesh_command(cmd, format!("Meshtastic radio at {addr} is not reachable."));
+                        }
+                        continue;
+                    }
+                }
+            }
             let link = MeshRadioSerialLink::new(None);
             match link.open_stream() {
-                Ok(h) => break 'open_serial h,
+                Ok(h) => break 'open_serial RadioStream::Serial(h),
                 Err(e) => {
                     serial_open_failures += 1;
                     if serial_open_failures == 1 {
@@ -925,7 +1121,10 @@ async fn mesh_radio_main_loop(
         };
 
         let stream_api = StreamApi::new();
-        let (mut packet_rx, connected) = stream_api.connect(stream_handle).await;
+        let (mut packet_rx, connected) = match stream_handle {
+            RadioStream::Serial(h) => stream_api.connect(h).await,
+            RadioStream::Tcp(h) => stream_api.connect(h).await,
+        };
         let config_id = meshtastic::utils::generate_rand_id();
         let mut stream_api = match connected.configure(config_id).await {
             Ok(api) => api,
@@ -964,6 +1163,7 @@ async fn mesh_radio_main_loop(
                                     }
                                 }
                             }
+                            record_radio_channel(&packet);
                             ingest_node_display_name(&packet, &node_names, &my_node_num);
                             ingest_mesh_position_from_packet(&packet, &db, &node_names);
                             ingest_mesh_telemetry_from_packet(&packet, &db, &node_names);
@@ -983,7 +1183,17 @@ async fn mesh_radio_main_loop(
                                     my_n,
                                 )
                                 .await;
-                                if !consumed_sos && to == MESHTASTIC_BROADCAST_TO {
+                                let is_station_record = mesh_logbook::is_logbook_mesh_text(&text)
+                                    || mesh_calendar::is_calendar_mesh_text(&text)
+                                    || crate::field_ops::picture::is_marker_packet(&text);
+                                if !consumed_sos
+                                    && to == MESHTASTIC_BROADCAST_TO
+                                    && is_station_record
+                                    && !mesh_policy::accept_sync(channel, to)
+                                {
+                                    // Station records from outside the private channel are not trusted.
+                                    eprintln!("[mesh] ignored station record on channel {channel} (not the ATHENA channel)");
+                                } else if !consumed_sos && to == MESHTASTIC_BROADCAST_TO {
                                     if let Some(inbound) = mesh_logbook::try_parse_logbook_packet(&text) {
                                         match inbound {
                                             mesh_logbook::LogbookMeshInbound::SyncRequest => {
@@ -1102,8 +1312,8 @@ async fn mesh_radio_main_loop(
                                 }
 
                                 let my = my_node_num.load(Ordering::Relaxed);
+                                let (pki, sender_key) = packet_security(&packet);
                                 if !consumed_sos
-                                    && should_run_mesh_ai(from, to, my, channel)
                                     && !mesh_logbook::is_logbook_mesh_text(&text)
                                     && !mesh_calendar::is_calendar_mesh_text(&text)
                                 {
@@ -1124,6 +1334,8 @@ async fn mesh_radio_main_loop(
                                         my,
                                         channel,
                                         text.clone(),
+                                        pki,
+                                        sender_key,
                                     );
                                 }
                             }
@@ -1131,7 +1343,7 @@ async fn mesh_radio_main_loop(
                                 try_decode_mesh_alert_text(&packet)
                             {
                                 let t_eff = if alert_text.trim().is_empty() {
-                                    "HELP".to_string()
+                                    "SOS".to_string()
                                 } else {
                                     alert_text.clone()
                                 };
@@ -1149,9 +1361,8 @@ async fn mesh_radio_main_loop(
                                     my_a,
                                 )
                                 .await;
-                                if !consumed_alert
-                                    && should_run_mesh_ai(from, to, my_a, channel)
-                                {
+                                let (pki_a, key_a) = packet_security(&packet);
+                                if !consumed_alert {
                                     let app_dir = app_data_dir.clone();
                                     let app_h = app.clone();
                                     let db_r = Arc::clone(&db);
@@ -1171,6 +1382,8 @@ async fn mesh_radio_main_loop(
                                         my_a,
                                         channel,
                                         alert_text,
+                                        pki_a,
+                                        key_a,
                                     );
                                 }
                             }
@@ -1211,6 +1424,29 @@ async fn mesh_radio_main_loop(
                                     chrono::Utc::now().timestamp(),
                                 )
                             };
+                            // Station records never go out on a channel others can read.
+                            let is_station_record = mesh_logbook::is_logbook_mesh_text(&text)
+                                || mesh_calendar::is_calendar_mesh_text(&text)
+                                || crate::field_ops::picture::is_marker_packet(&text);
+                            if is_station_record && destination.is_none() && mesh_policy::athena_channel() != Some(channel) {
+                                let _ = reply.send(Err(mesh_policy::sync_channel().err().unwrap_or_else(|| {
+                                    "Station records are sent only on the ATHENA channel.".to_string()
+                                })));
+                                continue;
+                            }
+                            // Leave the channel room between packets; distress goes straight out.
+                            if !mesh_policy::is_distress(&text) {
+                                if let Some(t) = last_sent {
+                                    let gap = std::time::Duration::from_millis(mesh_policy::send_gap_ms(mesh_policy::channel_utilization()));
+                                    let since = t.elapsed();
+                                    if since < gap {
+                                        tokio::time::sleep(gap - since).await;
+                                    }
+                                }
+                            }
+                            // Direct messages ask for an acknowledgement, so the radio retries
+                            // until the other end confirms it got the packet.
+                            let want_ack = want_ack || destination.is_some();
                             let idx = channel.clamp(0, 7);
                             let mesh_ch =
                                 MeshChannel::new(idx).expect("channel index clamped to 0..=7");
@@ -1222,6 +1458,11 @@ async fn mesh_radio_main_loop(
                                 .send_text(&mut router, text, dest, want_ack, mesh_ch)
                                 .await
                                 .map_err(|e| e.to_string());
+                            last_sent = Some(std::time::Instant::now());
+                            let _ = reply.send(result);
+                        }
+                        Some(MeshCommand::SetupAthenaChannel { reply }) => {
+                            let result = setup_athena_channel(&mut stream_api, &mut router, &app_data_dir).await;
                             let _ = reply.send(result);
                         }
                         None => {
@@ -1263,3 +1504,54 @@ impl crate::mesh_router::MeshDmSink for MeshRadioControl {
     }
 }
 
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn network_radio_addresses_get_the_meshtastic_port() {
+        assert_eq!(radio_tcp_address("192.168.1.40").as_deref(), Some("192.168.1.40:4403"));
+        assert_eq!(radio_tcp_address(" tcp://meshradio.local:4403/ ").as_deref(), Some("meshradio.local:4403"));
+        assert_eq!(radio_tcp_address("10.0.0.5:9000").as_deref(), Some("10.0.0.5:9000"));
+        assert_eq!(radio_tcp_address(""), None);
+        assert_eq!(radio_tcp_address("http://x/y"), None);
+    }
+
+    fn ch(index: i32, name: &str, role: protobufs::channel::Role, psk_len: usize) -> protobufs::Channel {
+        protobufs::Channel {
+            index,
+            settings: Some(protobufs::ChannelSettings { name: name.into(), psk: vec![7; psk_len], ..Default::default() }),
+            role: role as i32,
+        }
+    }
+
+    #[test]
+    fn the_athena_channel_reuses_its_slot_or_takes_a_free_one() {
+        use protobufs::channel::Role;
+        let mut m = HashMap::new();
+        m.insert(0, ch(0, "", Role::Primary, 1));
+        m.insert(1, ch(1, "Family", Role::Secondary, 32));
+        m.insert(2, ch(2, "", Role::Disabled, 0));
+        assert_eq!(athena_channel_slot(&m).unwrap().0, 2);
+        m.insert(3, ch(3, ATHENA_CHANNEL_NAME, Role::Secondary, 32));
+        let (i, existing) = athena_channel_slot(&m).unwrap();
+        assert_eq!((i, existing.is_some()), (3, true), "an existing ATHENA channel is kept, not replaced");
+        for i in 1..=7 {
+            m.insert(i, ch(i as i32, "Other", Role::Secondary, 32));
+        }
+        assert!(athena_channel_slot(&m).is_err());
+    }
+
+    #[test]
+    fn join_links_decode_back_to_the_channel() {
+        use base64::Engine;
+        let settings = protobufs::ChannelSettings { name: "ATHENA".into(), psk: vec![9; 32], ..Default::default() };
+        let url = join_url_for(settings.clone());
+        let b64 = url.split_once('#').unwrap().1;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64).unwrap();
+        let set = protobufs::ChannelSet::decode(bytes.as_slice()).unwrap();
+        assert_eq!(set.settings, vec![settings]);
+        assert!(url.starts_with("https://meshtastic.org/e/?add=true#"));
+    }
+}

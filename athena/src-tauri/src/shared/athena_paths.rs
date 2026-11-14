@@ -17,6 +17,33 @@ pub const MARKETPLACE_STATE_FILENAME: &str = "marketplace_state.json";
 /// Tag for the bundled offline default instruct model (small; Conversation-friendly).
 pub const BUNDLED_DEFAULT_OLLAMA_MODEL: &str = "llama3.2:1b";
 
+/// Download folder chosen per data folder, cached so it is read from the config file once.
+fn downloads_overrides() -> &'static std::sync::RwLock<std::collections::HashMap<PathBuf, Option<PathBuf>>> {
+    static C: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<PathBuf, Option<PathBuf>>>> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn downloads_override(root: &Path) -> Option<PathBuf> {
+    if let Some(v) = downloads_overrides().read().ok().and_then(|m| m.get(root).cloned()) {
+        return v;
+    }
+    let v = crate::config::load_config(root)
+        .downloads_dir
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| p.is_absolute());
+    if let Ok(mut m) = downloads_overrides().write() {
+        m.insert(root.to_path_buf(), v.clone());
+    }
+    v
+}
+
+/// Record a new download folder for this data folder (after it has been saved to the config).
+pub fn set_downloads_override(root: &Path, dir: Option<PathBuf>) {
+    if let Ok(mut m) = downloads_overrides().write() {
+        m.insert(root.to_path_buf(), dir);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayoutFile {
     pub version: u32,
@@ -72,7 +99,22 @@ impl AthenaPaths {
         self.user_dir().join("archives")
     }
 
+    /// Where downloads go: the folder chosen in settings (`downloads_dir`), or
+    /// `user/downloads` under the data folder. If the chosen folder's drive is not connected,
+    /// downloads fall back to the data folder rather than failing.
     pub fn user_downloads_dir(&self) -> PathBuf {
+        match downloads_override(&self.root) {
+            Some(p) if p.is_dir() || p.parent().is_some_and(|d| d.is_dir()) => p,
+            Some(p) => {
+                eprintln!("[athena] download folder {} is not reachable; using the data folder", p.display());
+                self.default_downloads_dir()
+            }
+            None => self.default_downloads_dir(),
+        }
+    }
+
+    /// `user/downloads` under the data folder, whatever the setting says.
+    pub fn default_downloads_dir(&self) -> PathBuf {
         self.user_dir().join("downloads")
     }
 
@@ -240,8 +282,8 @@ fn ensure_user_skeleton(paths: &AthenaPaths) -> Result<(), String> {
         paths.user_library_dir(),
         paths.user_apps_dir(),
         paths.user_archives_dir(),
-        paths.user_downloads_dir().join("packages"),
-        paths.user_downloads_dir().join("maps"),
+        paths.default_downloads_dir().join("packages"),
+        paths.default_downloads_dir().join("maps"),
         paths.user_chats_dir(),
     ] {
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
@@ -307,7 +349,7 @@ fn migrate_legacy_to_user(paths: &AthenaPaths) -> Result<(), String> {
     }
 
     move_dir_if_present(paths.root.join("maps"), paths.user_maps_dir())?;
-    move_dir_if_present(paths.root.join("downloads"), paths.user_downloads_dir())?;
+    move_dir_if_present(paths.root.join("downloads"), paths.default_downloads_dir())?;
     move_dir_if_present(paths.root.join("library"), paths.user_library_dir())?;
     move_dir_if_present(paths.root.join("chats"), paths.user_chats_dir())?;
     move_dir_if_present(paths.root.join("apps"), paths.user_apps_dir())?;
@@ -563,6 +605,21 @@ fn dir_has_onnx(dir: &Path) -> bool {
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn downloads_follow_the_chosen_folder_and_fall_back_when_it_is_gone() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let paths = AthenaPaths::new(root.path());
+        set_downloads_override(root.path(), None);
+        assert_eq!(paths.user_downloads_dir(), root.path().join("user").join("downloads"));
+        let chosen = other.path().join("AthenaDownloads");
+        set_downloads_override(root.path(), Some(chosen.clone()));
+        assert_eq!(paths.user_downloads_dir(), chosen, "a new folder on a connected drive is used");
+        set_downloads_override(root.path(), Some(PathBuf::from("/no/such/drive/AthenaDownloads")));
+        assert_eq!(paths.user_downloads_dir(), paths.default_downloads_dir(), "a missing drive falls back");
+        assert_eq!(paths.default_downloads_dir(), root.path().join("user").join("downloads"));
+    }
 
     #[test]
     fn migrate_flat_layout_to_user() {

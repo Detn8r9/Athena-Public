@@ -3,7 +3,7 @@ import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
 import { type UnlistenFn } from "@tauri-apps/api/event";
 import { StationAiOperatorConsole } from "../station/StationAiOperatorConsole";
 import { Antenna, Cpu, Mic, RefreshCw, Waves } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { RequireClearance } from "../../ui/components/RequireClearance";
 
 export type HardwareStatus = {
@@ -13,10 +13,29 @@ export type HardwareStatus = {
   lanRemoteAi: boolean;
 };
 
+import "../field-ops/fieldOps.css";
+
+// Radio planning, intercepts and other-station tools used to live in Field Ops; Comms is now their home.
+const RadioPlanTab = lazy(() => import("../field-ops/RadioPlanTab").then((m) => ({ default: m.RadioPlanTab })));
+const RadioDataTab = lazy(() => import("../field-ops/RadioDataTab").then((m) => ({ default: m.RadioDataTab })));
+const StationsTab = lazy(() => import("../field-ops/StationsTab").then((m) => ({ default: m.StationsTab })));
+
+export type CommsSection = "overview" | "radio_plan" | "radio_data" | "stations";
+
+export const COMMS_SECTIONS: ReadonlyArray<{ id: CommsSection; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "radio_plan", label: "Radio plan" },
+  { id: "radio_data", label: "Radio data & intercepts" },
+  { id: "stations", label: "Other stations" },
+];
+
 export type CommunicationsHubProps = {
   onOpenMesh: () => void;
   onOpenVoiceComms: () => void;
   meshEmergencyStrip?: string | null;
+  /** Which section is open; owned by the app so other screens can deep-link here. */
+  section?: CommsSection;
+  onSectionChange?: (section: CommsSection) => void;
 };
 
 function CapabilityCard(props: {
@@ -49,7 +68,13 @@ function CapabilityCard(props: {
   );
 }
 
-export function CommunicationsHub({ onOpenMesh, onOpenVoiceComms, meshEmergencyStrip }: CommunicationsHubProps) {
+export function CommunicationsHub({
+  onOpenMesh,
+  onOpenVoiceComms,
+  meshEmergencyStrip,
+  section = "overview",
+  onSectionChange,
+}: CommunicationsHubProps) {
   const [status, setStatus] = useState<HardwareStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -128,9 +153,9 @@ export function CommunicationsHub({ onOpenMesh, onOpenVoiceComms, meshEmergencyS
       <div className="communications-hub-hero glass-panel">
         <div className="communications-hub-hero-top">
           <div>
-            <h2 className="communications-hub-title">Communications Hub</h2>
+            <h2 className="communications-hub-title">Comms</h2>
             <p className="communications-hub-lead text-muted">
-              Capability-driven dashboard for voice, mesh data, broadcast listen, and remote AI.
+              Talk to people and other stations: answer distress calls, use a radio, send mesh messages, and manage AI requests from other devices. Each card lights up when its hardware is connected.
             </p>
           </div>
           <button
@@ -161,10 +186,33 @@ export function CommunicationsHub({ onOpenMesh, onOpenVoiceComms, meshEmergencyS
         ) : null}
       </div>
 
+      <div role="tablist" aria-label="Comms sections" style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: 14, flexShrink: 0 }}>
+        {COMMS_SECTIONS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={t.id === section}
+            className={t.id === section ? "glass-action-btn" : "secondary"}
+            onClick={() => onSectionChange?.(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {section !== "overview" ? (
+        <div className="fo-hub" style={{ padding: 0, maxWidth: "none", flexShrink: 0 }}>
+          <Suspense fallback={<p className="text-muted">Loading…</p>}>
+            {section === "radio_plan" ? <RadioPlanTab /> : section === "radio_data" ? <RadioDataTab /> : <StationsTab />}
+          </Suspense>
+        </div>
+      ) : (
+      <>
       <div className="glass-panel" style={{ padding: "0.9rem 1rem", borderRadius: 14, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
           <h3 style={{ margin: 0 }}>Distress Monitor · Channel 0 (Open)</h3>
-          <span className="text-muted small">Pinned feed (always visible)</span>
+          <span className="text-muted small">Always listening</span>
         </div>
         <p className="text-muted small" style={{ marginTop: 6 }}>
           This feed listens on Channel 0 for open distress calls. Replies from here are forced onto Channel 0 so Level 0 guests receive them.
@@ -227,9 +275,9 @@ export function CommunicationsHub({ onOpenMesh, onOpenVoiceComms, meshEmergencyS
           actions={
             <RequireClearance required_level={2}>
               {s?.broadcastRx ? (
-                <span className="text-muted">Receiver online. Tuner / preset controls are expected to ship with the SDR module release.</span>
+                <span className="text-muted">Receiver detected. Tuning controls are not available in this version yet.</span>
               ) : (
-                <span className="text-muted">No SDR or listen bridge detected. Connect supported hardware in Settings, then check status above.</span>
+                <span className="text-muted">Not available yet. A future version will use a USB software-defined radio (SDR) to listen to AM/FM broadcasts.</span>
               )}
             </RequireClearance>
           }
@@ -242,6 +290,8 @@ export function CommunicationsHub({ onOpenMesh, onOpenVoiceComms, meshEmergencyS
           actions={<StationAiOperatorConsole />}
         />
       </div>
+      </>
+      )}
     </div>
   );
 }

@@ -32,6 +32,7 @@ struct RegionCandidate {
     name: String,
     pbf_url: String,
     min_distance_km_to_bbox: f64,
+    bbox: (f64, f64, f64, f64),
 }
 
 fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
@@ -118,6 +119,12 @@ fn pick_candidates(lat: f64, lon: f64, radius_km: f64, index: &serde_json::Value
         .and_then(|v| v.as_array())
         .ok_or_else(|| "Geofabrik index missing features".to_string())?;
 
+    // Only the smallest regions: a region that others name as their parent (a country, a
+    // continent, "US Midwest") would download the same roads again, and can be many gigabytes.
+    let parents: std::collections::HashSet<&str> = feats
+        .iter()
+        .filter_map(|f| f.get("properties")?.get("parent")?.as_str())
+        .collect();
     let mut out: Vec<RegionCandidate> = Vec::new();
     for f in feats {
         let props = match f.get("properties") {
@@ -125,7 +132,7 @@ fn pick_candidates(lat: f64, lon: f64, radius_km: f64, index: &serde_json::Value
             None => continue,
         };
         let id = props.get("id").and_then(|v| v.as_str()).unwrap_or("").trim();
-        if id.is_empty() {
+        if id.is_empty() || parents.contains(id) {
             continue;
         }
         let name = props.get("name").and_then(|v| v.as_str()).unwrap_or(id).to_string();
@@ -154,9 +161,15 @@ fn pick_candidates(lat: f64, lon: f64, radius_km: f64, index: &serde_json::Value
                 name,
                 pbf_url: pbf,
                 min_distance_km_to_bbox: d,
+                bbox,
             });
         }
     }
+    // Drop groupings such as "US" or "US Midwest" that wrap other nearby regions: their states
+    // are downloaded on their own.
+    let contains = |a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)| a != b && a.0 <= b.0 && a.1 <= b.1 && a.2 >= b.2 && a.3 >= b.3;
+    let boxes: Vec<(f64, f64, f64, f64)> = out.iter().map(|c| c.bbox).collect();
+    out.retain(|c| !boxes.iter().any(|b| contains(c.bbox, *b)));
     out.sort_by(|a, b| a.min_distance_km_to_bbox.partial_cmp(&b.min_distance_km_to_bbox).unwrap());
     Ok(out)
 }
@@ -168,7 +181,7 @@ fn download_to_path(url: &str, out_path: &Path) -> Result<(), String> {
     let agent = ureq::Agent::new();
     let mut resp = agent
         .get(url)
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(6 * 3600)) // whole download, large states are GBs
         .call()
         .map_err(|e| format!("Download failed: {e}"))?
         .into_reader();
@@ -203,6 +216,18 @@ fn safe_region_id_prefix(s: &str) -> String {
     }
 }
 
+/// Every downloaded extract (`.osm.pbf`) of the station's routing regions.
+pub fn all_region_pbfs(state: &AppState) -> Result<Vec<std::path::PathBuf>, String> {
+    let dbh = state.db.lock().map_err(|e| e.to_string())?;
+    Ok(dbh
+        .list_routing_regions()?
+        .into_iter()
+        .filter_map(|r| r.source_pbf_path)
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+        .collect())
+}
+
 /// Download + register regions within radius. Optionally build geocode index for each downloaded PBF.
 #[tauri::command]
 pub fn geofabrik_download_regions_within_radius(
@@ -216,6 +241,19 @@ pub fn geofabrik_download_regions_within_radius(
     build_geocode: Option<bool>,
 ) -> Result<Vec<db::RoutingRegionRow>, String> {
     let _u = crate::auth::authenticated_user(&session)?;
+    download_regions(&app, &state, lat, lon, radius_km, max_regions, build_geocode)
+}
+
+/// Download the regions within `radius_km`, index their addresses and build the road data.
+pub fn download_regions(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    lat: f64,
+    lon: f64,
+    radius_km: f64,
+    max_regions: Option<u32>,
+    build_geocode: Option<bool>,
+) -> Result<Vec<db::RoutingRegionRow>, String> {
     if !lat.is_finite() || !lon.is_finite() {
         return Err("lat/lon must be finite".to_string());
     }
@@ -223,7 +261,7 @@ pub fn geofabrik_download_regions_within_radius(
     let want_geocode = build_geocode.unwrap_or(true);
     let limit = max_regions.unwrap_or(12).clamp(1, 200) as usize;
 
-    let app_data_dir = portable::resolved_app_data_dir(&app)?;
+    let app_data_dir = portable::resolved_app_data_dir(app)?;
     let regions_root = app_data_dir.join("routing_regions");
     fs::create_dir_all(&regions_root).map_err(|e| e.to_string())?;
 
@@ -303,8 +341,10 @@ pub fn geofabrik_download_regions_within_radius(
                 done,
                 total,
             );
+            // Read the extract first; hold the database only while storing.
+            let features = crate::offline_geocoder::collect_features_from_pbf(&pbf_path)?;
             let dbh = state.db.lock().map_err(|e| e.to_string())?;
-            let _stats = crate::offline_geocoder::build_index_from_pbf(&dbh, &region_id, &pbf_path)?;
+            let _stats = crate::offline_geocoder::store_features(&dbh, &region_id, &pbf_path, &features)?;
         }
 
         created.push(row);
@@ -316,7 +356,38 @@ pub fn geofabrik_download_regions_within_radius(
         );
     }
 
+    // Turn-by-turn directions: rebuild the road data from every downloaded extract.
+    emit("build_roads", "Building road data for directions…".to_string(), total, total);
+    let pbfs = all_region_pbfs(state)?;
+    if let Err(e) = crate::road_router::rebuild(&app_data_dir, &pbfs, &|m| emit("build_roads", m, total, total)) {
+        emit("build_roads", format!("Road data was not built: {e}"), total, total);
+    }
+
     emit("complete", format!("Downloaded {total} region(s)."), total, total);
     Ok(created)
 }
 
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_smallest_regions_are_picked() {
+        let sq = |w: f64, s: f64, e: f64, n: f64| serde_json::json!({ "type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]] });
+        let f = |id: &str, parent: Option<&str>, g: serde_json::Value| serde_json::json!({
+            "properties": { "id": id, "name": id, "parent": parent, "urls": { "pbf": format!("https://x/{id}.osm.pbf") } },
+            "geometry": g
+        });
+        let index = serde_json::json!({ "features": [
+            f("north-america", None, sq(-170.0, 5.0, -50.0, 85.0)),
+            f("us", Some("north-america"), sq(-125.0, 24.0, -66.0, 50.0)),
+            f("us-midwest", Some("north-america"), sq(-105.0, 36.0, -80.0, 50.0)),
+            f("us/south-dakota", Some("north-america"), sq(-104.1, 42.5, -96.4, 46.0)),
+            f("us/wyoming", Some("north-america"), sq(-111.1, 41.0, -104.0, 45.0)),
+            f("us/florida", Some("north-america"), sq(-87.6, 24.5, -80.0, 31.0)),
+        ]});
+        let ids: Vec<String> = pick_candidates(44.08, -103.23, 160.0, &index).unwrap().into_iter().map(|c| c.geofabrik_id).collect();
+        assert_eq!(ids, vec!["us/south-dakota", "us/wyoming"]);
+    }
+}

@@ -1,10 +1,15 @@
+import "./devBridgeShim";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { athenaInvoke as invoke } from "../shared/ipc/athenaIpc";
 import App from "./App";
+import "./responsive.css";
+import { installDeviceProfile } from "../shared/hooks/useDeviceProfile";
+import { installResponsiveTables } from "../shared/lib/responsiveTables";
 import { AuthProvider } from "../domains/auth/AuthContext";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { MaintenanceScreen } from "../pages/maintenance/MaintenanceScreen";
+import { installStaleBuildRecovery } from "./staleBuild";
 
 type ResilienceStatus = {
   maintenanceMode: boolean;
@@ -50,6 +55,10 @@ function Root() {
 
   return <App />;
 }
+
+installStaleBuildRecovery();
+installDeviceProfile();
+installResponsiveTables();
 
 const rootEl = document.getElementById("root");
 if (!rootEl) {

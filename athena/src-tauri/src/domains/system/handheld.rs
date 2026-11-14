@@ -9,6 +9,13 @@
 //!   GET  /api/handheld/peers                          -> LAN nodes, radio nodes, map markers
 //!   GET  /api/handheld/alerts                         -> watch findings + command notifications
 //!   POST /api/handheld/ask     {q}                    -> {answer} from the station's local model
+//!   GET  /api/handheld/day                            -> location (for sun/moon), supplies running
+//!                                                        out, next events, radio silence, SOS beacons
+//!   POST /api/handheld/character {character}          -> the operator's companion on every handheld
+//!
+//! Each handheld names itself with `X-Handheld-Id` (its MAC), `X-Handheld-Fw`, `X-Handheld-Ip`
+//! and `X-Handheld-Rssi`. The station remembers which operator each one is signed in as, so the
+//! device shows under that operator's profile (Settings → Me), next to their companion choice.
 //!
 //! The station also advertises `_athena._tcp` over mDNS while the bridge runs, so a handheld can
 //! find it without anyone typing an address.
@@ -38,6 +45,8 @@ pub(super) fn router() -> Router<LanHttpState> {
         .route("/api/handheld/peers", get(peers))
         .route("/api/handheld/alerts", get(alerts))
         .route("/api/handheld/ask", post(ask))
+        .route("/api/handheld/day", get(day))
+        .route("/api/handheld/character", post(set_character_http))
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────────────
@@ -95,20 +104,30 @@ struct LoginBody {
     pin: String,
 }
 
-async fn login(State(state): State<LanHttpState>, Json(b): Json<LoginBody>) -> Response {
+async fn login(State(state): State<LanHttpState>, headers: HeaderMap, Json(b): Json<LoginBody>) -> Response {
     let args = json!({ "name": b.name, "pin": b.pin });
     let st = state.clone();
     let res = tokio::task::spawn_blocking(move || dispatch_invoke(&st, "authenticate_pin", &args, None)).await;
     match res {
-        Ok(Ok((user, Some(token)))) => Json(json!({
+        Ok(Ok((user, Some(token)))) => {
+            let character = match require_session(&state, Some(&token)) {
+                Ok(u) => {
+                    note_device(&state, &headers, &u);
+                    character_of(&state, &u.id)
+                }
+                Err(_) => DEFAULT_CHARACTER.to_string(),
+            };
+            Json(json!({
             "ok": true,
             "token": token,
+            "character": character,
             "name": short(user.get("displayName").and_then(Value::as_str)
                 .or_else(|| user.get("name").and_then(Value::as_str)).unwrap_or("Operator"), 24),
             "rank": user.get("rankLevel").or_else(|| user.get("rank_level")).and_then(Value::as_i64).unwrap_or(0),
             "clearance": user.get("clearanceLevel").or_else(|| user.get("clearance_level")).and_then(Value::as_i64).unwrap_or(0),
         }))
-        .into_response(),
+        .into_response()
+        }
         Ok(Ok(_)) => fail(StatusCode::INTERNAL_SERVER_ERROR, "No session issued."),
         Ok(Err(e)) => fail(StatusCode::FORBIDDEN, short(&e, 80)),
         Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -136,8 +155,10 @@ async fn status(State(state): State<LanHttpState>, headers: HeaderMap) -> Respon
         Err(_) => (0, 0),
     };
     let lan_peers = crate::mesh_discovery::peer_registry().read().await.len();
+    note_device(&state, &headers, &user);
     Json(json!({
         "ok": true,
+        "character": character_of(&state, &user.id),
         "station": short(&station_name(), 24),
         "user": short(user.display_name.as_deref().unwrap_or(&user.name), 24),
         "time": now(),
@@ -313,6 +334,326 @@ async fn alerts(State(state): State<LanHttpState>, headers: HeaderMap) -> Respon
     Json(json!({ "ok": true, "headline": headline, "items": items })).into_response()
 }
 
+// ── day: the facts a field screen keeps in view ─────────────────────────────────────────────
+
+async fn day(State(state): State<LanHttpState>, headers: HeaderMap) -> Response {
+    let Some(token) = bearer_token(&headers) else {
+        return unauthorized();
+    };
+    let Ok(user) = require_session(&state, Some(&token)) else {
+        return unauthorized();
+    };
+    let Some(app_state) = state.app.try_state::<AppState>() else {
+        return fail(StatusCode::SERVICE_UNAVAILABLE, "Station is starting.");
+    };
+    let t = now();
+    let cfg = crate::portable::resolved_app_data_dir(&state.app).ok().map(|d| crate::load_config(&d));
+    // Station position: last map GPS fix, else the saved region pin.
+    let loc = cfg.as_ref().and_then(|c| match (c.last_known_gps_lat, c.last_known_gps_lng) {
+        (Some(lat), Some(lng)) => Some((lat, lng)),
+        _ => c.library_installer_location.as_ref().map(|l| (l.lat, l.lon)),
+    });
+
+    let (supplies, events, sos) = {
+        let Ok(db) = app_state.db.lock() else {
+            return fail(StatusCode::SERVICE_UNAVAILABLE, "Database is busy.");
+        };
+        let items: Vec<crate::runway::StockItem> = db.inventory_list().unwrap_or_default().into_iter()
+            .map(|r| crate::runway::StockItem {
+                id: r.id, name: r.item_name, category: r.category, division: r.division, quantity: r.quantity,
+            })
+            .collect();
+        let changes: Vec<crate::runway::StockChange> = db.inventory_log_list().unwrap_or_default().into_iter()
+            .map(|l| crate::runway::StockChange {
+                item_id: l.item_id, old_qty: l.old_qty, new_qty: l.new_qty,
+                timestamp: crate::runway::log_timestamp_to_seconds(l.timestamp),
+            })
+            .collect();
+        let heads = db.personnel_count().unwrap_or(1).max(1);
+        let report = crate::runway::build_runway_report(&items, &changes, t, crate::runway::DEFAULT_WINDOW_DAYS, heads, heads);
+        let supplies: Vec<Value> = report.items.iter()
+            .filter(|i| i.days_left.is_some() || i.quantity <= 0)
+            .take(4)
+            .map(|i| json!({
+                "name": short(&i.name, 18),
+                "days": i.days_left.map(|d| (d * 10.0).round() / 10.0).unwrap_or(0.0),
+                "status": serde_json::to_value(i.status).unwrap_or(Value::Null),
+            }))
+            .collect();
+        let supplies = json!({
+            "items": supplies, "out": report.out_count, "critical": report.critical_count,
+            "low": report.low_count, "tracked": report.items.len(),
+        });
+
+        let mut upcoming: Vec<(i64, String, Option<String>)> = db.list_calendar_events(None, None, false)
+            .unwrap_or_default().into_iter()
+            .map(|e| (crate::runway::log_timestamp_to_seconds(e.start_ts), e.title, e.location_label))
+            .filter(|(start, _, _)| *start >= t - 15 * 60)
+            .collect();
+        upcoming.sort_by_key(|(s, _, _)| *s);
+        let events: Vec<Value> = upcoming.into_iter().take(3)
+            .map(|(start, title, place)| json!({
+                "title": short(&title, 28), "start": start, "where": short(place.as_deref().unwrap_or(""), 20),
+            }))
+            .collect();
+
+        let sos: Vec<Value> = db.mesh_profile_list().unwrap_or_default().into_iter()
+            .filter(|p| p.sos_state == crate::db::SOS_STATE_ACTIVE)
+            .take(6)
+            .map(|p| json!(short(if p.username.trim().is_empty() { "Unknown node" } else { &p.username }, 18)))
+            .collect();
+        (supplies, events, sos)
+    };
+
+    let silence = if user.clearance_level > 0 {
+        run_cmd(&state, "get_radio_discipline", json!({}), token).await.ok()
+    } else {
+        None
+    };
+    let silent_now = silence.as_ref().and_then(|v| v.get("silentNow")).and_then(Value::as_str).map(|s| short(s, 40));
+    let silent_until = silence.as_ref().and_then(|v| v.get("silentUntil")).and_then(Value::as_i64);
+
+    Json(json!({
+        "ok": true,
+        "lat": loc.map(|l| (l.0 * 1e3).round() / 1e3),
+        "lng": loc.map(|l| (l.1 * 1e3).round() / 1e3),
+        "supplies": supplies,
+        "events": events,
+        "silentNow": silent_now,
+        "silentUntil": silent_until,
+        "sos": sos,
+    }))
+    .into_response()
+}
+
+// ── companions and devices ──────────────────────────────────────────────────────────────────
+
+/// The companions a handheld can show: survival roles, drawn full body. Their pixel art lives in
+/// the firmware (devices/handheld-cyd/src/art.h) and, exported from it, in the Me panel preview
+/// (src/pages/Settings/handheldHeroes.ts). A stored id that is no longer here (the old creature
+/// companions) falls back to the default.
+pub const CHARACTERS: &[(&str, &str, &str)] = &[
+    ("wren", "Wren", "Pathfinder. Knows every trail out and carries the lantern."),
+    ("bastion", "Bastion", "Gate knight. Keeps watch on the perimeter."),
+    ("marigold", "Marigold", "Homesteader. Tends the garden, larder and rain barrels."),
+    ("juniper", "Juniper", "Field medic. First aid kit always in hand."),
+    ("sparks", "Sparks", "Radio operator. Keeps the mesh talking, wrench ready."),
+    ("bramble", "Bramble", "Forager. Reads the woods for food, water and trouble."),
+];
+pub const DEFAULT_CHARACTER: &str = "wren";
+const PROFILE_KIND: &str = "handheld_profile";
+const DEVICE_KIND: &str = "handheld_device";
+/// A device that has not polled for this long shows as offline (it polls every 10 s).
+const ONLINE_SECS: i64 = 60;
+/// Live sightings are written to the database at most this often per device.
+const PERSIST_EVERY_SECS: i64 = 300;
+
+fn valid_character(c: &str) -> bool {
+    CHARACTERS.iter().any(|(id, _, _)| *id == c)
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandheldProfile {
+    character: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandheldDevice {
+    pub device_id: String,
+    pub user_id: String,
+    pub user_name: String,
+    pub ip: String,
+    pub rssi: i32,
+    pub firmware: String,
+    pub last_seen: i64,
+}
+
+fn profile_record_id(user_id: &str) -> String {
+    format!("handheld-profile:{user_id}")
+}
+
+fn device_record_id(device_id: &str) -> String {
+    format!("handheld:{device_id}")
+}
+
+/// Latest sighting of each device, and when it was last written to the database.
+static LIVE: Mutex<Option<std::collections::HashMap<String, (HandheldDevice, i64)>>> = Mutex::new(None);
+
+fn character_in(db: &crate::db::Database, user_id: &str) -> String {
+    crate::field_ops::store::get::<HandheldProfile>(db, PROFILE_KIND, &profile_record_id(user_id))
+        .ok()
+        .flatten()
+        .map(|r| r.data.character)
+        .filter(|c| valid_character(c))
+        .unwrap_or_else(|| DEFAULT_CHARACTER.to_string())
+}
+
+fn character_of(state: &LanHttpState, user_id: &str) -> String {
+    state
+        .app
+        .try_state::<AppState>()
+        .and_then(|s| s.db.lock().ok().map(|db| character_in(&db, user_id)))
+        .unwrap_or_else(|| DEFAULT_CHARACTER.to_string())
+}
+
+fn header_str(headers: &HeaderMap, name: &str, max: usize) -> String {
+    headers.get(name).and_then(|v| v.to_str().ok()).map(|s| short(s, max)).unwrap_or_default()
+}
+
+/// Remember that this handheld is signed in as `user`. Cheap: memory on every poll, the database
+/// when the device is new, changed hands, or every few minutes.
+fn note_device(state: &LanHttpState, headers: &HeaderMap, user: &crate::auth::AuthenticatedPersonnel) {
+    let id: String = header_str(headers, "x-handheld-id", 24)
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if id.len() != 12 {
+        return;
+    }
+    let t = now();
+    let dev = HandheldDevice {
+        device_id: id.clone(),
+        user_id: user.id.clone(),
+        user_name: short(user.display_name.as_deref().unwrap_or(&user.name), 32),
+        ip: header_str(headers, "x-handheld-ip", 40),
+        rssi: header_str(headers, "x-handheld-rssi", 6).parse().unwrap_or(0),
+        firmware: header_str(headers, "x-handheld-fw", 16),
+        last_seen: t,
+    };
+    let persist = {
+        let Ok(mut g) = LIVE.lock() else { return };
+        let map = g.get_or_insert_with(Default::default);
+        let persist = match map.get(&id) {
+            Some((prev, at)) => prev.user_id != dev.user_id || t - at >= PERSIST_EVERY_SECS,
+            None => true,
+        };
+        let at = if persist { t } else { map.get(&id).map(|(_, a)| *a).unwrap_or(t) };
+        map.insert(id.clone(), (dev.clone(), at));
+        persist
+    };
+    if persist {
+        if let Some(app_state) = state.app.try_state::<AppState>() {
+            if let Ok(db) = app_state.db.lock() {
+                let _ = crate::field_ops::store::put(&db, DEVICE_KIND, Some(&device_record_id(&id)), &dev);
+            }
+        }
+    }
+}
+
+fn set_character_in(db: &crate::db::Database, user_id: &str, character: &str) -> Result<String, String> {
+    let c = character.trim().to_ascii_lowercase();
+    if !valid_character(&c) {
+        return Err(format!("Unknown companion `{c}`."));
+    }
+    crate::field_ops::store::put(db, PROFILE_KIND, Some(&profile_record_id(user_id)), &HandheldProfile { character: c.clone() })?;
+    Ok(c)
+}
+
+#[derive(Deserialize)]
+struct CharacterBody {
+    character: String,
+}
+
+async fn set_character_http(State(state): State<LanHttpState>, headers: HeaderMap, Json(b): Json<CharacterBody>) -> Response {
+    let token = bearer_token(&headers);
+    let Ok(user) = require_session(&state, token.as_deref()) else {
+        return unauthorized();
+    };
+    let Some(app_state) = state.app.try_state::<AppState>() else {
+        return fail(StatusCode::SERVICE_UNAVAILABLE, "Station is starting.");
+    };
+    let res = match app_state.db.lock() {
+        Ok(db) => set_character_in(&db, &user.id, &b.character),
+        Err(_) => Err("Database is busy.".to_string()),
+    };
+    match res {
+        Ok(c) => Json(json!({ "ok": true, "character": c })).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// The signed-in operator's handhelds, newest sighting first: live data where there is some,
+/// otherwise the last stored sighting.
+fn devices_of(db: &crate::db::Database, user_id: &str) -> Vec<HandheldDevice> {
+    let mut out: std::collections::HashMap<String, HandheldDevice> = crate::field_ops::store::list::<HandheldDevice>(db, DEVICE_KIND)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.data.device_id.clone(), r.data))
+        .collect();
+    if let Ok(g) = LIVE.lock() {
+        if let Some(map) = g.as_ref() {
+            for (id, (d, _)) in map {
+                out.insert(id.clone(), d.clone());
+            }
+        }
+    }
+    let mut v: Vec<HandheldDevice> = out.into_values().filter(|d| d.user_id == user_id).collect();
+    v.sort_by_key(|d| -d.last_seen);
+    v
+}
+
+fn overview_value(db: &crate::db::Database, user_id: &str) -> Value {
+    let t = now();
+    json!({
+        "character": character_in(db, user_id),
+        "characters": CHARACTERS.iter().map(|(id, name, blurb)| json!({ "id": id, "name": name, "blurb": blurb })).collect::<Vec<_>>(),
+        "devices": devices_of(db, user_id).into_iter().map(|d| json!({
+            "deviceId": d.device_id,
+            "ip": d.ip,
+            "rssi": d.rssi,
+            "firmware": d.firmware,
+            "lastSeen": d.last_seen,
+            "online": t - d.last_seen <= ONLINE_SECS,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// Settings → Me: the operator's companion and the handhelds signed in as them.
+#[tauri::command]
+pub fn handheld_overview(app: tauri::State<'_, AppState>, session: crate::auth::CallerSession) -> Result<Value, String> {
+    let user = crate::auth::authenticated_user(&session)?;
+    let db = app.db.lock().map_err(|e| e.to_string())?;
+    Ok(overview_value(&db, &user.id))
+}
+
+/// Pick the companion every handheld shows for this operator. Devices switch on their next poll.
+#[tauri::command]
+pub fn handheld_set_character(
+    character: String,
+    app: tauri::State<'_, AppState>,
+    session: crate::auth::CallerSession,
+) -> Result<Value, String> {
+    let user = crate::auth::authenticated_user(&session)?;
+    let db = app.db.lock().map_err(|e| e.to_string())?;
+    set_character_in(&db, &user.id, &character)?;
+    Ok(overview_value(&db, &user.id))
+}
+
+/// Remove one of the operator's handhelds from their profile. It reappears if it signs in again.
+#[tauri::command]
+pub fn handheld_forget_device(
+    device_id: String,
+    app: tauri::State<'_, AppState>,
+    session: crate::auth::CallerSession,
+) -> Result<Value, String> {
+    let user = crate::auth::authenticated_user(&session)?;
+    let db = app.db.lock().map_err(|e| e.to_string())?;
+    let id = device_id.trim().to_ascii_lowercase();
+    if !devices_of(&db, &user.id).iter().any(|d| d.device_id == id) {
+        return Err("That handheld is not on your profile.".to_string());
+    }
+    crate::field_ops::store::remove(&db, DEVICE_KIND, &device_record_id(&id))?;
+    if let Ok(mut g) = LIVE.lock() {
+        if let Some(map) = g.as_mut() {
+            map.remove(&id);
+        }
+    }
+    Ok(overview_value(&db, &user.id))
+}
+
 // ── AI quick ask ────────────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -405,6 +746,15 @@ pub(super) fn stop_advertising() {
 #[cfg(test)]
 mod tests {
     use super::short;
+
+    #[test]
+    fn companions_are_known() {
+        assert!(super::valid_character("bastion"));
+        assert!(super::valid_character("bramble"));
+        assert!(!super::valid_character("pip"), "old companions fall back to the default");
+        assert!(!super::valid_character("dragon"));
+        assert!(super::valid_character(super::DEFAULT_CHARACTER));
+    }
 
     #[test]
     fn short_folds_and_trims() {

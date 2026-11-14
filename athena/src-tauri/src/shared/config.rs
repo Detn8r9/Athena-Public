@@ -214,6 +214,19 @@ pub struct AppConfig {
     /// When set, remote Meshtastic nodes may self-register by sending `ATHREG1:{...}` with this phrase.
     #[serde(default)]
     pub mesh_registration_admin_password: Option<String>,
+    /// Folder for the download queue's library packages and documents, such as `T:\\AthenaDownloads`.
+    /// Empty: `user/downloads` in the data folder.
+    #[serde(default)]
+    pub downloads_dir: Option<String>,
+    /// Radio over the network instead of USB, as `host` or `host:port` (Meshtastic listens on 4403).
+    #[serde(default)]
+    pub mesh_radio_address: Option<String>,
+    /// Private ATHENA channel index (1–7) on the radio. Station sync is sent only there.
+    #[serde(default)]
+    pub mesh_athena_channel: Option<u32>,
+    /// Days a linked radio stays linked before its owner must enter the PIN again (default 30).
+    #[serde(default)]
+    pub mesh_link_days: Option<u32>,
 
     /// `auto` | `online` | `offline` — NOMAD dual-mode connectivity (default `auto`).
     #[serde(default)]

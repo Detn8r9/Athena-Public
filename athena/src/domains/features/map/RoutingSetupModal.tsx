@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
+import { athenaInvoke as invoke, athenaListen as listen } from "../../../shared/ipc/athenaIpc";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, AlertTriangle } from "lucide-react";
@@ -7,6 +7,7 @@ import { MapArchivePreviewMap } from "./MapArchivePreviewMap";
 import { tilesIntersectingCircle } from "../../../shared/lib/MapCatalogIndex";
 
 type ValhallaStatus = { reachable: boolean; message: string };
+type RoadRouterStatus = { ready: boolean; roads: number; sizeBytes: number };
 type RoutingRegionRow = { id: string; name: string; tiles_path?: string; tilesPath?: string };
 
 function milesToKm(mi: number): number {
@@ -38,6 +39,58 @@ export function RoutingSetupModal({
   const [regions, setRegions] = useState<RoutingRegionRow[]>([]);
   const [activeRegionId, setActiveRegionId] = useState<string | null>(null);
   const [cycling, setCycling] = useState(false);
+  const [roadRouter, setRoadRouter] = useState<RoadRouterStatus | null>(null);
+  const [roadBuilding, setRoadBuilding] = useState(false);
+  const [roadMsg, setRoadMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    void invoke<RoadRouterStatus>("road_router_status")
+      .then((s) => setRoadRouter(s))
+      .catch(() => setRoadRouter(null));
+    let unlisten: (() => void) | undefined;
+    void listen<{ message?: string }>("road-router-progress", (e) => {
+      if (e.payload?.message) setRoadMsg(e.payload.message);
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => unlisten?.();
+  }, [open]);
+
+  const [areaBusy, setAreaBusy] = useState(false);
+  const [areaMsg, setAreaMsg] = useState<string | null>(null);
+  const downloadMyArea = async () => {
+    setAreaBusy(true);
+    setAreaMsg(null);
+    try {
+      const r = await invoke<{ imageryRadiusMiles: number; streetMapJob: string | null; imageryJob: string | null; problems: string[] }>(
+        "maps_download_my_area",
+      );
+      const parts = [
+        r.streetMapJob ? "street map (100 mi)" : null,
+        r.imageryJob ? `aerial imagery (${Math.round(r.imageryRadiusMiles)} mi)` : null,
+        "road and address data",
+      ].filter(Boolean);
+      setAreaMsg(`Downloading ${parts.join(", ")}. This runs in the background and can take an hour or more.${r.problems.length ? " " + r.problems.join(" ") : ""}`);
+    } catch (e) {
+      setAreaMsg(String(e));
+    } finally {
+      setAreaBusy(false);
+    }
+  };
+
+  const buildRoadData = async () => {
+    setRoadBuilding(true);
+    setRoadMsg("Building road data…");
+    try {
+      const s = await invoke<RoadRouterStatus>("road_router_build");
+      setRoadRouter(s);
+    } catch (e) {
+      setRoadMsg(String(e));
+    } finally {
+      setRoadBuilding(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -346,8 +399,30 @@ export function RoutingSetupModal({
             </p>
           </div>
 
+          <div className="map-archive-card__body" style={{ display: "grid", gap: 6 }}>
+            <strong>Maps for your area</strong>
+            <span className="text-muted small">
+              One step for everything: street map with road names and buildings (100 miles), aerial imagery close in,
+              and road and address data for directions. Uses the station&apos;s saved location.
+            </span>
+            <button type="button" onClick={() => void downloadMyArea()} disabled={areaBusy} style={{ justifySelf: "start", minHeight: 44 }}>
+              {areaBusy ? "Starting…" : "Download maps for my area"}
+            </button>
+            {areaMsg ? <span className="small">{areaMsg}</span> : null}
+            <strong style={{ marginTop: 8 }}>Built-in directions</strong>
+            <span className="text-muted small">
+              {roadRouter?.ready
+                ? `Ready: ${roadRouter.roads.toLocaleString()} road sections. Works with no internet and no extra programs.`
+                : "Uses the road data downloaded for your area. Build it once after downloading regions."}
+            </span>
+            {roadMsg ? <span className="small">{roadMsg}</span> : null}
+            <button type="button" className="secondary" onClick={() => void buildRoadData()} disabled={roadBuilding} style={{ justifySelf: "start", minHeight: 40 }}>
+              {roadBuilding ? "Building…" : roadRouter?.ready ? "Rebuild road data" : "Build road data"}
+            </button>
+          </div>
+
           <AnimatePresence>
-            {!valhalla?.reachable ? (
+            {!valhalla?.reachable && !roadRouter?.ready ? (
               <motion.div
                 className="map-archive-card__warning"
                 initial={{ opacity: 0, y: -6, scale: 0.98 }}
@@ -381,7 +456,7 @@ export function RoutingSetupModal({
                   onOpenDataAcquisition();
                 }}
               >
-                Open Data Acquisition (Maps)
+                Open Downloads (Maps)
               </button>
             ) : (
               <button type="button" className="map-archive-card__dl" onClick={() => void downloadRoutingData()} disabled={!canDownload}>

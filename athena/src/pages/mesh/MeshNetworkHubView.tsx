@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { athenaInvoke as invoke, athenaListen as listen, canUseHostCapability } from "../../shared/ipc/athenaIpc";
 import { Antenna, MessageSquare, Settings } from "lucide-react";
 import { MeshChatView } from "./MeshChatView";
+import { MeshSecurityPanel } from "./MeshSecurityPanel";
 import { MeshNetworkView } from "../../domains/mesh/MeshNetworkView";
 import { CommsHubIcon } from "../../shared/CommsHubIcon";
 
@@ -120,19 +121,22 @@ export function MeshNetworkHubView({
             <MessageSquare size={16} strokeWidth={2} aria-hidden /> Offline chat (AI)
           </button>
           <button type="button" className="glass-action-btn" onClick={onGoToComms}>
-            <CommsHubIcon size={16} strokeWidth={2} /> Communications Hub
+            <CommsHubIcon size={16} strokeWidth={2} /> Back to Comms
           </button>
         </div>
       </section>
+
+      <MeshSecurityPanel />
 
       <MeshNetworkView />
 
       <section className="mesh-network-hub-chat glass-panel">
         <h2 className="mesh-network-hub-section-title">Conversations over the mesh</h2>
         <p className="text-muted small mesh-network-hub-chat-intro">
-          Choose a contact on the left, read the thread, or send from this computer. Use the gear for{" "}
-          <strong>Trusted radios</strong> (manual node ID + counter-sign). Remote signup (Settings → Mesh) is optional and
-          should only use a phrase shared with people you trust.
+          Choose a contact on the left, read the thread, or send from this computer. Members link their own radio
+          with <code>REGISTER Name PIN</code> in an encrypted direct message. Radios added by hand under{" "}
+          <strong>Trusted radios</strong> are pinned to the key they first message from. Remote signup (Settings → Mesh)
+          is optional and should only use a phrase shared with people you trust.
         </p>
         <div className="mesh-network-hub-chat-frame">
           <MeshChatView />

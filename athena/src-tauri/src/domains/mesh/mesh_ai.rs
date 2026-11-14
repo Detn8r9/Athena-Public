@@ -26,21 +26,6 @@ pub fn mesh_chat_id(node_num: u32) -> String {
 /// Primary mesh channel index (Meshtastic “Primary”; broadcast visible to all nodes on that channel).
 pub const PRIMARY_MESH_CHANNEL: u32 = 0;
 
-/// Whether we should run auto-reply: primary channel only; not from self; to us or broadcast.
-/// Replies are sent as DMs so each conversation stays a private chat with Athena.
-pub fn should_run_mesh_ai(from: u32, to: u32, my_node: u32, channel: u32) -> bool {
-    if channel != PRIMARY_MESH_CHANNEL {
-        return false;
-    }
-    if my_node == 0 || from == my_node {
-        return false;
-    }
-    if to == my_node || to == MESHTASTIC_BROADCAST_TO {
-        return true;
-    }
-    false
-}
-
 /// Split reply into UTF-8 safe chunks under max bytes (Meshtastic short-text limit).
 pub fn chunk_mesh_utf8(text: &str, max_bytes: usize) -> Vec<String> {
     if max_bytes == 0 {

@@ -306,7 +306,14 @@ async fn process_one_job(ctx: &RemoteQueueCtx, job: RemoteAiJob) {
         },
     );
 
-    let chunks = chunk_mesh_utf8(&reply_text, 180);
+    // Each packet holds the channel for a second or more on LongFast. A long answer goes out as
+    // at most MAX_MESH_REPLY_PARTS packets; the full text stays in the station's chat log.
+    const MAX_MESH_REPLY_PARTS: usize = 4;
+    let mut chunks = chunk_mesh_utf8(&reply_text, 180);
+    if chunks.len() > MAX_MESH_REPLY_PARTS {
+        chunks.truncate(MAX_MESH_REPLY_PARTS - 1);
+        chunks.push("(Answer cut short to save airtime. Ask a narrower question, or ask the operator with //op.)".to_string());
+    }
     let n = chunks.len().max(1);
     for (i, part) in chunks.iter().enumerate() {
         if part.is_empty() {

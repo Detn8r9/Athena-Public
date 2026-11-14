@@ -513,10 +513,11 @@ export function UniversalHeader({
       ) : null}
       <button
         type="button"
-        className="universal-header-icon-btn"
+        className={viewButtonClass(currentView === "archive")}
         onClick={onOpenArchive}
         title={lx.navArchive}
         aria-label={lx.navArchive}
+        aria-current={currentView === "archive" ? "page" : undefined}
       >
         <Library size={22} strokeWidth={2} aria-hidden />
       </button>
@@ -525,8 +526,8 @@ export function UniversalHeader({
           type="button"
           className={viewButtonClass(currentView === "personnel")}
           onClick={() => setCurrentView("personnel")}
-          title="Personnel registry"
-          aria-label="Personnel registry"
+          title="Personnel"
+          aria-label="Personnel"
           aria-current={currentView === "personnel" ? "page" : undefined}
         >
           <Users size={22} strokeWidth={2} aria-hidden />
@@ -603,6 +604,7 @@ export function UniversalHeader({
           aria-current={currentView === "chat" ? "page" : undefined}
         >
           <MessageSquare size={22} strokeWidth={2} aria-hidden />
+          <span className="uh-nav-label" aria-hidden>{lx.navChat}</span>
         </button>
       </div>
       {featureMapEnabled && authRank >= 4 ? (
@@ -616,6 +618,7 @@ export function UniversalHeader({
             aria-current={currentView === "map" ? "page" : undefined}
           >
             <Map size={22} strokeWidth={2} aria-hidden />
+          <span className="uh-nav-label" aria-hidden>{lx.navMap}</span>
           </button>
         </div>
       ) : null}
@@ -630,12 +633,21 @@ export function UniversalHeader({
             aria-current={currentView === "comms_hub" || currentView === "mesh" || currentView === "radio" ? "page" : undefined}
           >
             <CommsHubIcon size={22} strokeWidth={2} />
+          <span className="uh-nav-label" aria-hidden>{lx.navRadio}</span>
           </button>
         </div>
       ) : null}
       <div className="universal-header-bottom-nav-item">
-        <button type="button" className="universal-header-bottom-nav-btn" onClick={onOpenArchive} title={lx.navArchive} aria-label={lx.navArchive}>
+        <button
+          type="button"
+          className={viewButtonClassBottomNav(currentView === "archive")}
+          onClick={onOpenArchive}
+          title={lx.navArchive}
+          aria-label={lx.navArchive}
+          aria-current={currentView === "archive" ? "page" : undefined}
+        >
           <Library size={22} strokeWidth={2} aria-hidden />
+          <span className="uh-nav-label" aria-hidden>{lx.navArchive}</span>
         </button>
       </div>
       {authRank >= 4 ? (
@@ -644,11 +656,12 @@ export function UniversalHeader({
             type="button"
             className={viewButtonClassBottomNav(currentView === "personnel")}
             onClick={() => setCurrentView("personnel")}
-            title="Personnel registry"
-            aria-label="Personnel registry"
+            title="Personnel"
+            aria-label="Personnel"
             aria-current={currentView === "personnel" ? "page" : undefined}
           >
             <Users size={22} strokeWidth={2} aria-hidden />
+          <span className="uh-nav-label" aria-hidden>People</span>
           </button>
         </div>
       ) : null}
@@ -662,6 +675,7 @@ export function UniversalHeader({
           aria-current={currentView === "logbook" ? "page" : undefined}
         >
           <BookOpen size={22} strokeWidth={2} aria-hidden />
+          <span className="uh-nav-label" aria-hidden>Notes</span>
         </button>
       </div>
     </div>
@@ -670,7 +684,7 @@ export function UniversalHeader({
   const mobileRow1Right = (
     <div className="universal-header-mobile-row1-right">
       {onSpotlightAction ? (
-        <AthenaSpotlight internetAllowed={internetAllowed} onAction={onSpotlightAction} compact />
+        <AthenaSpotlight internetAllowed={internetAllowed} onAction={onSpotlightAction} compact rank={authRank} />
       ) : null}
       <button
         type="button"
@@ -757,7 +771,7 @@ export function UniversalHeader({
             </div>
             <div className="universal-header-toolbar-center" aria-label="Status and session">
               {onSpotlightAction ? (
-                <AthenaSpotlight internetAllowed={internetAllowed} onAction={onSpotlightAction} />
+                <AthenaSpotlight internetAllowed={internetAllowed} onAction={onSpotlightAction} rank={authRank} />
               ) : null}
               {statusStrip}
               {sessionModelRouting != null || ollamaHiveRoute != null ? (

@@ -175,6 +175,11 @@ pub fn valhalla_route_impl(
             .collect();
         blockages
     };
+    let avoid: Vec<serde_json::Value> = blockages
+        .iter()
+        .filter_map(|b| serde_json::from_str(&b.geometry_json).ok())
+        .chain(enemy_territories.iter().filter_map(|t| serde_json::from_str(&t.geometry_json).ok()))
+        .collect();
     let base = valhalla_base(app)?;
     let body = valhalla_route_request_body(&args, &blockages, enemy_territories);
     let url = format!("{base}/route");
@@ -216,6 +221,28 @@ pub fn valhalla_route_impl(
             })
         }
         _ => {
+            // No Valhalla: ATHENA's own road router, if road data has been built.
+            if let Some(graph) = portable::resolved_app_data_dir(app).ok().and_then(|d| crate::road_router::loaded(&d)) {
+                let mode = crate::road_router::Mode::parse(&args.mode);
+                let blocked = |lat: f64, lon: f64| crate::road_router::blocked_by(&avoid, lat, lon);
+                match graph.route((args.lat1, args.lon1), (args.lat2, args.lon2), mode, &blocked) {
+                    Ok(r) => {
+                        return Ok(ValhallaRouteResult {
+                            geojson: serde_json::json!({
+                                "type": "Feature",
+                                "properties": { "kind": "athena_route" },
+                                "geometry": { "type": "LineString", "coordinates": r.coordinates }
+                            }),
+                            mode: args.mode,
+                            source: "athena_router".to_string(),
+                            distance_meters: Some(r.distance_m),
+                            duration_seconds: Some(r.duration_s),
+                            maneuvers: serde_json::to_value(&r.maneuvers).ok(),
+                        });
+                    }
+                    Err(e) => eprintln!("[athena] road router: {e}"),
+                }
+            }
             let fallback = offline_routing::straight_line_route_geojson(
                 args.lat1, args.lon1, args.lat2, args.lon2,
             );

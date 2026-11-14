@@ -1,6 +1,5 @@
 //! Build and query offline place / address index from an OSM PBF extract (per routing region).
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use osmpbfreader::{objects::OsmObj, NodeId, OsmPbfReader};
@@ -162,273 +161,197 @@ fn do_insert(
     )
 }
 
-/// Stream PBF twice: node coordinates, then features with names / addresses.
-pub fn build_index_from_pbf(
-    db: &Database,
-    region_id: &str,
-    pbf_path: &Path,
-) -> Result<GeocodeBuildStats, String> {
+/// One searchable place, address or point of interest, ready to store.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeocodeFeature {
+    pub id: String,
+    pub class: &'static str,
+    pub name: String,
+    pub alts: String,
+    pub address: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub postal: Option<String>,
+    pub country: Option<String>,
+    pub lat: f64,
+    pub lon: f64,
+    pub importance: f64,
+}
+
+/// What a tagged OSM object is in the index, before its position is known. `None`: not indexed.
+fn classify(tags: &osmpbfreader::objects::Tags, is_way: bool) -> Option<(&'static str, String, Option<String>, f64)> {
+    let name = tags.get("name").map(|s| s.to_string()).filter(|s| !s.is_empty());
+    if let (Some(place), Some(nm)) = (tags.get("place"), name.as_ref()) {
+        return Some(("place", nm.clone(), None, place_importance(place.as_str())));
+    }
+    if tags.get("addr:housenumber").is_some() && tags.get("addr:street").is_some() {
+        let addr = build_address_str(tags)?;
+        let primary = name.clone().unwrap_or_else(|| addr.clone());
+        return Some(("address", primary, Some(addr), if is_way { 72.0 } else { 75.0 }));
+    }
+    let nm = name?;
+    if is_way {
+        let is_trail = tags
+            .get("highway")
+            .is_some_and(|v| matches!(v.as_str(), "path" | "footway" | "track" | "bridleway" | "cycleway"));
+        if !has_interesting_poi_key(tags) && !is_trail {
+            return None;
+        }
+        Some(if is_trail { ("trail", nm, None, 36.0) } else { ("poi", nm, None, 38.0) })
+    } else if has_interesting_poi_key(tags) {
+        Some(("poi", nm, None, 42.0))
+    } else {
+        None
+    }
+}
+
+fn make_feature(
+    prefix: &str,
+    tags: &osmpbfreader::objects::Tags,
+    (class, name, address, importance): (&'static str, String, Option<String>, f64),
+    lat: f64,
+    lon: f64,
+) -> GeocodeFeature {
+    let get = |k: &str| tags.get(k).map(|s| s.to_string());
+    let p = match (class, prefix) {
+        ("address", "n") => "addr_n",
+        ("address", _) => "addr_w",
+        ("poi", "n") => "poi_n",
+        ("place", "n") => "n",
+        ("place", _) => "w",
+        _ => "way",
+    };
+    GeocodeFeature {
+        id: format!("{p}_{}", uuid::Uuid::new_v4()),
+        class,
+        name,
+        alts: collect_alt_names(tags),
+        address,
+        city: get("addr:city"),
+        state: get("addr:state"),
+        postal: get("addr:postcode"),
+        country: get("addr:country"),
+        lat,
+        lon,
+        importance,
+    }
+}
+
+/// Read an extract into index entries without touching the database, so the station stays usable
+/// while a large extract is read. Two passes, keeping positions only for nodes of indexed ways
+/// (not every node in the extract).
+pub fn collect_features_from_pbf(pbf_path: &Path) -> Result<Vec<GeocodeFeature>, String> {
+    if !pbf_path.is_file() {
+        return Err(format!("PBF not found: {}", pbf_path.display()));
+    }
+    // Pass 1: indexed ways and the nodes they use.
+    struct PendingWay {
+        nodes: Vec<i64>,
+        tags: osmpbfreader::objects::Tags,
+        kind: (&'static str, String, Option<String>, f64),
+    }
+    let mut ways: Vec<PendingWay> = Vec::new();
+    let f = std::fs::File::open(pbf_path).map_err(|e| e.to_string())?;
+    for obj in OsmPbfReader::new(f).iter() {
+        if let OsmObj::Way(w) = obj.map_err(|e| e.to_string())? {
+            if ways.len() >= MAX_FEATURES_PER_REGION {
+                break;
+            }
+            if let Some(kind) = classify(&w.tags, true) {
+                ways.push(PendingWay { nodes: w.nodes.iter().map(|NodeId(id)| *id).collect(), tags: w.tags, kind });
+            }
+        }
+    }
+    let mut needed: Vec<i64> = ways.iter().flat_map(|w| w.nodes.iter().copied()).collect();
+    needed.sort_unstable();
+    needed.dedup();
+    let mut coords: Vec<(f64, f64)> = vec![(f64::NAN, f64::NAN); needed.len()];
+
+    // Pass 2: node features, and positions for the ways' nodes.
+    let mut out: Vec<GeocodeFeature> = Vec::new();
+    let f = std::fs::File::open(pbf_path).map_err(|e| e.to_string())?;
+    for obj in OsmPbfReader::new(f).iter() {
+        let OsmObj::Node(n) = obj.map_err(|e| e.to_string())? else { continue };
+        let NodeId(nid) = n.id;
+        if let Ok(k) = needed.binary_search(&nid) {
+            coords[k] = (n.lat(), n.lon());
+        }
+        if out.len() < MAX_FEATURES_PER_REGION {
+            if let Some(kind) = classify(&n.tags, false) {
+                out.push(make_feature("n", &n.tags, kind, n.lat(), n.lon()));
+            }
+        }
+    }
+    for w in ways {
+        if out.len() >= MAX_FEATURES_PER_REGION {
+            break;
+        }
+        let pts: Vec<(f64, f64)> = w
+            .nodes
+            .iter()
+            .filter_map(|id| needed.binary_search(id).ok().map(|k| coords[k]))
+            .filter(|p| !p.0.is_nan())
+            .collect();
+        if pts.is_empty() {
+            continue;
+        }
+        let lat = pts.iter().map(|p| p.0).sum::<f64>() / pts.len() as f64;
+        let lon = pts.iter().map(|p| p.1).sum::<f64>() / pts.len() as f64;
+        out.push(make_feature("w", &w.tags, w.kind, lat, lon));
+    }
+    Ok(out)
+}
+
+/// Replace a region's index entries with `features` (the database lock is held only here).
+pub fn store_features(db: &Database, region_id: &str, pbf_path: &Path, features: &[GeocodeFeature]) -> Result<GeocodeBuildStats, String> {
     let rid = region_id.trim();
     if rid.is_empty() {
         return Err("region_id required".to_string());
     }
-    if !pbf_path.is_file() {
-        return Err(format!("PBF not found: {}", pbf_path.display()));
-    }
-
-    db.geocode_delete_for_region(rid)?;
-
-    // Pass 1: all node positions
-    let f = std::fs::File::open(pbf_path).map_err(|e| e.to_string())?;
-    let mut reader = OsmPbfReader::new(f);
-    let mut nodes: HashMap<i64, (f64, f64)> = HashMap::new();
-    for obj in reader.iter() {
-        let obj = obj.map_err(|e| e.to_string())?;
-        if let OsmObj::Node(n) = obj {
-            let NodeId(nid) = n.id;
-            nodes.insert(nid, (n.lat(), n.lon()));
+    // One transaction: hundreds of thousands of rows in seconds rather than many minutes.
+    db.exec_batch("BEGIN")?;
+    let result = store_features_in_transaction(db, rid, features);
+    match result {
+        Ok(()) => db.exec_batch("COMMIT")?,
+        Err(e) => {
+            let _ = db.exec_batch("ROLLBACK");
+            return Err(e);
         }
     }
-
-    // Pass 2: extract features
-    let f2 = std::fs::File::open(pbf_path).map_err(|e| e.to_string())?;
-    let mut reader2 = OsmPbfReader::new(f2);
-    let mut inserted = 0usize;
-
-    for obj in reader2.iter() {
-        if inserted >= MAX_FEATURES_PER_REGION {
-            break;
-        }
-        let obj = obj.map_err(|e| e.to_string())?;
-        match obj {
-            OsmObj::Node(n) => {
-                let tags = &n.tags;
-                let lat = n.lat();
-                let lon = n.lon();
-                let alts = collect_alt_names(tags);
-
-                if let (Some(place), Some(nm)) = (tags.get("place"), tags.get("name")) {
-                    if nm.is_empty() {
-                        continue;
-                    }
-                    let id = format!("n_{}", uuid::Uuid::new_v4());
-                    let imp = place_importance(place.as_str());
-                    let city = tags.get("addr:city").map(|s| s.to_string());
-                    let state = tags.get("addr:state").map(|s| s.to_string());
-                    let postal = tags.get("addr:postcode").map(|s| s.to_string());
-                    let country = tags.get("addr:country").map(|s| s.to_string());
-                    do_insert(
-                        db,
-                        &id,
-                        rid,
-                        "place",
-                        Some(nm.as_str()),
-                        &alts,
-                        None,
-                        city.as_deref(),
-                        state.as_deref(),
-                        postal.as_deref(),
-                        country.as_deref(),
-                        lat,
-                        lon,
-                        imp,
-                    )?;
-                    inserted += 1;
-                    continue;
-                }
-
-                if tags.get("addr:housenumber").is_some() && tags.get("addr:street").is_some() {
-                    let Some(addr) = build_address_str(tags) else {
-                        continue;
-                    };
-                    let primary = tags
-                        .get("name")
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| addr.clone());
-                    let id = format!("addr_n_{}", uuid::Uuid::new_v4());
-                    let city = tags.get("addr:city").map(|s| s.to_string());
-                    let state = tags.get("addr:state").map(|s| s.to_string());
-                    let postal = tags.get("addr:postcode").map(|s| s.to_string());
-                    let country = tags.get("addr:country").map(|s| s.to_string());
-                    do_insert(
-                        db,
-                        &id,
-                        rid,
-                        "address",
-                        Some(primary.as_str()),
-                        &alts,
-                        Some(addr.as_str()),
-                        city.as_deref(),
-                        state.as_deref(),
-                        postal.as_deref(),
-                        country.as_deref(),
-                        lat,
-                        lon,
-                        75.0,
-                    )?;
-                    inserted += 1;
-                    continue;
-                }
-
-                let Some(nm) = tags.get("name") else {
-                    continue;
-                };
-                if nm.is_empty() || !has_interesting_poi_key(tags) {
-                    continue;
-                }
-                let id = format!("poi_n_{}", uuid::Uuid::new_v4());
-                let city = tags.get("addr:city").map(|s| s.to_string());
-                let state = tags.get("addr:state").map(|s| s.to_string());
-                let postal = tags.get("addr:postcode").map(|s| s.to_string());
-                let country = tags.get("addr:country").map(|s| s.to_string());
-                do_insert(
-                    db,
-                    &id,
-                    rid,
-                    "poi",
-                    Some(nm.as_str()),
-                    &alts,
-                    None,
-                    city.as_deref(),
-                    state.as_deref(),
-                    postal.as_deref(),
-                    country.as_deref(),
-                    lat,
-                    lon,
-                    42.0,
-                )?;
-                inserted += 1;
-            }
-            OsmObj::Way(w) => {
-                let tags = &w.tags;
-                let Some(nm) = tags.get("name") else {
-                    continue;
-                };
-                if nm.is_empty() {
-                    continue;
-                }
-                let alts = collect_alt_names(tags);
-                let mut sum_lat = 0.0f64;
-                let mut sum_lon = 0.0f64;
-                let mut cnt = 0.0f64;
-                for nid in &w.nodes {
-                    let NodeId(id) = *nid;
-                    if let Some((la, lo)) = nodes.get(&id) {
-                        sum_lat += *la;
-                        sum_lon += *lo;
-                        cnt += 1.0;
-                    }
-                }
-                if cnt < 1.0 {
-                    continue;
-                }
-                let lat = sum_lat / cnt;
-                let lon = sum_lon / cnt;
-
-                if let Some(place) = tags.get("place") {
-                    let id = format!("w_{}", uuid::Uuid::new_v4());
-                    let imp = place_importance(place.as_str());
-                    let city = tags.get("addr:city").map(|s| s.to_string());
-                    let state = tags.get("addr:state").map(|s| s.to_string());
-                    let postal = tags.get("addr:postcode").map(|s| s.to_string());
-                    let country = tags.get("addr:country").map(|s| s.to_string());
-                    do_insert(
-                        db,
-                        &id,
-                        rid,
-                        "place",
-                        Some(nm.as_str()),
-                        &alts,
-                        None,
-                        city.as_deref(),
-                        state.as_deref(),
-                        postal.as_deref(),
-                        country.as_deref(),
-                        lat,
-                        lon,
-                        imp,
-                    )?;
-                    inserted += 1;
-                    continue;
-                }
-
-                if tags.get("addr:housenumber").is_some() && tags.get("addr:street").is_some() {
-                    let Some(addr) = build_address_str(tags) else {
-                        continue;
-                    };
-                    let primary = tags
-                        .get("name")
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| addr.clone());
-                    let id = format!("addr_w_{}", uuid::Uuid::new_v4());
-                    let city = tags.get("addr:city").map(|s| s.to_string());
-                    let state = tags.get("addr:state").map(|s| s.to_string());
-                    let postal = tags.get("addr:postcode").map(|s| s.to_string());
-                    let country = tags.get("addr:country").map(|s| s.to_string());
-                    do_insert(
-                        db,
-                        &id,
-                        rid,
-                        "address",
-                        Some(primary.as_str()),
-                        &alts,
-                        Some(addr.as_str()),
-                        city.as_deref(),
-                        state.as_deref(),
-                        postal.as_deref(),
-                        country.as_deref(),
-                        lat,
-                        lon,
-                        72.0,
-                    )?;
-                    inserted += 1;
-                    continue;
-                }
-
-                let is_trail = tags
-                    .get("highway")
-                    .map(|v| {
-                        let s = v.as_str();
-                        matches!(s, "path" | "footway" | "track" | "bridleway" | "cycleway")
-                    })
-                    .unwrap_or(false);
-                if !has_interesting_poi_key(tags) && !is_trail {
-                    continue;
-                }
-                let class = if is_trail { "trail" } else { "poi" };
-                let id = format!("way_{}", uuid::Uuid::new_v4());
-                let city = tags.get("addr:city").map(|s| s.to_string());
-                let state = tags.get("addr:state").map(|s| s.to_string());
-                let postal = tags.get("addr:postcode").map(|s| s.to_string());
-                let country = tags.get("addr:country").map(|s| s.to_string());
-                do_insert(
-                    db,
-                    &id,
-                    rid,
-                    class,
-                    Some(nm.as_str()),
-                    &alts,
-                    None,
-                    city.as_deref(),
-                    state.as_deref(),
-                    postal.as_deref(),
-                    country.as_deref(),
-                    lat,
-                    lon,
-                    if is_trail { 36.0 } else { 38.0 },
-                )?;
-                inserted += 1;
-            }
-            OsmObj::Relation(_) => {}
-        }
-    }
-
     let now = chrono::Utc::now().to_rfc3339();
     db.set_routing_region_geocode_built(rid, &now)?;
+    Ok(GeocodeBuildStats { region_id: rid.to_string(), features_inserted: features.len(), pbf_path: pbf_path.display().to_string() })
+}
 
-    Ok(GeocodeBuildStats {
-        region_id: rid.to_string(),
-        features_inserted: inserted,
-        pbf_path: pbf_path.display().to_string(),
-    })
+fn store_features_in_transaction(db: &Database, rid: &str, features: &[GeocodeFeature]) -> Result<(), String> {
+    db.geocode_delete_for_region(rid)?;
+    for f in features {
+        do_insert(
+            db,
+            &f.id,
+            rid,
+            f.class,
+            Some(f.name.as_str()),
+            &f.alts,
+            f.address.as_deref(),
+            f.city.as_deref(),
+            f.state.as_deref(),
+            f.postal.as_deref(),
+            f.country.as_deref(),
+            f.lat,
+            f.lon,
+            f.importance,
+        )?;
+    }
+    Ok(())
+}
+
+/// Read an extract and store its index. Prefer [`collect_features_from_pbf`] then
+/// [`store_features`] when holding a shared database lock, so the read happens outside it.
+pub fn build_index_from_pbf(db: &Database, region_id: &str, pbf_path: &Path) -> Result<GeocodeBuildStats, String> {
+    if region_id.trim().is_empty() {
+        return Err("region_id required".to_string());
+    }
+    let features = collect_features_from_pbf(pbf_path)?;
+    store_features(db, region_id, pbf_path, &features)
 }

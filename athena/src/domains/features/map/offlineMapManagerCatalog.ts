@@ -74,6 +74,8 @@ export async function startSatelliteRegionDownload(args: {
   minZoom?: number;
   maxZoom?: number;
   locationLabel?: string;
+  /** Omit to use USGS public imagery inside the US, MapTiler (with a key) elsewhere. */
+  source?: "usgs" | "maptiler";
 }): Promise<string> {
-  return invoke<string>("start_satellite_region_download", args);
+  return invoke<string>("start_satellite_region_download", { source: null, ...args });
 }

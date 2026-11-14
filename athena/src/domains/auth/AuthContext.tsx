@@ -1,5 +1,15 @@
-import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
-import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { athenaInvoke as invoke, SESSION_EXPIRED_EVENT, setSessionActive } from "../../shared/ipc/athenaIpc";
+import { isAthenaDesktopRuntime } from "../../shared/ipc/athenaRuntime";
+import { getLanSessionToken, setLanSessionToken } from "../../shared/ipc/lanClient";
+
+/**
+ * In a browser (LAN server mode) the session token lives in this tab's sessionStorage, so it
+ * survives a reload but not closing the tab. True when there is such a token to try to resume.
+ */
+function hasResumableLanSession(): boolean {
+  return !isAthenaDesktopRuntime() && getLanSessionToken() != null;
+}
 
 export type AuthUser = {
   id: string;
@@ -56,6 +66,28 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [resuming, setResuming] = useState(hasResumableLanSession);
+
+  // A page reload (pull-to-refresh on a phone, a restored tab) used to drop the user on the lock
+  // screen even though the server still had their session. Ask the server who this token belongs to.
+  useEffect(() => {
+    if (!resuming) return;
+    let cancelled = false;
+    invoke<unknown>("refresh_auth_session")
+      .then((profile) => {
+        if (!cancelled) setUser(coerceAuthUser(profile));
+      })
+      .catch(() => {
+        // Session gone (server restarted, signed out elsewhere, locked account): sign in normally.
+        setLanSessionToken(null);
+      })
+      .finally(() => {
+        if (!cancelled) setResuming(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [resuming]);
 
   const login = useCallback(async (name: string, pin: string) => {
     const profile = await invoke<unknown>("authenticate_pin", { name, pin });
@@ -65,6 +97,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const loginGuest = useCallback(async () => {
     const profile = await invoke<unknown>("authenticate_guest");
     setUser(coerceAuthUser(profile));
+  }, []);
+
+  // Any screen can hit an expired session. Go back to the lock screen instead of leaving a raw
+  // "Not authenticated" error on whichever screen happened to make the call.
+  useEffect(() => {
+    setSessionActive(user != null);
+  }, [user]);
+
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
   }, []);
 
   const logout = useCallback(async () => {
@@ -116,6 +160,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }),
     [user, login, loginGuest, logout, setMyPersonnelDisplayName, setMyLoginName, setMyPin, refreshSession]
   );
+
+  if (resuming) {
+    // One quick request; avoids flashing the lock screen before the session comes back.
+    return (
+      <p className="text-muted" style={{ margin: "3rem auto", textAlign: "center" }} role="status">
+        Signing you back in…
+      </p>
+    );
+  }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

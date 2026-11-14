@@ -11,9 +11,11 @@ type Props = {
   onAction: (action: SpotlightAction) => void;
   /** Compact trigger for mobile header. */
   compact?: boolean;
+  /** Signed-in rank, so results never point at a screen the user cannot open. */
+  rank?: number;
 };
 
-export function AthenaSpotlight({ internetAllowed, onAction, compact = false }: Props) {
+export function AthenaSpotlight({ internetAllowed, onAction, compact = false, rank }: Props) {
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -75,7 +77,7 @@ export function AthenaSpotlight({ internetAllowed, onAction, compact = false }: 
     let cancelled = false;
     setSearching(true);
     const t = window.setTimeout(() => {
-      void runSpotlightSearch({ query: q, internetAllowed }).then((rows) => {
+      void runSpotlightSearch({ query: q, internetAllowed, rank }).then((rows) => {
         if (cancelled) return;
         setResults(rows);
         setActiveIdx(0);
@@ -86,7 +88,7 @@ export function AthenaSpotlight({ internetAllowed, onAction, compact = false }: 
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [query, internetAllowed, open]);
+  }, [query, internetAllowed, open, rank]);
 
   const runResult = useCallback(
     (r: SpotlightResult) => {
@@ -111,8 +113,8 @@ export function AthenaSpotlight({ internetAllowed, onAction, compact = false }: 
   };
 
   const placeholder = internetAllowed
-    ? "Search Athena & the web…"
-    : "Search Athena (offline)…";
+    ? "Find any screen, setting, person or item… (and the web)"
+    : "Find any screen, setting, person or item…";
 
   return (
     <div className={`athena-spotlight${compact ? " athena-spotlight--compact" : ""}`} ref={rootRef}>
@@ -121,11 +123,11 @@ export function AthenaSpotlight({ internetAllowed, onAction, compact = false }: 
           type="button"
           className="athena-spotlight-trigger"
           onClick={openPanel}
-          title="Search (⌘K / Ctrl+K)"
-          aria-label="Open Spotlight search"
+          title="Find anything: screens, settings, people, items (⌘K / Ctrl+K)"
+          aria-label="Find anything"
         >
           <Search size={compact ? 18 : 16} strokeWidth={2} aria-hidden />
-          {!compact ? <span className="athena-spotlight-trigger-label">Search</span> : null}
+          {!compact ? <span className="athena-spotlight-trigger-label">Find anything</span> : null}
           {!compact ? <kbd className="athena-spotlight-kbd">⌘K</kbd> : null}
         </button>
       ) : (
@@ -157,6 +159,12 @@ export function AthenaSpotlight({ internetAllowed, onAction, compact = false }: 
               </span>
             )}
           </div>
+          {!query.trim() && !searching ? (
+            <p className="athena-spotlight-empty text-muted" style={{ margin: "0.5rem 0.75rem" }}>
+              Type what you are looking for: a screen, a setting or a thing. For example: vault, home assistant,
+              satellite, road data, inventory, radio plan.
+            </p>
+          ) : null}
           {(query.trim() || searching) && (
             <ul id={listId} className="athena-spotlight-results" role="listbox" aria-label="Search results">
               {searching && results.length === 0 ? (

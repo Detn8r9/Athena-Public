@@ -10,9 +10,8 @@
 //!   transmits, deletes, rations or reassigns people stays a human decision.
 
 use serde::Serialize;
-use tauri::{Manager, State};
+use tauri::Manager;
 
-use crate::auth::AuthSession;
 use crate::ollama::{ChatMessage, ModelOptions};
 use crate::runway::{self, ItemRunway, RunwayReport, RunwayStatus};
 use crate::AppState;
@@ -116,6 +115,10 @@ fn hours_phrase(seconds: i64) -> String {
     }
 }
 
+/// Says what a per-item estimate measures, so it is not read against the group-wide water, food
+/// and fuel figures (one jug can run out in 2 days while all water lasts 12).
+const RATE_NOTE: &str = "Each item on its own, at its recent rate of use";
+
 fn supply_findings(report: &RunwayReport, out: &mut Vec<Finding>) {
     let named = |items: &[&ItemRunway], with_days: bool| -> String {
         let mut parts: Vec<String> = items
@@ -156,7 +159,7 @@ fn supply_findings(report: &RunwayReport, out: &mut Vec<Finding>) {
                 "{} out within a week",
                 plural(critical.len(), "item runs", "items run")
             ),
-            detail: named(&critical, true),
+            detail: format!("{}. {RATE_NOTE}", named(&critical, true)),
             go_to: Some("logbook"),
         });
     }
@@ -167,7 +170,7 @@ fn supply_findings(report: &RunwayReport, out: &mut Vec<Finding>) {
             severity: Severity::Warning,
             area: "supplies",
             title: format!("{} out within a month", plural(low.len(), "item runs", "items run")),
-            detail: named(&low, true),
+            detail: format!("{}. {RATE_NOTE}", named(&low, true)),
             go_to: Some("logbook"),
         });
     }
@@ -446,7 +449,8 @@ fn build_snapshot(app: &tauri::AppHandle, state: &AppState) -> Result<StationSna
             })
             .collect();
 
-        let extra = crate::field_ops::watch_findings(&db, now);
+        let mut extra = crate::field_ops::watch_findings(&db, now);
+        extra.extend(crate::vault::watch_findings(&db));
 
         (runway_report, nodes, events, extra)
     };
@@ -515,7 +519,7 @@ fn write_ai_summary(app: &tauri::AppHandle, findings: &[Finding]) -> Option<Stri
 pub async fn get_watch_brief(
     with_ai: Option<bool>,
     app: tauri::AppHandle,
-    session: State<'_, AuthSession>,
+    session: crate::auth::CallerSession,
 ) -> Result<WatchBrief, String> {
     let user = crate::auth::authenticated_user(&session)?;
     if user.clearance_level <= 0 {
@@ -649,6 +653,10 @@ fn background_pass(app: &tauri::AppHandle) -> Result<(usize, bool), String> {
             let _ = app.emit(crate::mesh_listener::ATHENA_COMMAND_NOTIFICATION, &row);
         }
     }
+    if !fresh.is_empty() {
+        let urgent: Vec<Finding> = fresh.iter().map(|f| (*f).clone()).collect();
+        crate::vault::ha_send_findings(&db, &urgent);
+    }
 
     let wrote_brief = daily_brief_due(&watch_state, &local_date, local_hour);
     if wrote_brief {
@@ -678,8 +686,16 @@ pub fn spawn_background_watch(app: tauri::AppHandle) {
     std::thread::Builder::new()
         .name("athena-watch-officer".to_string())
         .spawn(move || {
+            // This thread starts before setup registers `AppState`; `app.state()` then panicked,
+            // killing the watch officer and leaving the radio silence plan and group key unloaded.
+            let state = loop {
+                if let Some(s) = app.try_state::<AppState>() {
+                    break s;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            };
             // The radio thread reads the silence plan from memory; load it before anything sends.
-            if let Ok(db) = app.state::<AppState>().db.lock() {
+            if let Ok(db) = state.db.lock() {
                 crate::field_ops::radio_discipline::refresh_from_db(&db);
                 crate::field_ops::trust::refresh_from_db(&db);
             }
@@ -772,8 +788,8 @@ mod tests {
         assert_eq!(ids, vec!["supplies.out", "supplies.critical", "supplies.low"]);
         assert_eq!(f[0].title, "1 item is out of stock");
         assert_eq!(f[0].detail, "Water");
-        assert_eq!(f[1].detail, "Insulin (3 days)");
-        assert_eq!(f[2].detail, "Rice (15 days)");
+        assert_eq!(f[1].detail, "Insulin (3 days). Each item on its own, at its recent rate of use");
+        assert_eq!(f[2].detail, "Rice (15 days). Each item on its own, at its recent rate of use");
         assert_eq!(f[2].severity, Severity::Warning);
     }
 
@@ -945,6 +961,6 @@ mod tests {
         let mut s = base();
         s.runway = Some(runway_with(vec![("Insulin", 3, Some(3.0), RunwayStatus::Critical)]));
         let facts = facts_for_model(&evaluate(&s));
-        assert_eq!(facts, "- [URGENT] 1 item runs out within a week: Insulin (3 days)");
+        assert_eq!(facts, "- [URGENT] 1 item runs out within a week: Insulin (3 days). Each item on its own, at its recent rate of use");
     }
 }

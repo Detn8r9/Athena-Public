@@ -15,7 +15,7 @@ use crate::db::personnel_pin_hash;
 use crate::db::Database;
 use crate::db::SOS_STATE_ACTIVE;
 use crate::db::SOS_STATE_SUSPENDED;
-use crate::mesh_ai::should_run_mesh_ai;
+use crate::mesh_policy;
 use crate::mesh_sos::{MeshEmergencyPayload, MESH_EMERGENCY_EVENT};
 
 pub const MESH_NETWORK_CHAT_UPDATED: &str = "athena:mesh-network-chat-updated";
@@ -143,6 +143,11 @@ fn new_mesh_counter_sign() -> String {
         .collect()
 }
 
+/// Compare secrets without stopping at the first difference.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 pub(crate) async fn send_dm_chunks(
     sink: &Arc<dyn MeshDmSink>,
     lines: &[&str],
@@ -176,6 +181,7 @@ pub trait MeshDmSink: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>;
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_network_job(
     sink: Arc<dyn MeshDmSink>,
     app: tauri::AppHandle,
@@ -187,8 +193,11 @@ pub fn spawn_network_job(
     my: u32,
     channel: u32,
     text: String,
+    pki_encrypted: bool,
+    public_key: Vec<u8>,
 ) {
-    if !should_run_mesh_ai(from, to, my, channel) {
+    let disposition = mesh_policy::disposition(from, to, my, pki_encrypted);
+    if disposition == mesh_policy::Disposition::Ignore {
         return;
     }
 
@@ -197,6 +206,22 @@ pub fn spawn_network_job(
             Ok(p) => p,
             Err(_) => return,
         };
+        if disposition == mesh_policy::Disposition::Unencrypted {
+            // Readable by anyone holding the channel key, and the sender is unproven: act on
+            // nothing, and say why at most once a day.
+            let now_s = chrono::Utc::now().timestamp();
+            let allowed = mesh_policy::hints().lock().map(|mut g| g.allow(&format!("enc:{from}"), now_s, mesh_policy::HINT_EVERY_SECS)).unwrap_or(false);
+            if allowed {
+                send_dm_chunks(
+                    &sink,
+                    &["This station only answers encrypted direct messages. Use Meshtastic 2.5 or newer, wait until your radio has this station's key (it appears in your node list with a lock), then send again."],
+                    channel,
+                    from,
+                )
+                .await;
+            }
+            return;
+        }
 
         // Group-key check and duress word, before anything acts on the message.
         let incoming = crate::field_ops::trust::inspect_incoming(
@@ -365,132 +390,118 @@ pub fn spawn_network_job(
             }
         };
 
+        // A radio counts as linked only with a live link pinned to the key this message came from.
+        let now_s = now_ms / 1000;
+        let link_days = load_config(app_data_dir.as_path()).mesh_link_days.unwrap_or(mesh_policy::DEFAULT_LINK_DAYS);
+        let profile_opt = profile_opt.filter(|p| p.is_registered);
+        let status = match &profile_opt {
+            Some(p) => {
+                let link = db.lock().ok().and_then(|g| g.mesh_link_get(node_i64).ok()).flatten();
+                if link.is_none() && !public_key.is_empty() {
+                    // A radio the operator added by hand (or linked before keys were pinned):
+                    // pin the key it first speaks with, and tell the operator which key that was.
+                    if let Ok(g) = db.lock() {
+                        if g.mesh_link_set(node_i64, &public_key, now_s).is_ok() {
+                            if let Ok(n) = g.command_notification_insert(
+                                "mesh_key",
+                                "normal",
+                                &format!("Radio key recorded for {}", p.username),
+                                Some(&format!(
+                                    "Node {from} sent its first encrypted message. Its key (fingerprint {}) is now the only one accepted for this radio.",
+                                    mesh_policy::key_fingerprint(&public_key)
+                                )),
+                                None,
+                            ) {
+                                let _ = app.emit(crate::mesh_listener::ATHENA_COMMAND_NOTIFICATION, &n);
+                            }
+                        }
+                    }
+                    mesh_policy::LinkStatus::Linked
+                } else {
+                    mesh_policy::link_status(link.as_ref(), &public_key, now_s, link_days)
+                }
+            }
+            None => mesh_policy::LinkStatus::NotLinked,
+        };
+        if status == mesh_policy::LinkStatus::KeyMismatch {
+            if let (Ok(g), Some(p)) = (db.lock(), profile_opt.as_ref()) {
+                if let Ok(n) = g.command_notification_insert(
+                    "mesh_key",
+                    "high",
+                    &format!("Radio key mismatch for {}", p.username),
+                    Some(&format!(
+                        "A message claiming node {from} came from a different radio key (fingerprint {}). It was refused. If {} reset or replaced their radio, they can link it again with their PIN; otherwise someone may be impersonating them.",
+                        mesh_policy::key_fingerprint(&public_key),
+                        p.username
+                    )),
+                    None,
+                ) {
+                    let _ = app.emit(crate::mesh_listener::ATHENA_COMMAND_NOTIFICATION, &n);
+                }
+            }
+        }
+        let profile_opt = if status == mesh_policy::LinkStatus::Linked { profile_opt } else { None };
+
         if profile_opt.is_none() {
             if let Some((name, pin)) = parse_register_line(trimmed) {
-                let pin_hash = personnel_pin_hash(&pin);
-                let existing = {
-                    let g = match db.lock() {
-                        Ok(g) => g,
-                        Err(_) => return,
-                    };
-                    g.personnel_fetch_by_name(&name).unwrap_or(None)
-                };
-                if let Some(row) = existing {
-                    if row.pin_hash != pin_hash {
-                        send_dm_chunks(
-                            &sink,
-                            &["Registration failed. That PIN does not match this login name on file."],
-                            channel,
-                            from,
-                        )
-                        .await;
-                        return;
-                    }
-                    let rank = row.rank_level;
-                    let name_canon = row.name.clone();
-                    let cs = new_mesh_counter_sign();
-                    let upsert = {
-                        let g = match db.lock() {
-                            Ok(g) => g,
-                            Err(_) => return,
-                        };
-                        g.mesh_profile_upsert(node_i64, name_canon.trim(), &cs, rank)
-                    };
-                    match upsert {
-                        Ok(_) => {
-                            let _ = app.emit(
-                                MESH_NETWORK_CHAT_UPDATED,
-                                MeshNetworkChatUpdatedPayload { node_id: from },
-                            );
-                            let line = format!(
-                                "Identity verified. Welcome back. Rank Level: {}. Default routing is AI. Use //op for human operator.",
-                                rank
-                            );
-                            send_dm_chunks(&sink, &[line.as_str()], channel, from).await;
-                        }
-                        Err(e) => {
-                            let _ = sink
-                                .send_dm(
-                                    format!("Could not link radio: {}", e),
-                                    true,
-                                    channel,
-                                    Some(from),
-                                )
-                                .await;
-                        }
-                    }
+                let keys = mesh_policy::pin_keys(from, &name);
+                let locked = mesh_policy::pins().lock().ok().and_then(|g| g.locked_for(&keys, now_s));
+                if let Some(secs) = locked {
+                    let line = format!("Too many wrong PINs. Try again in {} minutes.", (secs + 59) / 60);
+                    send_dm_chunks(&sink, &[line.as_str()], channel, from).await;
                     return;
                 }
-
-                let id = Uuid::new_v4().to_string();
-                let login = name.trim().to_string();
-                let insert_res = {
-                    let g = match db.lock() {
-                        Ok(g) => g,
-                        Err(_) => return,
+                let row = db.lock().ok().and_then(|g| g.personnel_fetch_by_name(&name).ok()).flatten();
+                // Same answer for an unknown name and a wrong PIN, so names cannot be probed.
+                let matched = row.filter(|r| r.pin_hash == personnel_pin_hash(&pin));
+                let Some(row) = matched else {
+                    let now_locked = mesh_policy::pins().lock().map(|mut g| g.fail(&keys, now_s)).unwrap_or(false);
+                    let line = if now_locked {
+                        "Too many wrong PINs. Linking is locked for 30 minutes.".to_string()
+                    } else {
+                        "Name or PIN not recognised. Ask the station operator to add you to the roster if you are not on it.".to_string()
                     };
-                    g.personnel_insert(
-                        &id,
-                        login.as_str(),
-                        "MESH",
-                        1,
-                        &pin_hash,
-                        None,
-                        None,
-                        None,
-                        None,
-                        0,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                };
-                if let Err(e) = insert_res {
-                    send_dm_chunks(
-                        &sink,
-                        &[&format!("Could not create personnel: {}", e)],
-                        channel,
-                        from,
-                    )
-                    .await;
+                    send_dm_chunks(&sink, &[line.as_str()], channel, from).await;
+                    if now_locked {
+                        if let Ok(g) = db.lock() {
+                            if let Ok(n) = g.command_notification_insert(
+                                "mesh_pin",
+                                "high",
+                                &format!("Repeated wrong PINs from node {from}"),
+                                Some(&format!("Five wrong PINs for the name \"{}\". Linking from that radio and for that name is locked for 30 minutes.", name.trim())),
+                                None,
+                            ) {
+                                let _ = app.emit(crate::mesh_listener::ATHENA_COMMAND_NOTIFICATION, &n);
+                            }
+                        }
+                    }
                     return;
+                };
+                if crate::auth::status_is_locked(&row.operational_status) {
+                    send_dm_chunks(&sink, &["This account is not active on this station."], channel, from).await;
+                    return;
+                }
+                if let Ok(mut g) = mesh_policy::pins().lock() {
+                    g.succeed(&keys);
                 }
                 let cs = new_mesh_counter_sign();
-                let upsert = {
-                    let g = match db.lock() {
-                        Ok(g) => g,
-                        Err(_) => return,
-                    };
-                    g.mesh_profile_upsert(node_i64, login.as_str(), &cs, 1)
-                };
-                match upsert {
-                    Ok(_) => {
-                        let _ = app.emit(
-                            MESH_NETWORK_CHAT_UPDATED,
-                            MeshNetworkChatUpdatedPayload { node_id: from },
+                let linked = db.lock().map_err(|e| e.to_string()).and_then(|g| {
+                    g.mesh_profile_upsert(node_i64, row.name.trim(), &cs, row.rank_level)?;
+                    g.mesh_link_set(node_i64, &public_key, now_s)
+                });
+                match linked {
+                    Ok(()) => {
+                        let _ = app.emit(MESH_NETWORK_CHAT_UPDATED, MeshNetworkChatUpdatedPayload { node_id: from });
+                        let line = format!(
+                            "Radio linked to {}. Rank {}. The link lasts {} days. Send ?help for station commands, or a question for the AI. //op reaches the operator.",
+                            row.name.trim(),
+                            row.rank_level,
+                            link_days
                         );
-                        send_dm_chunks(
-                            &sink,
-                            &[concat!(
-                                "Registration confirmed. Rank: Auxiliary. ",
-                                "Default routing is AI. Use //op for human operator."
-                            )],
-                            channel,
-                            from,
-                        )
-                        .await;
+                        send_dm_chunks(&sink, &[line.as_str()], channel, from).await;
                     }
                     Err(e) => {
-                        let _ = sink
-                            .send_dm(
-                                format!("Could not link radio: {}", e),
-                                true,
-                                channel,
-                                Some(from),
-                            )
-                            .await;
+                        let _ = sink.send_dm(format!("Could not link radio: {e}"), true, channel, Some(from)).await;
                     }
                 }
                 return;
@@ -502,64 +513,43 @@ pub fn spawn_network_job(
                 let c = reg.c.trim();
                 let p = reg.p.trim();
                 if u.is_empty() || c.is_empty() || p.is_empty() {
-                    send_dm_chunks(
-                        &sink,
-                        &["Registration incomplete. Need u, c, and p in JSON."],
-                        channel,
-                        from,
-                    )
-                    .await;
+                    send_dm_chunks(&sink, &["Registration incomplete. Need u, c, and p in JSON."], channel, from).await;
+                    return;
+                }
+                let keys = mesh_policy::pin_keys(from, "#signup");
+                if let Some(secs) = mesh_policy::pins().lock().ok().and_then(|g| g.locked_for(&keys[..1], now_s)) {
+                    let line = format!("Too many wrong attempts. Try again in {} minutes.", (secs + 59) / 60);
+                    send_dm_chunks(&sink, &[line.as_str()], channel, from).await;
                     return;
                 }
                 match cfg.mesh_registration_admin_password.as_deref() {
                     None | Some("") => {
-                        send_dm_chunks(
-                            &sink,
-                            &["Remote signup is off. The operator must add your radio in Athena."],
-                            channel,
-                            from,
-                        )
-                        .await;
+                        send_dm_chunks(&sink, &["Remote signup is off. The operator must add your radio in Athena."], channel, from).await;
                     }
-                    Some(expected) if p != expected => {
-                        send_dm_chunks(
-                            &sink,
-                            &["Registration failed. The phrase does not match what the operator set."],
-                            channel,
-                            from,
-                        )
-                        .await;
+                    Some(expected) if !constant_time_eq(p.as_bytes(), expected.as_bytes()) => {
+                        if let Ok(mut g) = mesh_policy::pins().lock() {
+                            g.fail(&keys[..1], now_s);
+                        }
+                        send_dm_chunks(&sink, &["Registration failed. The phrase does not match what the operator set."], channel, from).await;
                     }
                     Some(_) => {
                         let welcome_id = Uuid::new_v4().to_string();
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as i64)
-                            .unwrap_or(0);
-                        let ins = {
-                            let g = match db.lock() {
-                                Ok(g) => g,
-                                Err(_) => return,
-                            };
-                            let r = g.mesh_profile_upsert(node_i64, u, c, 1);
-                            if r.is_ok() {
-                                let _ = g.mesh_chat_insert(
-                                    &welcome_id,
-                                    node_i64,
-                                    "human",
-                                    "chat",
-                                    "Registered this radio from the mesh (remote signup).",
-                                    now_ms,
-                                );
-                            }
-                            r
-                        };
+                        let ins = db.lock().map_err(|e| e.to_string()).and_then(|g| {
+                            g.mesh_profile_upsert(node_i64, u, c, 1)?;
+                            g.mesh_link_set(node_i64, &public_key, now_s)?;
+                            let _ = g.mesh_chat_insert(
+                                &welcome_id,
+                                node_i64,
+                                "human",
+                                "chat",
+                                "Registered this radio from the mesh (remote signup).",
+                                now_ms,
+                            );
+                            Ok(())
+                        });
                         match ins {
-                            Ok(_) => {
-                                let _ = app.emit(
-                                    MESH_NETWORK_CHAT_UPDATED,
-                                    MeshNetworkChatUpdatedPayload { node_id: from },
-                                );
+                            Ok(()) => {
+                                let _ = app.emit(MESH_NETWORK_CHAT_UPDATED, MeshNetworkChatUpdatedPayload { node_id: from });
                                 send_dm_chunks(
                                     &sink,
                                     &[
@@ -573,14 +563,7 @@ pub fn spawn_network_job(
                                 .await;
                             }
                             Err(e) => {
-                                let _ = sink
-                                    .send_dm(
-                                        format!("Could not save profile: {}", e),
-                                        true,
-                                        channel,
-                                        Some(from),
-                                    )
-                                    .await;
+                                let _ = sink.send_dm(format!("Could not save profile: {}", e), true, channel, Some(from)).await;
                             }
                         }
                     }
@@ -588,16 +571,15 @@ pub fn spawn_network_job(
                 return;
             }
 
-            send_dm_chunks(
-                &sink,
-                &[concat!(
-                    "Unknown node. To register, reply with: ",
-                    "REGISTER [YourName] [6-Digit-PIN]."
-                )],
-                channel,
-                from,
-            )
-            .await;
+            let hint = match status {
+                mesh_policy::LinkStatus::Expired => "Your radio link has expired. Link it again with REGISTER YourName PIN, or ask the operator to renew it.",
+                mesh_policy::LinkStatus::KeyMismatch => "This radio is not the one linked to that account. Link it with: REGISTER YourName PIN",
+                _ => "Unknown radio. To link it to your station account, reply: REGISTER YourName PIN",
+            };
+            let allowed = mesh_policy::hints().lock().map(|mut g| g.allow(&format!("reg:{from}"), now_s, mesh_policy::HINT_EVERY_SECS)).unwrap_or(false);
+            if allowed {
+                send_dm_chunks(&sink, &[hint], channel, from).await;
+            }
             return;
         }
 

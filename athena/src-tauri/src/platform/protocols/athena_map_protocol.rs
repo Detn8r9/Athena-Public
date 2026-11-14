@@ -44,7 +44,8 @@ pub fn register_with_builder<R: Runtime>(builder: tauri::Builder<R>) -> tauri::B
     )
 }
 
-fn process_request<R: Runtime>(
+/// Also used by the LAN web server to serve the same files to browsers at `/maps/...`.
+pub(crate) fn process_request<R: Runtime>(
     application_handle: &AppHandle<R>,
     request: Request<Vec<u8>>,
 ) -> Response<Vec<u8>> {

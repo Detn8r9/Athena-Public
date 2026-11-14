@@ -2,6 +2,8 @@ import type { AppView } from "../../app/appView";
 import type { SettingsPanelId } from "../../pages/Settings/settingsSearchIndex";
 import { SETTINGS_SEARCH_INDEX } from "../../pages/Settings/settingsSearchIndex";
 import { athenaInvoke as invoke } from "../ipc/athenaIpc";
+import type { GoToTarget } from "../navigation/goTo";
+import { placesForRank } from "../navigation/places";
 
 /** Deep-link / navigation payload for Spotlight results. */
 export type SpotlightAction =
@@ -12,7 +14,9 @@ export type SpotlightAction =
   | { type: "inventory"; itemId?: string; query?: string }
   | { type: "chat"; chatId: string }
   | { type: "marketplace"; appId?: string }
-  | { type: "web"; url: string; query: string };
+  | { type: "web"; url: string; query: string }
+  /** Any screen, tab, section or setting from the shared places list. */
+  | { type: "goto"; target: GoToTarget };
 
 export type SpotlightCategory =
   | "feature"
@@ -42,121 +46,10 @@ export type SpotlightSearchOptions = {
   limitPerCategory?: number;
   /** Overall result cap. */
   limit?: number;
+  /** Signed-in rank; places this rank cannot open are left out. Defaults to showing all. */
+  rank?: number;
 };
 
-const FEATURE_CATALOG: Array<{
-  id: string;
-  title: string;
-  subtitle: string;
-  keywords: string[];
-  action: SpotlightAction;
-}> = [
-  {
-    id: "feat-home",
-    title: "Home",
-    subtitle: "Station dashboard",
-    keywords: ["home", "dashboard", "station", "start"],
-    action: { type: "view", view: "home" },
-  },
-  {
-    id: "feat-chat",
-    title: "Chat",
-    subtitle: "Local offline guide",
-    keywords: ["chat", "ai", "assistant", "conversation"],
-    action: { type: "view", view: "chat" },
-  },
-  {
-    id: "feat-map",
-    title: "Tactical Map",
-    subtitle: "Markers, POIs, offline tiles",
-    keywords: ["map", "tactical", "gps", "poi", "markers"],
-    action: { type: "view", view: "map" },
-  },
-  {
-    id: "feat-comms",
-    title: "Communications Hub",
-    subtitle: "Mesh and voice comms",
-    keywords: ["comms", "radio", "communications", "hub"],
-    action: { type: "view", view: "comms_hub" },
-  },
-  {
-    id: "feat-mesh",
-    title: "Mesh network",
-    subtitle: "Peer mesh status and tools",
-    keywords: ["mesh", "network", "peer", "lorawan"],
-    action: { type: "view", view: "mesh" },
-  },
-  {
-    id: "feat-radio",
-    title: "Voice comms",
-    subtitle: "Radio voice channel",
-    keywords: ["radio", "voice", "ptt"],
-    action: { type: "view", view: "radio" },
-  },
-  {
-    id: "feat-logbook",
-    title: "Field log & logistics",
-    subtitle: "Inventory and field log",
-    keywords: ["logbook", "logistics", "inventory", "quartermaster", "supply"],
-    action: { type: "view", view: "logbook" },
-  },
-  {
-    id: "feat-calendar",
-    title: "Calendar",
-    subtitle: "Events and schedule",
-    keywords: ["calendar", "events", "schedule"],
-    action: { type: "view", view: "calendar" },
-  },
-  {
-    id: "feat-field-ops",
-    title: "Field Ops",
-    subtitle: "Guided protocols, patient charts, check-ins, duty roster, skills, newcomers, group memory",
-    keywords: ["field ops", "protocol", "first aid", "bleeding", "patient", "chart", "vitals", "check-in", "roll call", "roster", "watch", "duty", "skills", "intake", "quarantine", "memory", "decision", "vote", "ledger", "barter"],
-    action: { type: "view", view: "field_ops" },
-  },
-  {
-    id: "feat-academy",
-    title: "Academy",
-    subtitle: "Training and curriculum",
-    keywords: ["academy", "training", "learn", "curriculum"],
-    action: { type: "view", view: "academy" },
-  },
-  {
-    id: "feat-archive",
-    title: "The Archive",
-    subtitle: "Offline library",
-    keywords: ["archive", "library", "zim", "kiwix", "books"],
-    action: { type: "view", view: "archive" },
-  },
-  {
-    id: "feat-data",
-    title: "Data acquisition",
-    subtitle: "Packages and downloads",
-    keywords: ["data", "acquisition", "download", "packages"],
-    action: { type: "view", view: "data_acquisition" },
-  },
-  {
-    id: "feat-personnel",
-    title: "Personnel",
-    subtitle: "Roster and profiles",
-    keywords: ["personnel", "roster", "people", "operators"],
-    action: { type: "view", view: "personnel" },
-  },
-  {
-    id: "feat-org",
-    title: "Org chart",
-    subtitle: "Hierarchy view",
-    keywords: ["org", "chart", "hierarchy", "structure"],
-    action: { type: "view", view: "org_chart" },
-  },
-  {
-    id: "feat-marketplace",
-    title: "Marketplace",
-    subtitle: "Docker apps and voice modules",
-    keywords: ["marketplace", "store", "docker", "jellyfin", "portainer", "apps"],
-    action: { type: "view", view: "marketplace" },
-  },
-];
 
 /** Simple fuzzy score: substring + token coverage. Higher is better. */
 export function scoreMatch(haystack: string, query: string): number {
@@ -184,19 +77,20 @@ function bestScore(fields: string[], query: string): number {
   return best;
 }
 
-function matchFeatures(query: string, limit: number): SpotlightResult[] {
+function matchFeatures(query: string, limit: number, rank: number): SpotlightResult[] {
   const out: SpotlightResult[] = [];
-  for (const f of FEATURE_CATALOG) {
-    const score = bestScore([f.title, f.subtitle, ...f.keywords], query);
+  for (const p of placesForRank(rank)) {
+    const score = bestScore([p.title, p.where, p.detail, ...p.keywords], query);
     if (score <= 0) continue;
     out.push({
-      id: f.id,
-      category: "feature",
-      title: f.title,
-      subtitle: f.subtitle,
-      score,
-      action: f.action,
-      badge: "App",
+      id: `place-${p.id}`,
+      category: p.kind === "setting" ? "settings" : "feature",
+      title: p.title,
+      subtitle: p.where === p.title ? p.detail : `${p.where} — ${p.detail}`,
+      // Whole screens first when equally good, then tabs and settings.
+      score: score + (p.kind === "screen" ? 0.01 : 0),
+      action: { type: "goto", target: p.target },
+      badge: p.kind === "setting" ? "Setting" : p.kind === "screen" ? "Screen" : "Section",
     });
   }
   out.sort((a, b) => b.score - a.score);
@@ -456,7 +350,7 @@ export async function runSpotlightSearch(opts: SpotlightSearchOptions): Promise<
   ]);
 
   const merged = [
-    ...matchFeatures(query, per),
+    ...matchFeatures(query, per, opts.rank ?? Number.POSITIVE_INFINITY),
     ...matchSettings(query, per),
     ...personnel,
     ...inventory,

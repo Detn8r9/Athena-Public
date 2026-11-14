@@ -11,14 +11,17 @@ import { InvQueueButton } from "../../domains/features/logistics/InvQueueButton"
 import { useLexicon } from "../../shared/lexicon";
 import { canAccessTacticalLogbook } from "../../shared/tacticalLogbookAccess";
 
-type HubTab = "notes" | "tactical" | "inventory" | "audit";
+export type HubTab = "notes" | "tactical" | "inventory" | "audit";
+export const HUB_TABS: readonly HubTab[] = ["notes", "tactical", "inventory", "audit"];
 
-export function LogisticsLogbookHub({ meshConnected }: { meshConnected: boolean }) {
+export function LogisticsLogbookHub({ meshConnected, initialTab }: { meshConnected: boolean; initialTab?: string | null }) {
   const lx = useLexicon();
   const { rankLevel } = useAuth();
   const r = rankLevel ?? 0;
   const [occupation, setOccupation] = useState("");
-  const [hubTab, setHubTab] = useState<HubTab>("notes");
+  const [hubTab, setHubTab] = useState<HubTab>(() =>
+    initialTab && (HUB_TABS as readonly string[]).includes(initialTab) ? (initialTab as HubTab) : "notes",
+  );
   const [approvalInboxOpen, setApprovalInboxOpen] = useState(false);
   const [aiPendingCount, setAiPendingCount] = useState(0);
 

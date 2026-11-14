@@ -91,7 +91,11 @@ function geoToFeatureCollection(geo: unknown): FeatureCollection | null {
 
 function routeSourceLabel(r: ValhallaRouteResult | null, mode: string): string {
   if (!r) return "—";
-  if (r.source === "straight_line_fallback") return "Straight-line (engine offline)";
+  if (r.source === "straight_line_fallback") return "Straight line (no road data yet)";
+  if (r.source === "athena_router") {
+    if (mode === "offroad") return "Roads, tracks and paths (built-in, offline)";
+    return "Roads (built-in, offline)";
+  }
   if (mode === "offroad") return "Paths (Valhalla pedestrian / tracks)";
   if (mode === "walk" || mode === "bike") return `Valhalla (${mode})`;
   return "Roads (Valhalla)";
@@ -116,6 +120,7 @@ export function DirectionsPanel({
   routeToLatLng,
   routeRequestSeq,
   onOpenDataAcquisition,
+  openRoutingSetupSeq = 0,
 }: {
   map: MlMap | null;
   onClose: () => void;
@@ -124,6 +129,8 @@ export function DirectionsPanel({
   routeToLatLng?: { lat: number; lng: number } | null;
   routeRequestSeq?: number;
   onOpenDataAcquisition?: () => void;
+  /** Bumped by the app ("find anything" / Settings links) to open "Set up offline routing". */
+  openRoutingSetupSeq?: number;
 }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -138,6 +145,9 @@ export function DirectionsPanel({
   const [turnsOpen, setTurnsOpen] = useState(true);
   const [locBusy, setLocBusy] = useState(false);
   const [routingOpen, setRoutingOpen] = useState(false);
+  useEffect(() => {
+    if (openRoutingSetupSeq > 0) setRoutingOpen(true);
+  }, [openRoutingSetupSeq]);
   const [toast, setToast] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
   const routeBusyRef = useRef(false);
   const lastRouteSeqRef = useRef<number>(-1);

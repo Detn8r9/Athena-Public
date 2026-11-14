@@ -1,3 +1,5 @@
+import type { GoToTarget } from "../../shared/navigation/goTo";
+import { PLACES } from "../../shared/navigation/places";
 /** Stable settings panel ids used by the two-pane shell and deep search. */
 export type SettingsPanelId =
   | "me"
@@ -16,7 +18,8 @@ export type SettingsPanelId =
   | "themes"
   | "troubleshooting"
   | "usbExport"
-  | "developer";
+  | "developer"
+  | "elsewhere";
 
 export type SettingsSearchEntry = {
   id: string;
@@ -32,9 +35,22 @@ export type SettingsSearchEntry = {
   sidebarHidden?: boolean;
   /** Host-only (USB export). */
   hostOnly?: "usbExport";
+  /** Lives on another screen: picking it opens that screen instead of a Settings panel. */
+  goTo?: GoToTarget;
+  /** Lowest rank that can open `goTo`. */
+  minRank?: number;
 };
 
 export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
+  {
+    id: "elsewhere",
+    panel: "elsewhere",
+    title: "Settings on other screens",
+    subtitle: "Vault, Home Assistant, map, comms and more, with links",
+    keywords: ["elsewhere", "other screens", "where is", "find", "vault", "home assistant", "all settings"],
+    group: "system",
+    pathLabel: "Settings on other screens",
+  },
   {
     id: "me-account",
     panel: "me",
@@ -318,6 +334,19 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   },
 ];
 
+/** Settings and tools that live on other screens, searchable from Settings (see shared/navigation/places). */
+export const ELSEWHERE_SEARCH_ENTRIES: SettingsSearchEntry[] = PLACES.map((p) => ({
+  id: `place-${p.id}`,
+  panel: "elsewhere",
+  title: p.title,
+  subtitle: p.detail,
+  keywords: p.keywords,
+  group: "system",
+  pathLabel: p.where,
+  goTo: p.target,
+  minRank: p.minRank,
+}));
+
 /** One sidebar row per panel (first index entry that is not deep-only). */
 export const SETTINGS_SIDEBAR_PANELS: {
   panel: SettingsPanelId;
@@ -326,6 +355,7 @@ export const SETTINGS_SIDEBAR_PANELS: {
   hostOnly?: "usbExport";
 }[] = [
   { panel: "me", title: "Me", group: "account" },
+  { panel: "elsewhere", title: "Settings on other screens", group: "system" },
   { panel: "general", title: "General", group: "system" },
   { panel: "dateTime", title: "Date, Time & Calendar", group: "system" },
   { panel: "calendar", title: "Calendar", group: "system" },
@@ -353,7 +383,7 @@ export const SETTINGS_GROUP_LABELS: Record<SettingsSearchEntry["group"], string>
 
 export function matchSettingsSearch(
   query: string,
-  entries: SettingsSearchEntry[] = SETTINGS_SEARCH_INDEX,
+  entries: SettingsSearchEntry[] = [...SETTINGS_SEARCH_INDEX, ...ELSEWHERE_SEARCH_ENTRIES],
 ): SettingsSearchEntry[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
