@@ -21,7 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 use uuid::Uuid;
 
 use crate::auth::{session_personnel_from_row, status_is_locked, AuthenticatedPersonnel};
@@ -35,52 +35,90 @@ use crate::tile_pack;
 use crate::AppState;
 
 #[path = "handheld.rs"]
-mod handheld;
+pub(crate) mod handheld;
+
+/// One open `/api/events` stream. `token` is the browser's session when it connected signed in.
+struct SseClient {
+    token: Option<String>,
+    tx: mpsc::UnboundedSender<String>,
+}
 
 /// Fan-out channel for SSE clients (JSON lines for `athena` events).
-static SSE_CLIENTS: OnceLock<Mutex<Vec<mpsc::UnboundedSender<String>>>> = OnceLock::new();
+static SSE_CLIENTS: OnceLock<Mutex<Vec<SseClient>>> = OnceLock::new();
 
-fn sse_clients() -> &'static Mutex<Vec<mpsc::UnboundedSender<String>>> {
+fn sse_clients() -> &'static Mutex<Vec<SseClient>> {
     SSE_CLIENTS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Station-wide events go to every signed-in browser. Signed-out browsers get only heartbeats.
 fn publish_sse_event(event: &str, payload: Value) {
     let data = json!({ "event": event, "payload": payload }).to_string();
     if let Ok(mut clients) = sse_clients().lock() {
-        clients.retain(|tx| tx.send(data.clone()).is_ok());
+        clients.retain(|c| c.token.is_none() || c.tx.send(data.clone()).is_ok());
     }
 }
 
+/// An event for one browser session only, such as the chat reply it asked for.
+pub fn publish_to_session(token: &str, event: &str, payload: Value) {
+    let data = json!({ "event": event, "payload": payload }).to_string();
+    if let Ok(mut clients) = sse_clients().lock() {
+        clients.retain(|c| c.token.as_deref() != Some(token) || c.tx.send(data.clone()).is_ok());
+    }
+}
+
+/// Signed-in browser sessions, shared by every start of the bridge and by command identity lookups.
+static LAN_SESSIONS: OnceLock<Arc<Mutex<HashMap<String, AuthenticatedPersonnel>>>> = OnceLock::new();
+
+fn lan_sessions() -> Arc<Mutex<HashMap<String, AuthenticatedPersonnel>>> {
+    LAN_SESSIONS.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+}
+
+fn resolve_lan_token(token: &str) -> Option<AuthenticatedPersonnel> {
+    lan_sessions().lock().ok()?.get(token).cloned()
+}
+
+/// A command changed a user's own profile: refresh every browser session of that user.
+fn update_lan_sessions(user: &AuthenticatedPersonnel) {
+    if let Ok(mut sessions) = lan_sessions().lock() {
+        for u in sessions.values_mut().filter(|u| u.id == user.id) {
+            *u = user.clone();
+        }
+    }
+}
+
+/// Station-wide events forwarded to signed-in browsers. Chat replies are not here: they go only to
+/// the browser that asked (see [`publish_to_session`]).
+const FORWARDED_EVENTS: &[&str] = &[
+    "athena:notification", "athena:ai-inference-sleep-changed", "athena:archive-fs-changed",
+    "athena:calendar-updated", "athena:harvest-progress", "athena:ingestion-queue", "athena:kiwix-done",
+    "athena:kiwix-error", "athena:kiwix-progress", "athena:lan-chat-updated", "athena:lan-cluster-updated",
+    "athena:logbook-updated", "athena:marketplace-install-progress", "athena:mesh-chats-updated",
+    "athena:mesh-connection", "athena:mesh-network-chat-updated", "athena:mesh-text",
+    "athena:offline-maps-updated", "athena:ollama-pull-done", "athena:power-save-mode",
+    "athena:territories-updated", "athena:vault-progress", "download-progress", "geofabrik-download-progress", "map_download_complete",
+    "map_download_error", "map_download_progress", "mesh-message-ack", "mesh-connection",
+    "package_download_cancelled", "package_download_complete", "package_download_error",
+    "package_download_progress", "peer-blockage-rx", "peer-marker-rx", "peer-saved-place-rx",
+    "peer_discovered", "peer_lost", "pmtiles_region_extract_complete", "pmtiles_region_extract_error",
+    "pmtiles_region_extract_progress", "radio-rx", "radio-telemetry", "rag-ingestion-progress", "road-router-progress",
+    "satellite_region_download_complete", "satellite_region_download_error",
+    "satellite_region_download_progress", "zim_download_complete", "zim_download_error",
+    "zim_download_progress",
+];
+
 fn wire_tauri_events_to_sse(app: &AppHandle) {
-    let app_chunk = app.clone();
-    let _ = app_chunk.listen("athena:stream-chunk", |e| {
-        // Payload is typically a JSON string (quoted chunk) or raw text.
-        let raw = e.payload().to_string();
-        let payload = serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw));
-        publish_sse_event("athena:stream-chunk", payload);
-    });
-    let app_done = app.clone();
-    let _ = app_done.listen("athena:stream-done", |_| {
-        publish_sse_event("athena:stream-done", Value::Null);
-    });
-    let app_err = app.clone();
-    let _ = app_err.listen("athena:stream-error", |e| {
-        let raw = e.payload().to_string();
-        let payload = serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw));
-        publish_sse_event("athena:stream-error", payload);
-    });
-    let app_src = app.clone();
-    let _ = app_src.listen("athena:stream-sources", |e| {
-        let raw = e.payload().to_string();
-        let payload = serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw));
-        publish_sse_event("athena:stream-sources", payload);
-    });
-    let app_mesh = app.clone();
-    let _ = app_mesh.listen("mesh-connection", |e| {
-        let raw = e.payload().to_string();
-        let payload = serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw));
-        publish_sse_event("mesh-connection", payload);
-    });
+    static WIRED: AtomicBool = AtomicBool::new(false);
+    if WIRED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    for name in FORWARDED_EVENTS {
+        let event = name.to_string();
+        let _ = app.listen_any(*name, move |e| {
+            let raw = e.payload().to_string();
+            let payload = serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw));
+            publish_sse_event(&event, payload);
+        });
+    }
 }
 
 pub const DEFAULT_LAN_PORT: u16 = 8787;
@@ -313,6 +351,7 @@ fn dispatch_invoke(
         "authenticate_pin" => {
             let name = arg_str(args, "name").ok_or_else(|| "name required".to_string())?;
             let pin = arg_str(args, "pin").ok_or_else(|| "pin required".to_string())?;
+            pin_attempts::check(&name)?;
             let out = {
                 let db = app_state
                     .db
@@ -322,8 +361,9 @@ fn dispatch_invoke(
                     .personnel_fetch_by_name(&name)?
                     .ok_or_else(|| "Unknown operator name.".to_string())?;
                 if personnel_pin_hash(&pin) != row.pin_hash {
-                    return Err("Invalid PIN.".to_string());
+                    return Err(pin_attempts::failed(&name));
                 }
+                pin_attempts::succeeded(&name);
                 if status_is_locked(&row.operational_status) {
                     return Err("This account is locked (MIA/KIA). Contact Command.".to_string());
                 }
@@ -385,7 +425,7 @@ fn dispatch_invoke(
             let user = sessions
                 .get(t)
                 .cloned()
-                .ok_or_else(|| "Session expired.".to_string())?;
+                .ok_or_else(|| "Not authenticated.".to_string())?;
             Ok((serde_json::to_value(user).map_err(|e| e.to_string())?, None))
         }
         "get_theme_config" => {
@@ -521,7 +561,7 @@ fn dispatch_invoke(
         }
         "send_message_stream" => {
             let user = require_session(state, token)?;
-            crate::start_send_message_stream_from_lan_args(state.app.clone(), user, args)?;
+            crate::start_send_message_stream_from_lan_args(state.app.clone(), user, args, token.unwrap_or_default().to_string())?;
             Ok((Value::Null, None))
         }
         "get_enabled_main_map_raster_archive_file_names" => {
@@ -621,13 +661,13 @@ fn dispatch_invoke(
             }),
             None,
         )),
-        "is_inference_ready" => Ok((json!(false), None)),
         "get_ai_inference_sleep" => {
             let app_data = portable::resolved_app_data_dir(&state.app)?;
             let cfg = load_config(&app_data);
             Ok((json!(cfg.ai_inference_sleep.unwrap_or(false)), None))
         }
         "set_ai_inference_sleep" => {
+            require_session(state, token)?;
             require_session(state, token)?;
             let app_data = portable::resolved_app_data_dir(&state.app)?;
             let mut cfg = load_config(&app_data);
@@ -654,9 +694,177 @@ fn dispatch_invoke(
                 None,
             ))
         }
-        other => Err(format!(
-            "LAN bridge: command `{other}` is not exposed yet. Use the desktop app for full capability."
-        )),
+        other => forward_command(state, other, args, token),
+    }
+}
+
+/// Commands a browser may not run through the bridge: they change the station's own sign-in,
+/// window or bridge, or need the host's file dialogs.
+const NOT_FORWARDED: &[&str] = &[
+    "dev_bridge_reply",
+    "enter_station_minimal_mode",
+    "set_lan_bridge_enabled",
+];
+
+/// How long the bridge waits for a command. Packing, scanning and downloads report progress by
+/// event, but their command only returns when the job ends.
+const FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Run any other app command for a signed-in browser, exactly as the desktop window would, under
+/// that browser's identity (see `auth::with_request_user` and `auth::CallerSession`).
+fn forward_command(
+    state: &LanHttpState,
+    cmd: &str,
+    args: &Value,
+    token: Option<&str>,
+) -> Result<(Value, Option<String>), String> {
+    if cmd.starts_with("plugin:") || NOT_FORWARDED.contains(&cmd) {
+        return Err("This action is only available on the station itself.".to_string());
+    }
+    // Status checks the sign-in screen makes before anyone is signed in. They read no user data.
+    const PUBLIC: &[&str] = &["is_ollama_available", "is_inference_ready"];
+    let user = match require_session(state, token) {
+        Ok(u) => Some(u),
+        Err(_) if PUBLIC.contains(&cmd) => None,
+        Err(_) => return Err("Not authenticated.".to_string()),
+    };
+    let token = token.unwrap_or_default();
+    let webview = state
+        .app
+        .get_webview_window("main")
+        .ok_or_else(|| "The station is still starting. Try again in a moment.".to_string())?;
+    let url = webview.url().map_err(|e| e.to_string())?;
+    let mut headers = tauri::http::HeaderMap::new();
+    headers.insert(
+        crate::auth::LAN_SESSION_HEADER,
+        tauri::http::HeaderValue::from_str(token).map_err(|e| e.to_string())?,
+    );
+    let request = tauri::webview::InvokeRequest {
+        cmd: cmd.to_string(),
+        callback: tauri::ipc::CallbackFn(0),
+        error: tauri::ipc::CallbackFn(1),
+        url,
+        body: tauri::ipc::InvokeBody::Json(with_camel_case_keys(args)),
+        headers,
+        invoke_key: state.app.invoke_key().to_string(),
+    };
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let target: tauri::Webview = webview.as_ref().clone();
+    let dispatch = move || {
+        target.on_message(
+            request,
+            Box::new(move |_webview, _cmd, response, _callback, _error| {
+                let _ = tx.send(response);
+            }),
+        );
+    };
+    match user {
+        Some(u) => crate::auth::with_request_user(u, dispatch),
+        None => dispatch(),
+    }
+    let response = rx
+        .recv_timeout(FORWARD_TIMEOUT)
+        .map_err(|_| format!("`{cmd}` did not answer."))?;
+    match response {
+        tauri::ipc::InvokeResponse::Ok(tauri::ipc::InvokeResponseBody::Json(text)) => {
+            Ok((serde_json::from_str(&text).unwrap_or(Value::Null), None))
+        }
+        tauri::ipc::InvokeResponse::Ok(tauri::ipc::InvokeResponseBody::Raw(bytes)) => Ok((json!(bytes), None)),
+        tauri::ipc::InvokeResponse::Err(tauri::ipc::InvokeError(v)) => Err(match v {
+            Value::String(s) => s,
+            other => other.to_string(),
+        }),
+    }
+}
+
+/// Tauri matches arguments by camelCase name; browsers may send snake_case. Send both, as the
+/// desktop client does.
+fn with_camel_case_keys(args: &Value) -> Value {
+    let Some(map) = args.as_object() else {
+        return if args.is_null() { json!({}) } else { args.clone() };
+    };
+    let mut out = map.clone();
+    for (k, v) in map {
+        if !k.contains('_') {
+            continue;
+        }
+        let mut camel = String::with_capacity(k.len());
+        let mut upper = false;
+        for ch in k.chars() {
+            if ch == '_' {
+                upper = true;
+            } else if upper {
+                camel.extend(ch.to_uppercase());
+                upper = false;
+            } else {
+                camel.push(ch);
+            }
+        }
+        out.entry(camel).or_insert_with(|| v.clone());
+    }
+    Value::Object(out)
+}
+
+/// Stops PIN guessing from the network: after 5 wrong PINs for a name, that name is locked out of
+/// browser sign-in for 5 minutes. Each wrong PIN also costs a second.
+mod pin_attempts {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    const MAX_FAILURES: u32 = 5;
+    const LOCKOUT: Duration = Duration::from_secs(5 * 60);
+    static FAILURES: Mutex<Option<HashMap<String, (u32, Instant)>>> = Mutex::new(None);
+
+    fn key(name: &str) -> String {
+        name.trim().to_lowercase()
+    }
+
+    pub fn check(name: &str) -> Result<(), String> {
+        let mut g = FAILURES.lock().map_err(|e| e.to_string())?;
+        let map = g.get_or_insert_with(HashMap::new);
+        if let Some((count, last)) = map.get(&key(name)).copied() {
+            if last.elapsed() >= LOCKOUT {
+                map.remove(&key(name));
+            } else if count >= MAX_FAILURES {
+                let wait = (LOCKOUT - last.elapsed()).as_secs() / 60 + 1;
+                return Err(format!("Too many wrong PINs. Try again in {wait} minute(s)."));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn failed(name: &str) -> String {
+        if let Ok(mut g) = FAILURES.lock() {
+            let entry = g.get_or_insert_with(HashMap::new).entry(key(name)).or_insert((0, Instant::now()));
+            entry.0 += 1;
+            entry.1 = Instant::now();
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        "Invalid PIN.".to_string()
+    }
+
+    pub fn succeeded(name: &str) {
+        if let Ok(mut g) = FAILURES.lock() {
+            if let Some(map) = g.as_mut() {
+                map.remove(&key(name));
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn locks_after_five_wrong_pins() {
+            let n = "lockout-test-user";
+            for _ in 0..5 {
+                assert!(super::check(n).is_ok());
+                super::failed(n);
+            }
+            assert!(super::check(n).unwrap_err().contains("Too many"));
+            super::succeeded(n);
+            assert!(super::check(n).is_ok());
+        }
     }
 }
 
@@ -671,7 +879,7 @@ fn require_session(
         .map_err(|e| e.to_string())?
         .get(t)
         .cloned()
-        .ok_or_else(|| "Session expired.".to_string())
+        .ok_or_else(|| "Not authenticated.".to_string())
 }
 
 async fn invoke_handler(
@@ -715,7 +923,6 @@ async fn invoke_handler(
 struct EventsQuery {
     #[allow(dead_code)]
     event: Option<String>,
-    #[allow(dead_code)]
     token: Option<String>,
 }
 
@@ -723,12 +930,14 @@ async fn events_handler(
     State(state): State<LanHttpState>,
     Query(q): Query<EventsQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let _ = (state, q);
+    let token = q
+        .token
+        .filter(|t| state.sessions.lock().map(|m| m.contains_key(t)).unwrap_or(false));
     CONNECTED_CLIENTS.fetch_add(1, Ordering::SeqCst);
     let guard = SseClientGuard;
     let (tx, rx) = mpsc::unbounded_channel::<String>();
     if let Ok(mut clients) = sse_clients().lock() {
-        clients.push(tx);
+        clients.push(SseClient { token, tx });
     }
     let stream = stream::unfold((0u32, guard, rx), |(n, guard, mut rx)| async move {
         tokio::select! {
@@ -760,6 +969,143 @@ async fn events_handler(
         }
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Serve a web file built into the executable; unknown paths get the app page (client routing).
+/// Build files under `/assets/` have the content hash in their name: cache them for good. The app
+/// page must be checked every time, or a browser keeps an old index.html that points at chunks a
+/// station update deleted ("'text/html' is not a valid JavaScript MIME type").
+async fn web_cache_headers(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let path = req.uri().path().to_string();
+    let mut res = next.run(req).await;
+    if path.starts_with("/api/") || path.starts_with("/maps/") || !res.status().is_success() {
+        return res;
+    }
+    let policy = if path.starts_with("/assets/") { "public, max-age=31536000, immutable" } else { "no-cache" };
+    res.headers_mut().insert(header::CACHE_CONTROL, axum::http::HeaderValue::from_static(policy));
+    res
+}
+
+/// True when a request for a build file (`/assets/…`, not itself HTML) got the app page instead.
+fn is_index_fallback_for_build_file(path: &str, mime: &str) -> bool {
+    path.starts_with("/assets/") && !path.ends_with(".html") && mime.starts_with("text/html")
+}
+
+#[cfg(test)]
+mod embedded_asset_tests {
+    use super::is_index_fallback_for_build_file;
+
+    #[test]
+    fn missing_build_file_is_not_served_as_the_app_page() {
+        assert!(is_index_fallback_for_build_file("/assets/LockScreen-YAS_j5YD.js", "text/html"));
+        assert!(is_index_fallback_for_build_file("/assets/index-x.css", "text/html; charset=utf-8"));
+        assert!(!is_index_fallback_for_build_file("/assets/LockScreen-BUsrwPBN.js", "text/javascript"));
+        assert!(!is_index_fallback_for_build_file("/settings", "text/html"));
+        assert!(!is_index_fallback_for_build_file("/assets/page.html", "text/html"));
+    }
+}
+
+fn serve_embedded(app: &AppHandle, path: &str) -> axum::response::Response {
+    let resolver = app.asset_resolver();
+    let wanted = if path.is_empty() || path == "/" { "/index.html" } else { path };
+    // A missing build file is a 404, never the app page: served as HTML it fails as a module
+    // script with a MIME error the app cannot recover from. Tauri's resolver itself falls back to
+    // index.html for unknown paths, so a build file that comes back as HTML counts as missing.
+    let asset = resolver
+        .get(wanted.to_string())
+        .filter(|a| !is_index_fallback_for_build_file(wanted, &a.mime_type))
+        .or_else(|| {
+            if wanted.starts_with("/assets/") {
+                None
+            } else {
+                resolver.get("/index.html".to_string())
+            }
+        });
+    match asset {
+        Some(a) => ([(header::CONTENT_TYPE, a.mime_type)], a.bytes).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Offline map archives for browsers: `/maps/{file}` (range requests, for PMTiles) and
+/// `/maps/{file}/{z}/{x}/{y}` (raster tiles). Same files and checks as the station's own
+/// `athena-map` protocol: only `.pmtiles` and `.mbtiles` files in the maps folder.
+async fn maps_handler(
+    State(state): State<LanHttpState>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let path = uri.path().strip_prefix("/maps").unwrap_or("/").to_string();
+    let mut builder = tauri::http::Request::builder().method(method.as_str()).uri(if path.is_empty() { "/".to_string() } else { path });
+    for name in [header::RANGE, header::ACCEPT] {
+        if let Some(v) = headers.get(&name).and_then(|v| v.to_str().ok()) {
+            builder = builder.header(name.as_str(), v);
+        }
+    }
+    let Ok(request) = builder.body(Vec::new()) else {
+        return (StatusCode::BAD_REQUEST, "Bad map request").into_response();
+    };
+    let app = state.app.clone();
+    let response = match tauri::async_runtime::spawn_blocking(move || crate::athena_map_protocol::process_request(&app, request)).await {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Map read failed").into_response(),
+    };
+    let (parts, body) = response.into_parts();
+    let mut out = axum::response::Response::builder().status(parts.status.as_u16());
+    for (k, v) in parts.headers.iter() {
+        out = out.header(k.as_str(), v.as_bytes());
+    }
+    out.body(axum::body::Body::from(body)).unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Map response failed").into_response())
+}
+
+/// The offline library (kiwix-serve) for browsers: `/kiwix/...` is passed to the station's own
+/// kiwix-serve, which only listens on 127.0.0.1. Read-only reference content, like `/maps`.
+async fn kiwix_handler(
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_default()
+    });
+    let path_q = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/kiwix/");
+    if !path_q.starts_with(crate::kiwix_serve::KIWIX_URL_ROOT) {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    }
+    let url = format!("http://127.0.0.1:{}{}", crate::kiwix_serve::KIWIX_SERVE_PORT, path_q);
+    let m = if method == axum::http::Method::HEAD { reqwest::Method::HEAD } else { reqwest::Method::GET };
+    let mut req = client.request(m, &url);
+    for name in [header::RANGE, header::ACCEPT, header::ACCEPT_LANGUAGE, header::IF_NONE_MATCH] {
+        if let Some(v) = headers.get(&name).and_then(|v| v.to_str().ok()) {
+            req = req.header(name.as_str(), v);
+        }
+    }
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "The offline library is starting or has no archives yet. Try again in a minute.",
+            )
+                .into_response()
+        }
+    };
+    let mut out = axum::response::Response::builder().status(resp.status().as_u16());
+    for (k, v) in resp.headers().iter() {
+        let n = k.as_str();
+        if matches!(n, "content-type" | "content-length" | "content-range" | "accept-ranges" | "etag" | "cache-control" | "location" | "last-modified" | "content-encoding") {
+            out = out.header(n, v.as_bytes());
+        }
+    }
+    out.body(axum::body::Body::from_stream(resp.bytes_stream()))
+        .unwrap_or_else(|_| (StatusCode::BAD_GATEWAY, "Library response failed").into_response())
 }
 
 async fn health() -> impl IntoResponse {
@@ -795,7 +1141,8 @@ npm run build</code></pre>
 fn lan_bridge_status_inner(app: &AppHandle) -> LanBridgeStatus {
     let port = *LAN_PORT.lock().unwrap_or_else(|e| e.into_inner());
     let dist = resolve_dist_dir(app);
-    let dist_ready = dist.join("index.html").is_file();
+    let dist_ready = dist.join("index.html").is_file()
+        || app.asset_resolver().get("/index.html".to_string()).is_some();
     let listening = LAN_ENABLED.load(Ordering::SeqCst)
         && LAN_CANCEL
             .lock()
@@ -843,11 +1190,12 @@ pub fn start_lan_bridge(app: AppHandle, port: Option<u16>) -> Result<LanBridgeSt
     wire_tauri_events_to_sse(&app);
 
     let dist_dir = resolve_dist_dir(&app);
-    let sessions: Arc<Mutex<HashMap<String, AuthenticatedPersonnel>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let embedded_ready = app.asset_resolver().get("/index.html".to_string()).is_some();
+    let app_for_assets = app.clone();
+    crate::auth::register_lan_sessions(resolve_lan_token, update_lan_sessions);
     let http_state = LanHttpState {
         app: app.clone(),
-        sessions,
+        sessions: lan_sessions(),
     };
 
     tauri::async_runtime::spawn(async move {
@@ -870,14 +1218,32 @@ pub fn start_lan_bridge(app: AppHandle, port: Option<u16>) -> Result<LanBridgeSt
 
         let dist_ready = dist_dir.join("index.html").is_file();
         let index_path = dist_dir.join("index.html");
+        // Unknown app routes get index.html (the app routes itself); unknown build files get 404.
+        let spa_index = index_path.clone();
+        let spa_fallback = move |uri: axum::http::Uri| {
+            let index = spa_index.clone();
+            async move {
+                if uri.path().starts_with("/assets/") {
+                    return (StatusCode::NOT_FOUND, "Not found").into_response();
+                }
+                match tokio::fs::read(&index).await {
+                    Ok(b) => ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], b).into_response(),
+                    Err(_) => StatusCode::NOT_FOUND.into_response(),
+                }
+            }
+        };
         let static_svc = ServeDir::new(dist_dir.clone())
             .append_index_html_on_directories(true)
-            .fallback(ServeFile::new(index_path.clone()));
+            .fallback(axum::handler::HandlerWithoutStateExt::into_service(spa_fallback));
 
         let api = Router::new()
             .route("/api/health", get(health))
             .route("/api/invoke", post(invoke_handler))
             .route("/api/events", get(events_handler))
+            .route("/maps/*rest", get(maps_handler).head(maps_handler))
+            .route("/kiwix", get(kiwix_handler).head(kiwix_handler))
+            .route("/kiwix/", get(kiwix_handler).head(kiwix_handler))
+            .route("/kiwix/*rest", get(kiwix_handler).head(kiwix_handler))
             .merge(handheld::router())
             .with_state(http_state.clone());
 
@@ -885,6 +1251,18 @@ pub fn start_lan_bridge(app: AppHandle, port: Option<u16>) -> Result<LanBridgeSt
             Router::new()
                 .merge(api)
                 .fallback_service(static_svc)
+                .layer(axum::middleware::from_fn(web_cache_headers))
+                .layer(cors)
+        } else if embedded_ready {
+            // Installed build: the web files are inside the executable, not in a folder.
+            let assets_app = app_for_assets.clone();
+            Router::new()
+                .merge(api)
+                .fallback(move |uri: axum::http::Uri| {
+                    let app = assets_app.clone();
+                    async move { serve_embedded(&app, uri.path()) }
+                })
+                .layer(axum::middleware::from_fn(web_cache_headers))
                 .layer(cors)
         } else {
             let dist_path = dist_dir.display().to_string();

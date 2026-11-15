@@ -149,7 +149,7 @@ function estimateBytes(selected: SelectionState, includeSupplementary: boolean):
 export interface AcademyProvisionerProps {
   onAcademyEstimateBytesChange: (bytes: number) => void;
   /** Hub tab id: avoids clearing curriculum jobs from the cart while this tab is mounted but hidden with an empty matrix. */
-  hubActiveTab: "queue" | "packages" | "academy" | "maps" | "models" | "documents";
+  hubActiveTab: string;
 }
 
 export function AcademyProvisioner({ onAcademyEstimateBytesChange, hubActiveTab }: AcademyProvisionerProps) {

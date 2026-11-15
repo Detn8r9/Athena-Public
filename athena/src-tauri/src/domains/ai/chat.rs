@@ -86,9 +86,10 @@ pub fn start_chat_console_stream(app: tauri::AppHandle, message: String) -> Resu
             if crate::library_rag_gate::should_skip_library_rag(&q_bg, false) {
                 return Ok::<_, String>((String::new(), Vec::<crate::StreamLibrarySource>::new()));
             }
+            let archive_passages = crate::kiwix_rag::search_passages(&q_bg);
             let db = db_bg.lock().map_err(|e| e.to_string())?;
             // One retrieval pass: reranked, relevance-filtered, sized to the default context window.
-            let hits = db.hybrid_search(&q_bg)?;
+            let hits = db.hybrid_search_with_archives(&q_bg, &archive_passages)?;
             let budget = crate::library_context::library_context_char_budget(None, q_bg.len());
             let assembled = crate::library_context::assemble_library_context(&hits, budget);
             let rag_block = assembled.body;

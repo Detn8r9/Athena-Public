@@ -304,8 +304,17 @@ pub(crate) fn try_process_file(
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("zim"))
     {
+        // Serve the new archive in Academy right away; text indexing below can take a long time.
+        crate::kiwix_serve::serve_new_zim(app, &ingest_path);
+        // An ATHENA pack is browsable as soon as it is served. Its chat index is staged: it is
+        // built when the user switches chat search on for that pack, not here.
+        if crate::vault::packs::is_pack_file(&ingest_path) {
+            return;
+        }
         let _ingest_guard = IngestionActivityGuard::begin(app, ingest_display_name);
-        let result = catch_unwind(AssertUnwindSafe(|| indexer::index_zim_file(&ingest_path)));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            indexer::zim_catalog_entry(&ingest_path).into_iter().collect::<Vec<_>>()
+        }));
         match result {
             Ok(vec) => {
                 if vec.is_empty() {
@@ -404,27 +413,36 @@ pub(crate) fn try_process_file(
         };
         indexer::skip_if_up_to_date(&ingest_path, &*guard, ctx_tuple, portable_src)
     };
+    // A multi-page book indexed before page tracking has no page numbers on its chunks, so chat
+    // cannot cite pages. Re-index it once even though the file itself is unchanged.
+    let skip = match skip {
+        Some(_) if db.lock().map(|g| g.file_chunks_lack_page_numbers(&path_str)).unwrap_or(false) => None,
+        other => other,
+    };
     if skip.is_some() {
         // Backfill RAG metadata in case this file was indexed before `rag_documents` tracking existed.
         // If it also has no embeddings yet, try to rebuild embeddings from stored `indexed_files.text_content`
         // (so the file becomes usable for semantic RAG without re-reading from disk).
-        if let Ok(guard) = db.lock() {
-            let db_ref = &*guard;
-            let emb_n = db_ref
-                .chunk_embedding_count_for_file_path(&path_str)
-                .unwrap_or(0);
-            if emb_n <= 0 {
-                if let Ok(Some((file_type, title, text))) =
-                    db_ref.indexed_file_rag_backfill_seed(&path_str)
-                {
-                    let t = text.trim();
-                    if !t.is_empty() {
-                        let _ = vector_index::index_document(db_ref, &path_str, &title, None, t);
-                        let _ = db_ref.upsert_rag_document_for_file_path(&path_str, &file_type);
-                    }
+        let seed = match db.lock() {
+            Ok(guard) => {
+                let emb_n = guard.chunk_embedding_count_for_file_path(&path_str).unwrap_or(0);
+                if emb_n <= 0 {
+                    guard.indexed_file_rag_backfill_seed(&path_str).ok().flatten()
+                } else {
+                    let _ = guard.upsert_rag_document_for_file_path(&path_str, "");
+                    None
                 }
-            } else {
-                let _ = db_ref.upsert_rag_document_for_file_path(&path_str, "");
+            }
+            Err(_) => None,
+        };
+        // Embed with the lock released (see `index_document_shared`).
+        if let Some((file_type, title, text)) = seed {
+            let t = text.trim();
+            if !t.is_empty() {
+                let _ = vector_index::index_document_shared(db, &path_str, &title, None, t);
+                if let Ok(g) = db.lock() {
+                    let _ = g.upsert_rag_document_for_file_path(&path_str, &file_type);
+                }
             }
         }
         if let Err(e) = library_ingest::move_unsorted_to_archive(&ingest_path, app_data_dir) {
@@ -436,6 +454,12 @@ pub(crate) fn try_process_file(
         return;
     }
 
+    // A file that already has a working index (a re-index for page numbers, or an edited copy) is
+    // never quarantined when this read fails: the book stays on its shelf with its old index.
+    let previously_indexed = db
+        .lock()
+        .map(|g| g.chunk_embedding_count_for_file_path(&path_str).unwrap_or(0) > 0)
+        .unwrap_or(false);
     let _ingest_guard = IngestionActivityGuard::begin(app, ingest_display_name);
     let result = catch_unwind(AssertUnwindSafe(|| indexer::index_file(&ingest_path)));
     match result {
@@ -454,9 +478,8 @@ pub(crate) fn try_process_file(
                     return;
                 }
             };
-            let db_ref = &*guard;
             tracing::info!("calling upsert_file");
-            if let Err(e) = db_ref.upsert_file(
+            if let Err(e) = guard.upsert_file(
                 &data.path,
                 &data.file_type,
                 &data.name,
@@ -476,11 +499,14 @@ pub(crate) fn try_process_file(
                 trimmed_empty = data.text_content.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true),
                 "upsert_file completed"
             );
+            // Embedding a whole book takes minutes; holding the lock that long froze every other
+            // screen (login included) until the book finished.
+            drop(guard);
             if let Some(ref text) = data.text_content {
                 if !text.trim().is_empty() {
-                    tracing::info!("calling vector_index::index_document");
-                    match vector_index::index_document(
-                        db_ref,
+                    tracing::info!("calling vector_index::index_document_shared");
+                    match vector_index::index_document_shared(
+                        db,
                         &path_str,
                         &data.display_title,
                         data.index_pages.as_deref(),
@@ -492,7 +518,9 @@ pub(crate) fn try_process_file(
                         }
                     }
                     // Ensure this file appears in RAG documents list immediately.
-                    let _ = db_ref.upsert_rag_document_for_file_path(&path_str, &data.file_type);
+                    if let Ok(g) = db.lock() {
+                        let _ = g.upsert_rag_document_for_file_path(&path_str, &data.file_type);
+                    }
                 } else {
                     tracing::info!("skipped embeddings: text empty after trim");
                 }
@@ -504,6 +532,43 @@ pub(crate) fn try_process_file(
                 eprintln!(
                     "[athena] ingest: archive move failed after success ({}): {e}",
                     ingest_path.display()
+                );
+            }
+        }
+        Ok(None) | Err(_) if previously_indexed => {
+            eprintln!(
+                "[athena] re-index failed; keeping the file and its existing index ({})",
+                ingest_path.display()
+            );
+        }
+        // The PDF reader cannot handle some valid books (it panics on certain colour spaces). The
+        // book is fine for people to read, so keep it on its shelf, listed by title, rather than
+        // quarantining it; chat just cannot quote its text.
+        Ok(None) | Err(_) if is_pdf(&ingest_path) => {
+            eprintln!(
+                "[athena] could not read text from PDF; listing it by title only ({})",
+                ingest_path.display()
+            );
+            if let Ok(guard) = db.lock() {
+                let name = ingest_path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                let title = name.rsplit_once('.').map(|(stem, _)| stem.to_string()).unwrap_or_else(|| name.clone());
+                let meta = std::fs::metadata(&ingest_path).ok();
+                let modified_at = meta
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64);
+                let _ = guard.upsert_file(
+                    &path_str,
+                    "pdf",
+                    &name,
+                    meta.as_ref().map(|m| m.len() as i64),
+                    modified_at,
+                    None,
+                    None,
+                    Some(title.as_str()),
+                    None,
+                    None,
                 );
             }
         }
@@ -528,6 +593,10 @@ pub(crate) fn try_process_file(
             }
         }
     }
+}
+
+fn is_pdf(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
 }
 
 fn initial_scan(

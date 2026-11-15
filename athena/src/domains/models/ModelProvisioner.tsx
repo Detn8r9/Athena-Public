@@ -30,7 +30,7 @@ function ggufBasenameLower(fileName: string): string {
 }
 
 export interface ModelProvisionerProps {
-  hubActiveTab: "queue" | "packages" | "academy" | "maps" | "models" | "documents";
+  hubActiveTab: string;
 }
 
 export function ModelProvisioner({ hubActiveTab }: ModelProvisionerProps) {

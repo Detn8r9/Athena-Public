@@ -153,8 +153,8 @@ async fn process_one_path(
 
     // ZIM: keep indexing/embedding in smaller batches; use kiwix-serve for content availability.
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zim")) {
-        // Ensure kiwix-serve sees the new ZIM quickly.
-        crate::kiwix_serve::restart_after_library_change(app);
+        // Serve it in Academy and chat search (no restart when kiwix-serve already has it).
+        crate::kiwix_serve::serve_new_zim(app, &path);
 
         // Stream progress to the UI (header bar) while ZIM parsing runs.
         watcher::emit_ingestion_status(app, true, path.file_name().and_then(|n| n.to_str()));
@@ -167,21 +167,8 @@ async fn process_one_path(
         let path2 = path.clone();
 
         let _ = tokio::task::spawn_blocking(move || {
-            let rows = indexer::index_zim_file_with_progress(&path2, |processed, total_limit| {
-                let pct = if total_limit > 0 {
-                    ((processed as f64 / total_limit as f64) * 95.0).round() as i64
-                } else {
-                    5
-                };
-                let pct = pct.clamp(5, 95) as u8;
-                if let Ok(mut guard) = queue2.inner.lock() {
-                    if let Some(it) = guard.in_progress.get_mut(&item_id2) {
-                        it.pct = pct;
-                        it.phase = "indexing".into();
-                    }
-                    emit_queue_snapshot(&app2, &mut guard);
-                }
-            });
+            // One catalog row per archive; kiwix-serve searches the articles themselves.
+            let rows: Vec<_> = indexer::zim_catalog_entry(&path2).into_iter().collect();
 
             if rows.is_empty() {
                 watcher::emit_ingestion_status(&app2, false, None);

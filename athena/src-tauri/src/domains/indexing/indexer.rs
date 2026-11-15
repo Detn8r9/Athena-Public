@@ -58,7 +58,30 @@ const PDF_EMBEDDED_TRY_OCR_BELOW_CHARS: usize = 600;
 const PDF_FORCE_OCR_BELOW_CHARS: usize = 100;
 
 /// Hard cap on stored indexed text per file (UTF-8 bytes). Truncated with a log line when exceeded.
-pub const MAX_INDEXED_TEXT_BYTES: usize = 1_000_000;
+/// At 1 MB only the first part of a medical book or textbook was searchable (Where There Is No
+/// Doctor is about 1.5 MB of text, an OpenStax nursing text several MB); 8 MB covers whole books.
+pub const MAX_INDEXED_TEXT_BYTES: usize = 8_000_000;
+
+/// Cut a page map so it holds no more text than the trimmed document, keeping page numbers for
+/// what remains instead of dropping them all.
+fn truncate_page_map(pages: Vec<(u32, String)>, max_bytes: usize) -> Vec<(u32, String)> {
+    let mut used = 0usize;
+    let mut out = Vec::new();
+    for (n, text) in pages {
+        if used >= max_bytes {
+            break;
+        }
+        let room = max_bytes - used;
+        if text.len() <= room {
+            used += text.len() + 2;
+            out.push((n, text));
+        } else {
+            out.push((n, truncate_utf8_to_max_bytes(&text, room)));
+            break;
+        }
+    }
+    out
+}
 
 /// Guardrail: skip embedded PDF parsing when the file is extremely large (OCR may still run depending on heuristics).
 const PDF_MAX_PARSE_BYTES: u64 = 250 * 1024 * 1024;
@@ -137,6 +160,22 @@ fn combine_pdf_embedded_and_ocr(
         (Some(e), None) => Some(e.clone()),
         (None, Some(o)) => Some(o.clone()),
         (None, None) => None,
+    }
+}
+
+/// Open a ZIM without letting a malformed or newer-format file take the app down.
+///
+/// The `zim` crate computes `ptr + count * 4` for the title pointer list. Recent ZIM files (PhET,
+/// Vikidia and others built in 2026) store a sentinel there, the addition overflows, and in a debug
+/// build the panic aborted the whole app the moment an Academy lesson was opened.
+pub(crate) fn open_zim(path: &Path) -> Result<zim::Zim, String> {
+    match std::panic::catch_unwind(|| zim::Zim::new(path)) {
+        Ok(Ok(z)) => Ok(z),
+        Ok(Err(e)) => Err(format!("could not open {}: {e}", path.display())),
+        Err(_) => Err(format!(
+            "{} uses a ZIM layout this reader cannot open",
+            path.display()
+        )),
     }
 }
 
@@ -300,7 +339,27 @@ pub fn file_kind_from_path(path: &Path) -> FileKind {
 }
 
 pub fn is_supported_path(path: &Path) -> bool {
-    file_kind_from_path(path) != FileKind::Zim
+    if is_unfinished_download(path) {
+        return false;
+    }
+    match file_kind_from_path(path) {
+        // Archives are served by kiwix-serve, not read as documents.
+        FileKind::Zim => false,
+        // Unknown types are probed as text; a large one is a binary (disk image, video, archive).
+        FileKind::Utf8Probe => std::fs::metadata(path).map(|m| m.len() <= UTF8_PROBE_MAX_BYTES).unwrap_or(false),
+        _ => true,
+    }
+}
+
+/// Unknown-type files above this size are not probed as text.
+const UTF8_PROBE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// A download still in progress (or cut off): `.part`, `.crdownload`, `.partial`, `.download`, `.tmp`.
+pub fn is_unfinished_download(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| matches!(e.as_str(), "part" | "crdownload" | "partial" | "download" | "tmp"))
 }
 
 /// Returns `Some(display_label)` when the file is already indexed with matching size and mtime.
@@ -696,6 +755,7 @@ pub fn index_file(path: &Path) -> Option<IndexedFileData> {
     let text_content = text_content.and_then(|t| limit_text_for_index(path, t));
     let index_pages = match (&full_text_raw, &text_content) {
         (Some(o), Some(t)) if o.len() == t.len() => index_pages,
+        (Some(_), Some(t)) => index_pages.map(|p| truncate_page_map(p, t.len())),
         _ => None,
     };
 
@@ -1326,7 +1386,7 @@ where
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
 
-    let zim = match zim::Zim::new(path) {
+    let zim = match open_zim(path) {
         Ok(z) => z,
         Err(e) => {
             eprintln!(
@@ -1349,6 +1409,7 @@ where
         if seen == 1 || (seen % 4000 == 0) {
             on_progress(seen, total_limit);
         }
+        let Ok(entry) = entry else { continue };
         let is_text = match &entry.mime_type {
             zim::MimeType::Type(s) => s == "text/html" || s == "text/plain",
             _ => false,
@@ -1356,19 +1417,11 @@ where
         if !is_text {
             continue;
         }
-        let (cluster_idx, blob_idx) = match &entry.target {
-            Some(zim::Target::Cluster(c, b)) => (*c, *b),
+        let bytes = match zim.entry_content(&entry).and_then(|c| c.map(|c| c.to_vec()).transpose()) {
+            Ok(Some(b)) => b,
             _ => continue,
         };
-        let cluster = match zim.get_cluster(cluster_idx) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let blob = match cluster.get_blob(blob_idx) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let raw = String::from_utf8_lossy(blob.as_ref());
+        let raw = String::from_utf8_lossy(&bytes);
         let text = match &entry.mime_type {
             zim::MimeType::Type(s) if s.contains("html") => strip_html(&raw),
             _ => raw.trim().to_string(),
@@ -1419,6 +1472,41 @@ where
     out
 }
 
+/// One catalog row for a ZIM archive, without reading its articles. kiwix-serve serves and
+/// searches the whole archive (Academy and chat), so copying article text into the database only
+/// cost hours of disk reads on a large archive and starved the library reader meanwhile.
+/// `None` when the file cannot be opened as a ZIM.
+pub fn zim_catalog_entry(path: &std::path::Path) -> Option<IndexedFileData> {
+    let meta = std::fs::metadata(path).ok()?;
+    let zim = open_zim(path).ok()?;
+    let articles = zim.header.article_count;
+    if articles == 0 {
+        return None;
+    }
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("archive.zim");
+    let title = crate::station_inventory::title_from_zim_name(file_name);
+    let modified_at = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    Some(IndexedFileData {
+        path: path.to_string_lossy().to_string(),
+        file_type: "zim".to_string(),
+        name: file_name.to_string(),
+        size: meta.len() as i64,
+        modified_at,
+        text_content: Some(format!(
+            "{title}: offline archive with {articles} entries. Read it in Academy; chat searches it in full."
+        )),
+        metadata_json: Some(format!("{{\"articles\":{articles}}}")),
+        display_title: title,
+        page_count: None,
+        index_pages: None,
+        relative_path: None,
+    })
+}
+
 /// Indexes a ZIM file: one DB row per text article (HTML/plain). Caller must delete_by_path_prefix(zim_path) before upserting.
 pub fn index_zim_file(path: &std::path::Path) -> Vec<IndexedFileData> {
     index_zim_file_with_progress(path, |_processed, _total| {})
@@ -1426,18 +1514,61 @@ pub fn index_zim_file(path: &std::path::Path) -> Vec<IndexedFileData> {
 
 #[cfg(test)]
 mod tests {
-    use super::{limit_text_for_index, MAX_INDEXED_TEXT_BYTES};
+    use super::{limit_text_for_index, truncate_page_map, MAX_INDEXED_TEXT_BYTES};
     use std::path::Path;
 
-    /// Phase 3: `limit_text_for_index` caps extracted text at exactly [`MAX_INDEXED_TEXT_BYTES`] UTF-8 bytes.
+    /// `limit_text_for_index` caps extracted text at exactly [`MAX_INDEXED_TEXT_BYTES`] UTF-8 bytes.
     #[test]
-    fn extracted_text_truncates_to_one_million_bytes() {
+    fn extracted_text_truncates_to_the_cap() {
         let path = Path::new("mock_extract.txt");
-        let two_million_chars = "x".repeat(2_000_000);
-        assert_eq!(two_million_chars.len(), 2_000_000);
+        let too_long = "x".repeat(MAX_INDEXED_TEXT_BYTES + 1_000);
 
-        let limited = limit_text_for_index(path, two_million_chars).expect("non-empty after cap");
+        let limited = limit_text_for_index(path, too_long).expect("non-empty after cap");
         assert_eq!(limited.len(), MAX_INDEXED_TEXT_BYTES);
-        assert_eq!(MAX_INDEXED_TEXT_BYTES, 1_000_000);
+    }
+
+    #[test]
+    fn a_whole_medical_book_fits_under_the_cap() {
+        // Where There Is No Doctor extracts to about 1.5 MB of text.
+        assert!(MAX_INDEXED_TEXT_BYTES >= 4_000_000);
+    }
+
+    #[test]
+    fn a_trimmed_book_keeps_its_page_numbers() {
+        let pages: Vec<(u32, String)> = (1..=10).map(|n| (n, "a".repeat(100))).collect();
+        let kept = truncate_page_map(pages, 350);
+        assert_eq!(kept.iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        let total: usize = kept.iter().map(|(_, t)| t.len()).sum();
+        assert!(total <= 350);
+    }
+}
+
+#[cfg(test)]
+mod supported_tests {
+    use super::*;
+
+    #[test]
+    fn unfinished_downloads_and_archives_are_not_documents() {
+        assert!(!is_supported_path(Path::new("/x/gutenberg_en_all_2025-11.zim.part")));
+        assert!(!is_supported_path(Path::new("/x/report.pdf.crdownload")));
+        assert!(!is_supported_path(Path::new("/x/wikipedia.zim")));
+        assert!(is_supported_path(Path::new("/x/manual.pdf")));
+    }
+}
+
+#[cfg(test)]
+mod zim_probe {
+    /// Manual check: `ZIM_PROBE_DIR=... cargo test --lib zim_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_zims() {
+        let dir = std::env::var("ZIM_PROBE_DIR").expect("ZIM_PROBE_DIR");
+        for e in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+            if e.path().extension().and_then(|x| x.to_str()) != Some("zim") {
+                continue;
+            }
+            let r = super::open_zim(e.path()).map(|z| z.header.article_count);
+            println!("{:?} -> {:?}", e.file_name(), r.map_err(|e| e.chars().take(60).collect::<String>()));
+        }
     }
 }

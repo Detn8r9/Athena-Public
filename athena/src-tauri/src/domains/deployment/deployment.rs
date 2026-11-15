@@ -125,9 +125,9 @@ fn categorize_download_dest(athena_root: &Path, job_file_name: &str) -> Result<P
     } else if lower.starts_with("academy/") {
         user.join("library").join("academy")
     } else if lower.starts_with("library/") || lower.contains("/library/") {
-        user.join("downloads").join("packages")
+        paths.user_downloads_dir().join("packages")
     } else {
-        user.join("downloads").join("documents")
+        paths.user_downloads_dir().join("documents")
     };
     Ok(folder.join(fname))
 }
@@ -162,7 +162,9 @@ pub struct DiskSpaceReport {
 
 #[tauri::command]
 pub fn deployment_check_disk_space(app: tauri::AppHandle) -> Result<DiskSpaceReport, String> {
-    let athena = athena_data_dir(&app)?;
+    // Measure the drive the downloads actually go to.
+    let athena = crate::athena_paths::AthenaPaths::new(athena_data_dir(&app)?).user_downloads_dir();
+    let _ = std::fs::create_dir_all(&athena);
     let s = storage::check_available_storage(
         app,
         Some(athena.to_string_lossy().to_string()),
@@ -193,11 +195,69 @@ pub struct PartialFileStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FileLocation {
+    pub path: String,
+    /// Where the file is on the station.
+    pub location: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileScanReport {
     pub complete: Vec<String>,
     pub partial: Vec<PartialFileStatus>,
     pub missing: Vec<String>,
     pub oversized: Vec<PartialFileStatus>,
+    /// Where each complete (and partial) file was found.
+    #[serde(default)]
+    pub locations: Vec<FileLocation>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Found {
+    Complete(PathBuf),
+    Partial(u64, PathBuf),
+    Oversized(u64, PathBuf),
+    Missing,
+}
+
+fn len_of(p: &Path) -> Option<u64> {
+    std::fs::metadata(p).ok().filter(|m| m.is_file()).map(|m| m.len())
+}
+
+/// Finds a catalog file wherever ATHENA keeps it: where downloads of its kind go now (the chosen
+/// download folder), its partial download, the old place under the data folder, and, for
+/// archives, any folder the library reader serves (an archive copied in by hand counts).
+fn locate_expected(
+    dest: &Path,
+    legacy: &Path,
+    size: u64,
+    elsewhere: &mut dyn FnMut(&str) -> Option<(PathBuf, u64)>,
+) -> Found {
+    for p in [dest, legacy] {
+        if len_of(p) == Some(size) {
+            return Found::Complete(p.to_path_buf());
+        }
+    }
+    if let Some(name) = dest.file_name().and_then(|n| n.to_str()) {
+        if let Some((p, len)) = elsewhere(name) {
+            if len == size {
+                return Found::Complete(p);
+            }
+        }
+    }
+    let part = partial_download_path(dest);
+    if let Some(len) = len_of(&part) {
+        return if len <= size { Found::Partial(len, part) } else { Found::Oversized(len, part) };
+    }
+    for p in [dest, legacy] {
+        match len_of(p) {
+            Some(len) if len < size => return Found::Partial(len, p.to_path_buf()),
+            Some(len) if len > size => return Found::Oversized(len, p.to_path_buf()),
+            _ => {}
+        }
+    }
+    Found::Missing
 }
 
 #[tauri::command]
@@ -205,47 +265,51 @@ pub fn deployment_scan_files(
     app: tauri::AppHandle,
     expected: Vec<ExpectedFile>,
 ) -> Result<FileScanReport, String> {
-    use std::fs;
     let root = athena_data_dir(&app)?;
     let mut complete: Vec<String> = Vec::new();
     let mut partial: Vec<PartialFileStatus> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let mut oversized: Vec<PartialFileStatus> = Vec::new();
+    let mut locations: Vec<FileLocation> = Vec::new();
+
+    // Archives in any served folder, by file name (built only if needed).
+    let mut by_name: Option<std::collections::HashMap<String, (PathBuf, u64)>> = None;
+    let mut elsewhere = |name: &str| -> Option<(PathBuf, u64)> {
+        if !name.to_ascii_lowercase().ends_with(".zim") {
+            return None;
+        }
+        let map = by_name.get_or_insert_with(|| {
+            let roots = crate::kiwix_serve::zim_discovery_roots(&root);
+            crate::kiwix_serve::collect_zim_paths_from_roots(&roots)
+                .into_iter()
+                .filter_map(|p| {
+                    let pb = PathBuf::from(&p);
+                    let n = pb.file_name()?.to_str()?.to_ascii_lowercase();
+                    let len = len_of(&pb)?;
+                    Some((n, (pb, len)))
+                })
+                .collect()
+        });
+        map.get(&name.to_ascii_lowercase()).cloned()
+    };
 
     for e in expected {
-        let p = safe_join(&root, &e.path)?;
         let rel = e.path.replace('\\', "/");
-        match fs::metadata(&p) {
-            Ok(m) if m.is_file() => {
-                let len = m.len();
-                if len == e.size_bytes {
-                    complete.push(rel);
-                } else if len < e.size_bytes {
-                    partial.push(PartialFileStatus {
-                        path: rel,
-                        downloaded_bytes: len,
-                        expected_bytes: e.size_bytes,
-                    });
-                } else {
-                    oversized.push(PartialFileStatus {
-                        path: rel,
-                        downloaded_bytes: len,
-                        expected_bytes: e.size_bytes,
-                    });
-                }
+        let legacy = safe_join(&root, &e.path)?;
+        let dest = categorize_download_dest(&root, &e.path).unwrap_or_else(|_| legacy.clone());
+        match locate_expected(&dest, &legacy, e.size_bytes, &mut elsewhere) {
+            Found::Complete(p) => {
+                locations.push(FileLocation { path: rel.clone(), location: p.display().to_string() });
+                complete.push(rel);
             }
-            Ok(m) if m.is_dir() => {
-                return Err(format!("{} is a directory, not a file.", p.display()));
+            Found::Partial(len, p) => {
+                locations.push(FileLocation { path: rel.clone(), location: p.display().to_string() });
+                partial.push(PartialFileStatus { path: rel, downloaded_bytes: len, expected_bytes: e.size_bytes });
             }
-            Ok(_) => {
-                return Err(format!("{} is not a file.", p.display()));
+            Found::Oversized(len, _) => {
+                oversized.push(PartialFileStatus { path: rel, downloaded_bytes: len, expected_bytes: e.size_bytes });
             }
-            Err(err) if err.kind() == ErrorKind::NotFound => {
-                missing.push(rel);
-            }
-            Err(err) => {
-                return Err(err.to_string());
-            }
+            Found::Missing => missing.push(rel),
         }
     }
 
@@ -254,7 +318,38 @@ pub fn deployment_scan_files(
         partial,
         missing,
         oversized,
+        locations,
     })
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    #[test]
+    fn files_are_found_where_they_really_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("packages").join("a.zim");
+        let legacy = dir.path().join("library").join("a.zim");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        let mut none = |_: &str| None;
+
+        assert_eq!(locate_expected(&dest, &legacy, 10, &mut none), Found::Missing);
+
+        // A partial download.
+        std::fs::write(partial_download_path(&dest), b"12345").unwrap();
+        assert_eq!(locate_expected(&dest, &legacy, 10, &mut none), Found::Partial(5, partial_download_path(&dest)));
+
+        // Copied in by hand elsewhere (e.g. the ZIM archive folder) counts as installed.
+        let other = dir.path().join("zim").join("a.zim");
+        let mut found = |n: &str| (n == "a.zim").then(|| (other.clone(), 10));
+        assert_eq!(locate_expected(&dest, &legacy, 10, &mut found), Found::Complete(other.clone()));
+
+        // Complete in the download folder.
+        std::fs::write(&dest, b"0123456789").unwrap();
+        assert_eq!(locate_expected(&dest, &legacy, 10, &mut none), Found::Complete(dest.clone()));
+    }
 }
 
 // --- Power (keepawake) ref-count ----------------------------------------------
@@ -425,8 +520,11 @@ fn recoverable_reqwest(e: &reqwest::Error) -> bool {
             }
             s = src;
         }
+        // A body that stops partway (connection closed, proxy reset, HTTP/2 stream error) leaves
+        // a resumable partial on disk, so it is always worth another try.
+        return true;
     }
-    false
+    e.is_decode()
 }
 
 fn recoverable_io(e: &std::io::Error) -> bool {
@@ -439,6 +537,24 @@ fn recoverable_io(e: &std::io::Error) -> bool {
             | ErrorKind::Interrupted
     )
 }
+
+/// Where a file's bytes collect until the download is complete.
+fn partial_download_path(final_path: &Path) -> PathBuf {
+    let mut name = final_path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".part");
+    final_path.with_file_name(name)
+}
+
+/// Server answers worth waiting out and trying again (busy, rate limited, mirror hiccup).
+fn http_status_is_temporary(status: reqwest::StatusCode) -> bool {
+    status.is_server_error()
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+}
+
+/// How many times a dropped connection is retried before the file is marked failed, and the wait
+/// before each try. A long archive can take hours; mirrors drop connections now and then.
+const RETRY_DELAYS_SECS: [u64; 6] = [5, 15, 30, 60, 120, 300];
 
 fn build_http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
@@ -721,20 +837,15 @@ async fn download_one_job(
             .map_err(|e| QueueError::Fatal(e.to_string()))?;
     }
 
-    // Existing on-disk size (before network preflight).
-    let mut on_disk: u64 = 0;
-    if let Ok(m) = tokio::fs::metadata(&final_path).await {
-        on_disk = m.len();
-    }
+    // Bytes arrive in `<name>.part` and the file takes its real name only once complete, so a cut
+    // download is never mistaken for a finished archive (and never served or indexed).
+    let part_path = partial_download_path(&final_path);
+    let part_len = tokio::fs::metadata(&part_path).await.map(|m| m.len()).unwrap_or(0);
+    let final_len = tokio::fs::metadata(&final_path).await.ok().map(|m| m.len());
 
-    if on_disk > job.expected_bytes {
-        on_disk = 0;
-        let _ = tokio::fs::File::create(&final_path)
-            .await
-            .map_err(|e| QueueError::Fatal(e.to_string()))?;
-    }
-
-    let pf = preflight_first_working_url(client, job, on_disk, athena_root).await?;
+    // The manifest size can be stale, so nothing on disk is truncated until the server has said
+    // how big the file really is.
+    let pf = preflight_first_working_url(client, job, part_len, athena_root).await?;
     let effective_bytes = pf.effective_bytes;
     let resolved_url = pf.final_url;
 
@@ -743,9 +854,34 @@ async fn download_one_job(
         j.source_url = resolved_url.clone();
     });
 
+    let mut on_disk = part_len;
+    match final_len {
+        Some(n) if n == effective_bytes => {
+            // Already complete under its real name; any stray partial is leftover.
+            let _ = tokio::fs::remove_file(&part_path).await;
+            on_disk = effective_bytes;
+        }
+        Some(n) if n < effective_bytes && part_len == 0 && n > 0 => {
+            // Older builds wrote straight to the real name: an interrupted file looks complete.
+            // Move it aside and resume it.
+            tokio::fs::rename(&final_path, &part_path)
+                .await
+                .map_err(|e| QueueError::Fatal(format!("Could not move partial {}: {e}", final_path.display())))?;
+            on_disk = n;
+        }
+        _ => {}
+    }
+
     if on_disk > effective_bytes {
         on_disk = 0;
-        let _ = tokio::fs::File::create(&final_path)
+        let _ = tokio::fs::File::create(&part_path)
+            .await
+            .map_err(|e| QueueError::Fatal(e.to_string()))?;
+    }
+
+    if on_disk == effective_bytes && final_len != Some(effective_bytes) {
+        // The partial already holds every byte: just finish it.
+        tokio::fs::rename(&part_path, &final_path)
             .await
             .map_err(|e| QueueError::Fatal(e.to_string()))?;
     }
@@ -800,11 +936,12 @@ async fn download_one_job(
 
         let status = response.status();
         if status.is_client_error() || status.is_server_error() {
-            return Err(QueueError::Fatal(format!(
-                "HTTP {}: {}",
-                status,
-                job.file_name
-            )));
+            let msg = format!("The server answered {} for {}", status, job.file_name);
+            return Err(if http_status_is_temporary(status) {
+                QueueError::Recoverable(msg)
+            } else {
+                QueueError::Fatal(msg)
+            });
         }
 
         if !status.is_success() {
@@ -826,7 +963,7 @@ async fn download_one_job(
             let f = tokio::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&final_path)
+                .open(&part_path)
                 .await
                 .map_err(|e| QueueError::Fatal(e.to_string()))?;
             (f, resume_from)
@@ -836,7 +973,7 @@ async fn download_one_job(
                 .create(true)
                 .write(true)
                 .truncate(true)
-                .open(&final_path)
+                .open(&part_path)
                 .await
                 .map_err(|e| QueueError::Fatal(e.to_string()))?;
             (f, 0u64)
@@ -911,11 +1048,15 @@ async fn download_one_job(
         drop(file);
 
         if downloaded != effective_bytes {
-            return Err(QueueError::Fatal(format!(
-                "File size {} does not match expected {} bytes: {}",
+            // The connection ended early; the partial stays and the next attempt resumes it.
+            return Err(QueueError::Recoverable(format!(
+                "The connection closed after {} of {} bytes: {}",
                 downloaded, effective_bytes, job.file_name
             )));
         }
+        tokio::fs::rename(&part_path, &final_path)
+            .await
+            .map_err(|e| QueueError::Fatal(format!("Could not finish {}: {e}", final_path.display())))?;
 
         emit_progress(
             app,
@@ -984,76 +1125,83 @@ async fn run_deployment_queue(
     };
 
     let mut all_ok = true;
-    for job in &jobs {
+    'jobs: for job in &jobs {
         let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
             j.state = "running".into();
+            j.message = None;
         });
-        let r = download_one_job(
-            &app,
-            &client,
-            &dest_dir,
-            &athena_root,
-            mgr.as_ref(),
-            job,
-        )
-        .await;
-        match r {
-            Ok(()) => {
-                // Trigger background ingestion as soon as the file is complete.
-                let final_path = safe_join(&dest_dir, &job.file_name).unwrap_or_else(|_| dest_dir.join(&job.file_name));
-                ingestion_queue.enqueue_completed_download(
-                    &app,
-                    &db,
-                    final_path,
-                    job.source_package.clone(),
+        let mut attempt = 0usize;
+        loop {
+            let r = download_one_job(&app, &client, &dest_dir, &athena_root, mgr.as_ref(), job).await;
+            let (msg, recoverable) = match r {
+                Ok(()) => {
+                    let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
+                        j.state = "completed".into();
+                        j.message = None;
+                    });
+                    // Trigger background ingestion as soon as the file is complete.
+                    // The file was written where its kind belongs, not under `dest_dir`.
+                    let final_path = categorize_download_dest(&athena_root, &job.file_name)
+                        .unwrap_or_else(|_| safe_join(&dest_dir, &job.file_name).unwrap_or_else(|_| dest_dir.join(&job.file_name)));
+                    ingestion_queue.enqueue_completed_download(&app, &db, final_path, job.source_package.clone());
+                    continue 'jobs;
+                }
+                Err(QueueError::Paused) => {
+                    let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
+                        j.state = "paused".into();
+                    });
+                    let _ = app.emit(
+                        DEPLOYMENT_DOWNLOAD_ERROR_EVENT,
+                        DownloadErrorPayload { file_name: job.file_name.clone(), message: "paused".to_string(), recoverable: true },
+                    );
+                    all_ok = false;
+                    // Everything after this file waits for the next run.
+                    let _ = mgr.update_in_memory(|p| {
+                        for j in &mut p.jobs {
+                            if j.state == "queued" {
+                                j.state = "paused".into();
+                            }
+                        }
+                    });
+                    break 'jobs;
+                }
+                Err(QueueError::Recoverable(m)) => (m, true),
+                Err(QueueError::Fatal(m)) => (m, false),
+            };
+            if recoverable && attempt < RETRY_DELAYS_SECS.len() {
+                let wait = RETRY_DELAYS_SECS[attempt];
+                attempt += 1;
+                let note = format!("Connection dropped; trying again in {wait}s (attempt {attempt} of {}). {msg}", RETRY_DELAYS_SECS.len());
+                let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
+                    j.state = "retrying".into();
+                    j.message = Some(note.clone());
+                });
+                let _ = app.emit(
+                    DEPLOYMENT_DOWNLOAD_ERROR_EVENT,
+                    DownloadErrorPayload { file_name: job.file_name.clone(), message: note, recoverable: true },
                 );
+                for _ in 0..wait {
+                    if mgr.is_cancel_requested().unwrap_or(false) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
+                    j.state = "running".into();
+                });
                 continue;
             }
-            Err(QueueError::Paused) => {
-                let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
-                    j.state = "paused".into();
-                });
-                let _ = app.emit(
-                    DEPLOYMENT_DOWNLOAD_ERROR_EVENT,
-                    DownloadErrorPayload {
-                        file_name: job.file_name.clone(),
-                        message: "paused".to_string(),
-                        recoverable: true,
-                    },
-                );
-                all_ok = false;
-                break;
-            }
-            Err(QueueError::Recoverable(msg)) => {
-                let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
-                    j.state = "interrupted".into();
-                });
-                let _ = app.emit(
-                    DEPLOYMENT_DOWNLOAD_ERROR_EVENT,
-                    DownloadErrorPayload {
-                        file_name: job.file_name.clone(),
-                        message: msg,
-                        recoverable: true,
-                    },
-                );
-                all_ok = false;
-                break;
-            }
-            Err(QueueError::Fatal(msg)) => {
-                let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
-                    j.state = "failed".into();
-                });
-                let _ = app.emit(
-                    DEPLOYMENT_DOWNLOAD_ERROR_EVENT,
-                    DownloadErrorPayload {
-                        file_name: job.file_name.clone(),
-                        message: msg,
-                        recoverable: false,
-                    },
-                );
-                all_ok = false;
-                break;
-            }
+            // Give up on this file and move on: one bad mirror must not strand the rest of the queue.
+            let _ = mgr.touch_job_by_display_name(&job.file_name, |j| {
+                j.state = "failed".into();
+                j.message = Some(msg.clone());
+            });
+            let _ = app.emit(
+                DEPLOYMENT_DOWNLOAD_ERROR_EVENT,
+                DownloadErrorPayload { file_name: job.file_name.clone(), message: msg, recoverable: false },
+            );
+            all_ok = false;
+            continue 'jobs;
         }
     }
 
@@ -1094,6 +1242,8 @@ pub async fn deployment_start_downloads(
             state: "queued".into(),
             bytes_downloaded: 0,
             total_bytes: Some(j.expected_bytes),
+            message: None,
+            job: serde_json::to_value(j).ok(),
         })
         .collect();
 
@@ -1149,6 +1299,39 @@ pub fn deployment_is_running(
     queue: tauri::State<'_, Arc<DeploymentQueueStateManager>>,
 ) -> Result<bool, String> {
     queue.is_queue_active()
+}
+
+/// Starts again every file from the last run that did not finish (failed, paused, interrupted
+/// or never reached). Partial files resume where they stopped.
+#[tauri::command]
+pub async fn deployment_retry_unfinished(
+    app: tauri::AppHandle,
+    queue: tauri::State<'_, Arc<DeploymentQueueStateManager>>,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<usize, String> {
+    let jobs = unfinished_jobs(&queue.snapshot()?.last_session);
+    if jobs.is_empty() {
+        return Err("Nothing from the last run is left to download.".to_string());
+    }
+    let n = jobs.len();
+    deployment_start_downloads(app, queue, state, jobs, None).await?;
+    Ok(n)
+}
+
+/// Forgets the last run's results (the list under "Last run" in Downloads).
+#[tauri::command]
+pub fn deployment_clear_last_session(
+    queue: tauri::State<'_, Arc<DeploymentQueueStateManager>>,
+) -> Result<(), String> {
+    queue.clear_last_session()
+}
+
+fn unfinished_jobs(rows: &[DeploymentQueueJobRecord]) -> Vec<DownloadJob> {
+    rows.iter()
+        .filter(|r| r.state != "completed")
+        .filter_map(|r| r.job.clone())
+        .filter_map(|v| serde_json::from_value::<DownloadJob>(v).ok())
+        .collect()
 }
 
 /// Canonical queue + session flags for the React deployment UIs (call on mount).
@@ -1265,6 +1448,43 @@ pub async fn deployment_open_athena_data_folder(app: tauri::AppHandle) -> Result
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    #[test]
+    fn partial_files_get_their_own_name() {
+        let p = std::path::Path::new("/x/packages/gutenberg_en_all.zim");
+        assert_eq!(partial_download_path(p), std::path::Path::new("/x/packages/gutenberg_en_all.zim.part"));
+    }
+
+    #[test]
+    fn only_unfinished_files_are_retried() {
+        let job = |n: &str| serde_json::json!({"url": format!("https://e.org/{n}"), "fileName": n, "expectedBytes": 10});
+        let row = |n: &str, st: &str, with_job: bool| crate::deployment_queue_state::DeploymentQueueJobRecord {
+            job_id: n.into(),
+            source_url: String::new(),
+            display_name: n.into(),
+            state: st.into(),
+            bytes_downloaded: 0,
+            total_bytes: None,
+            message: None,
+            job: with_job.then(|| job(n)),
+        };
+        let got = unfinished_jobs(&[
+            row("a", "completed", true),
+            row("b", "failed", true),
+            row("c", "not_started", true),
+            row("d", "failed", false),
+        ]);
+        let names: Vec<_> = got.iter().map(|j| j.file_name.as_str()).collect();
+        assert_eq!(names, ["b", "c"]);
+    }
+
+    #[test]
+    fn temporary_server_errors_are_retried() {
+        assert!(http_status_is_temporary(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(http_status_is_temporary(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(!http_status_is_temporary(reqwest::StatusCode::NOT_FOUND));
+    }
+
     use super::safe_join;
     use tempfile::tempdir;
 

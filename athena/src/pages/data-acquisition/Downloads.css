@@ -1,0 +1,415 @@
+/* Downloads: queue status and "On this station". Theme tokens only, phone first. */
+
+.dl-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  min-width: 0;
+}
+
+.dl-card {
+  background: color-mix(in srgb, var(--surface-solid) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-card, 16px);
+  padding: 1rem;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.dl-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.dl-card__title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.dl-card__head .dl-card__title {
+  margin: 0;
+}
+
+.dl-card__aside {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* Status card */
+.dl-status__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.dl-status__icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.dl-status__icon--busy svg {
+  animation: dl-bob 1.4s ease-in-out infinite;
+}
+
+@keyframes dl-bob {
+  0%,
+  100% {
+    transform: translateY(-2px);
+  }
+  50% {
+    transform: translateY(2px);
+  }
+}
+
+.dl-status__text {
+  min-width: 0;
+}
+
+.dl-status__title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 750;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.dl-status__detail {
+  margin: 0.3rem 0 0;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.dl-status__where {
+  margin: 0.6rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.dl-status__where strong {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.dl-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: color-mix(in srgb, var(--warning, #d29922) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning, #d29922) 40%, transparent);
+}
+
+.dl-warn svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* Progress */
+.dl-bar {
+  height: 10px;
+  margin-top: 0.75rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.dl-bar--thin {
+  height: 5px;
+  margin-top: 0.4rem;
+}
+
+.dl-bar__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 0.6s ease;
+}
+
+/* Buttons */
+.dl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.dl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 40px;
+  padding: 0.5rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 70%, var(--bg) 30%);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dl-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+}
+
+.dl-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dl-btn--primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--bg, #000);
+}
+
+.dl-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.dl-btn--quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.dl-btn--quiet:hover:not(:disabled) {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.dl-spin {
+  animation: dl-spin 0.9s linear infinite;
+}
+
+@keyframes dl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Lists */
+.dl-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dl-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  min-width: 0;
+}
+
+.dl-row:first-child {
+  border-top: none;
+}
+
+.dl-row__main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dl-row__title {
+  font-size: 0.92rem;
+  font-weight: 650;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.dl-row__meta {
+  margin-top: 0.15rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.dl-row__path {
+  margin-top: 0.2rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.dl-row__msg {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.dl-row__msg--bad {
+  color: #f0817a;
+}
+
+.dl-row__msg--warn {
+  color: var(--warning, #d29922);
+}
+
+/* Status chips */
+.dl-chip {
+  flex: 0 0 auto;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.dl-chip--ok {
+  color: #3fb950;
+  background: color-mix(in srgb, #3fb950 14%, transparent);
+  border-color: color-mix(in srgb, #3fb950 35%, transparent);
+}
+
+.dl-chip--busy {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--primary) 35%, transparent);
+}
+
+.dl-chip--warn {
+  color: var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning, #d29922) 14%, transparent);
+  border-color: color-mix(in srgb, var(--warning, #d29922) 35%, transparent);
+}
+
+.dl-chip--bad {
+  color: #f0817a;
+  background: color-mix(in srgb, #f85149 14%, transparent);
+  border-color: color-mix(in srgb, #f85149 35%, transparent);
+}
+
+.dl-chip--idle {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+}
+
+/* Last-run summary */
+.dl-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0 0 0.35rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.dl-summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.dl-summary__ok {
+  color: #3fb950;
+}
+
+.dl-summary__bad {
+  color: #f0817a;
+}
+
+.dl-summary__warn {
+  color: var(--warning, #d29922);
+}
+
+/* "On this station" tiles */
+.dl-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin-top: 0.4rem;
+}
+
+.dl-tile {
+  display: grid;
+  justify-items: start;
+  gap: 0.1rem;
+  padding: 0.75rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-solid) 60%, var(--bg) 40%);
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.dl-tile--on {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.dl-tile__n {
+  font-size: 1.5rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--text);
+}
+
+.dl-tile__label {
+  font-size: 0.8rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.dl-tile__size {
+  font-size: 0.74rem;
+}
+
+@media (max-width: 560px) {
+  .dl-card {
+    padding: 0.85rem;
+  }
+
+  .dl-actions .dl-btn {
+    flex: 1 1 100%;
+  }
+
+  .dl-tiles {
+    gap: 0.4rem;
+  }
+
+  .dl-tile {
+    padding: 0.6rem 0.5rem;
+  }
+
+  .dl-tile__n {
+    font-size: 1.25rem;
+  }
+}

@@ -24,6 +24,12 @@ pub struct DeploymentQueueJobRecord {
     pub state: String,
     pub bytes_downloaded: u64,
     pub total_bytes: Option<u64>,
+    /// Why the last attempt failed or is being retried, in plain words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// The original download request, kept so an unfinished file can be retried later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,6 +41,13 @@ pub struct DeploymentQueuePersistence {
     #[serde(default)]
     pub cancel_requested: bool,
     pub jobs: Vec<DeploymentQueueJobRecord>,
+    /// Every file from the most recent run with how it ended (completed, failed, paused,
+    /// interrupted), so the hub can show what still needs doing and offer a retry.
+    #[serde(default)]
+    pub last_session: Vec<DeploymentQueueJobRecord>,
+    /// Unix seconds when the most recent run ended.
+    #[serde(default)]
+    pub last_session_ended_at: Option<i64>,
 }
 
 impl Default for DeploymentQueuePersistence {
@@ -44,8 +57,33 @@ impl Default for DeploymentQueuePersistence {
             queue_active: false,
             cancel_requested: false,
             jobs: Vec::new(),
+            last_session: Vec::new(),
+            last_session_ended_at: None,
         }
     }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Moves the current run's rows into `last_session`. Rows that never finished are marked so the
+/// hub can say what happened to them.
+fn archive_jobs(p: &mut DeploymentQueuePersistence, unfinished_state: &str) {
+    if p.jobs.is_empty() {
+        return;
+    }
+    let mut rows = std::mem::take(&mut p.jobs);
+    for r in &mut rows {
+        if matches!(r.state.as_str(), "queued" | "running" | "retrying") {
+            r.state = unfinished_state.to_string();
+        }
+    }
+    p.last_session = rows;
+    p.last_session_ended_at = Some(now_secs());
 }
 
 #[inline]
@@ -119,6 +157,7 @@ impl DeploymentQueueStateManager {
             );
             initial.queue_active = false;
             initial.cancel_requested = false;
+            archive_jobs(&mut initial, "interrupted");
             tauri::async_runtime::block_on(async { save_queue_state(&path, &initial).await })?;
         } else if !initial.jobs.is_empty() {
             // Idle snapshots should not retain completed/cancelled job rows — they inflate hub totals ("ghost GiB").
@@ -126,7 +165,7 @@ impl DeploymentQueueStateManager {
                 "[athena] deployment queue: clearing {} stale job row(s) from idle snapshot",
                 initial.jobs.len()
             );
-            initial.jobs.clear();
+            archive_jobs(&mut initial, "interrupted");
             tauri::async_runtime::block_on(async { save_queue_state(&path, &initial).await })?;
         }
         Ok(Self::new_with_state(path, initial))
@@ -243,7 +282,15 @@ impl DeploymentQueueStateManager {
         self.update_and_persist(|p| {
             p.queue_active = false;
             p.cancel_requested = false;
-            p.jobs.clear();
+            archive_jobs(p, "not_started");
+        })
+    }
+
+    /// Forgets the most recent run's results.
+    pub fn clear_last_session(&self) -> Result<(), String> {
+        self.update_and_persist(|p| {
+            p.last_session.clear();
+            p.last_session_ended_at = None;
         })
     }
 
@@ -299,6 +346,8 @@ mod tests {
             state: "queued".into(),
             bytes_downloaded: 0,
             total_bytes: Some(1024),
+            message: None,
+            job: None,
         });
         tauri::async_runtime::block_on(async { save_queue_state(&path, &state).await }).unwrap();
         let loaded = load_queue_state(&path).unwrap();
@@ -321,6 +370,31 @@ mod tests {
     }
 
     #[test]
+    fn ending_a_run_keeps_its_results_for_retry() {
+        let dir = tempdir().unwrap();
+        let m = DeploymentQueueStateManager::open(dir.path()).unwrap();
+        let row = |name: &str, state: &str| DeploymentQueueJobRecord {
+            job_id: name.into(),
+            source_url: String::new(),
+            display_name: name.into(),
+            state: state.into(),
+            bytes_downloaded: 0,
+            total_bytes: None,
+            message: None,
+            job: None,
+        };
+        m.try_begin_session(vec![row("a", "completed"), row("b", "failed"), row("c", "queued")]).unwrap();
+        m.end_session().unwrap();
+        let snap = m.snapshot().unwrap();
+        assert!(snap.jobs.is_empty(), "hub totals only count the running queue");
+        let states: Vec<_> = snap.last_session.iter().map(|r| r.state.as_str()).collect();
+        assert_eq!(states, ["completed", "failed", "not_started"]);
+        assert!(snap.last_session_ended_at.is_some());
+        m.clear_last_session().unwrap();
+        assert!(m.snapshot().unwrap().last_session.is_empty());
+    }
+
+    #[test]
     fn manager_persists_across_open() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -334,6 +408,8 @@ mod tests {
                     state: "running".into(),
                     bytes_downloaded: 50,
                     total_bytes: None,
+                    message: None,
+                    job: None,
                 });
             })
             .unwrap();

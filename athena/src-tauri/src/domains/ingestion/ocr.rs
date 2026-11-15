@@ -80,16 +80,36 @@ fn compiled_target_triple() -> &'static str {
 
 fn bundled_sidecar_path(name: &str) -> Option<PathBuf> {
     let dir = exe_dir_for_sidecars()?;
-    let triple = compiled_target_triple();
-    let path = if cfg!(windows) {
-        dir.join(format!("{}-{}.exe", name, triple))
-    } else {
-        dir.join(format!("{}-{}", name, triple))
-    };
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
+    sidecar_candidates(&dir, name, compiled_target_triple(), cfg!(windows))
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+/// Where a helper program can be, best first:
+/// 1. `tools/<name>/<name>`: the program in its own folder with the libraries it needs (the
+///    Windows builds of Tesseract and Poppler come with dozens of DLLs, kept apart from ATHENA's).
+/// 2. `<name>-<target>`: a development build (`bundle.externalBin` naming).
+/// 3. `<name>`: an installed build, where the bundler drops the target suffix.
+fn sidecar_candidates(dir: &std::path::Path, name: &str, triple: &str, windows: bool) -> Vec<PathBuf> {
+    let exe = |stem: String| if windows { format!("{stem}.exe") } else { stem };
+    vec![
+        dir.join("tools").join(name).join(exe(name.to_string())),
+        dir.join(exe(format!("{name}-{triple}"))),
+        dir.join(exe(name.to_string())),
+    ]
+}
+
+#[cfg(test)]
+mod sidecar_tests {
+    use super::*;
+
+    #[test]
+    fn installed_and_tool_folder_names_are_found() {
+        let d = std::path::Path::new("C:/ATHENA");
+        let c = sidecar_candidates(d, "tesseract", "x86_64-pc-windows-msvc", true);
+        assert_eq!(c[0], d.join("tools").join("tesseract").join("tesseract.exe"));
+        assert_eq!(c[1], d.join("tesseract-x86_64-pc-windows-msvc.exe"));
+        assert_eq!(c[2], d.join("tesseract.exe"));
     }
 }
 

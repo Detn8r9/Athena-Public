@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isAthenaDesktopRuntime } from "../../../shared/ipc/athenaRuntime";
 import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import { athenaListen as listen } from "../../../shared/ipc/athenaIpc";
 import { AnimatePresence, motion } from "framer-motion";
@@ -28,6 +29,8 @@ type FileScanReport = {
   partial: PartialFileStatus[];
   missing: string[];
   oversized: PartialFileStatus[];
+  /** Where each finished file was found on the station. */
+  locations?: Array<{ path: string; location: string }>;
 };
 
 type DownloadJob = StagedDownloadJob;
@@ -92,31 +95,31 @@ const TACTICAL_DATA_CATALOG: TacticalCatalogEntry[] = [
     id: "wikimed",
     name: "WikiMed Archive",
     description: "The largest comprehensive offline medical encyclopedia.",
-    sizeGb: 2.05,
+    sizeGb: 2.06,
   },
   {
     id: "gvcs",
     name: "Global Village Construction Set",
     description: "Open Source Ecology blueprints for the 50 machines that build a civilization.",
-    sizeGb: 1.68,
+    sizeGb: 2.76,
   },
   {
     id: "ifixit",
     name: "iFixit Repair Manuals",
     description: "Offline teardown and repair manuals for thousands of electronics and vehicles.",
-    sizeGb: 3.5,
+    sizeGb: 3.33,
   },
   {
-    id: "survivor",
-    name: "The Survivor Library",
-    description: "Complete repository of 19th-century industrial and agricultural technology.",
-    sizeGb: 80.0,
+    id: "appropedia",
+    name: "Appropedia",
+    description: "Practical self-reliance: water, energy, food, shelter and repair for low-resource settings.",
+    sizeGb: 0.54,
   },
   {
     id: "stackexchange",
     name: "Stack Exchange Dump",
     description: "Complete offline archive of Stack Overflow and technical exchanges.",
-    sizeGb: 45.0,
+    sizeGb: 74.96,
   },
   {
     id: "maps_global",
@@ -128,13 +131,13 @@ const TACTICAL_DATA_CATALOG: TacticalCatalogEntry[] = [
     id: "gutenberg",
     name: "Project Gutenberg",
     description: "Over 70,000 free eBooks containing classic human literature and philosophy.",
-    sizeGb: 35.0,
+    sizeGb: 206.06,
   },
   {
     id: "wikipedia_full",
     name: "Wikipedia (Full English)",
     description: "Complete text and images of the entirety of English Wikipedia.",
-    sizeGb: 115.0,
+    sizeGb: 118.67,
   },
 ];
 
@@ -142,7 +145,7 @@ const TACTICAL_DATA_CATALOG: TacticalCatalogEntry[] = [
 const CATALOG_ID_TO_MANIFEST_ID: Partial<Record<string, string>> = {
   wikimed: "kiwix-wikimed",
   gvcs: "ose-blueprints",
-  survivor: "survivor-library",
+  appropedia: "kiwix-appropedia",
   ifixit: "kiwix-ifixit",
   stackexchange: "kiwix-stackoverflow",
   gutenberg: "kiwix-gutenberg",
@@ -151,9 +154,9 @@ const CATALOG_ID_TO_MANIFEST_ID: Partial<Record<string, string>> = {
 
 const TACTICAL_PRESET_IDS: Record<PresetId, readonly string[]> = {
   small: ["wikimed", "gvcs"],
-  medium: ["wikimed", "gvcs", "ifixit", "survivor"],
-  large: ["wikimed", "gvcs", "ifixit", "survivor", "stackexchange", "maps_global"],
-  xl: ["wikimed", "gvcs", "ifixit", "survivor", "stackexchange", "maps_global", "gutenberg", "wikipedia_full"],
+  medium: ["wikimed", "gvcs", "ifixit", "appropedia"],
+  large: ["wikimed", "gvcs", "ifixit", "appropedia", "stackexchange", "maps_global"],
+  xl: ["wikimed", "gvcs", "ifixit", "appropedia", "stackexchange", "maps_global", "gutenberg", "wikipedia_full"],
 };
 
 function manifestItemForCatalogId(catalogId: string): ManifestItem | undefined {
@@ -230,9 +233,11 @@ function ToggleRow({
   disabled,
   onToggle,
   rightLabel,
+  note,
 }: {
   title: string;
   subtitle: string;
+  note?: string;
   installed: boolean;
   enabled: boolean;
   disabled: boolean;
@@ -244,6 +249,7 @@ function ToggleRow({
       <div className="mac-list__text">
         <div className="mac-list__title">{title}</div>
         <div className="mac-list__subtitle">{subtitle}</div>
+        {note ? <div className="mac-list__note">{note}</div> : null}
       </div>
       <div className="mac-list__right">
         <div className={"mac-pill" + (installed ? " mac-pill--ok" : "")}>{installed ? "Installed" : rightLabel}</div>
@@ -321,6 +327,12 @@ export function DynamicLibraryInstaller({ deferPrimaryDownloadButton = false }: 
     return m;
   }, [scan?.oversized]);
 
+  const locationByPath = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of scan?.locations ?? []) m.set(normalizePathSlashes(r.path), r.location);
+    return m;
+  }, [scan?.locations]);
+
   const allExpectedFiles: ExpectedFile[] = useMemo(() => {
     const out: ExpectedFile[] = [];
     for (const it of MANIFEST) out.push({ path: normalizePathSlashes(it.fileName), sizeBytes: it.sizeBytes });
@@ -381,9 +393,17 @@ export function DynamicLibraryInstaller({ deferPrimaryDownloadButton = false }: 
           : partial || overs
             ? fmtBytes(remainingBytes)
             : fmtCatalogGb(cat.sizeGb);
-      return { cat, it, fileName, installed, enabled, remainingBytes, rightLabel };
+      const where = installed ? locationByPath.get(fileName) : undefined;
+      const note = installed
+        ? where
+          ? `On this station: ${where}`
+          : "On this station"
+        : partial
+          ? `Partly downloaded (${fmtBytes(partial.downloadedBytes)} of ${fmtBytes(partial.expectedBytes)}). Turn on to finish it.`
+          : undefined;
+      return { cat, it, fileName, installed, enabled, remainingBytes, rightLabel, note };
     });
-  }, [enabledById, installedSet, partialByPath, oversizedByPath]);
+  }, [enabledById, installedSet, partialByPath, oversizedByPath, locationByPath]);
 
   useEffect(() => {
     // Installed deployment targets must be toggled off.
@@ -589,12 +609,10 @@ export function DynamicLibraryInstaller({ deferPrimaryDownloadButton = false }: 
           >
             <div className="mac-installer__head">
               <div style={{ display: "grid", gap: 6 }}>
-                <div className="mac-installer__title">Tactical Library Downloads</div>
+                <div className="mac-installer__title">Library</div>
                 <div className="mac-installer__subtitle">
-                  Choose a preset, then customize tactical data packages. Installed items are locked.
-                  {deferPrimaryDownloadButton
-                    ? " Your toggles update the global cart automatically; switching hub tabs keeps this selection."
-                    : null}
+                  Turn on what you want, then start it from the Queue. Things already on this station are marked
+                  Installed and show where they are.
                 </div>
               </div>
               <button type="button" className="mac-link" onClick={() => void refreshPreflight()}>
@@ -621,6 +639,7 @@ export function DynamicLibraryInstaller({ deferPrimaryDownloadButton = false }: 
                       setEnabledById((prev) => ({ ...prev, [row.cat.id]: !prev[row.cat.id] }));
                     }}
                     rightLabel={row.rightLabel}
+                    note={row.note}
                   />
                 );
               })}
@@ -802,11 +821,13 @@ export function DynamicLibraryInstaller({ deferPrimaryDownloadButton = false }: 
                 )}
               </div>
 
-              <div className="mac-summary__actions">
-                <button type="button" className="mac-secondary" onClick={() => void openUnsortedFolder()}>
-                  Open Unsorted Folder
-                </button>
-              </div>
+              {isAthenaDesktopRuntime() ? (
+                <div className="mac-summary__actions">
+                  <button type="button" className="mac-secondary" onClick={() => void openUnsortedFolder()}>
+                    Open download folder
+                  </button>
+                </div>
+              ) : null}
             </div>
           </motion.div>
         ) : null}

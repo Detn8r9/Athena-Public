@@ -164,6 +164,9 @@ fn library_archive_extract_sem() -> Arc<Semaphore> {
         .clone()
 }
 
+/// Watch-folder files above this size are indexed in place instead of copied into staging.
+const COPY_TO_STAGING_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// Blocking disk copy (canonicalize, dedupe, `fs::copy`). Run only from `spawn_blocking` or a dedicated OS thread.
 fn copy_watch_file_to_unsorted_if_external_blocking(
     src: &Path,
@@ -191,18 +194,19 @@ fn copy_watch_file_to_unsorted_if_external_blocking(
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| "source has no file name".to_string())?;
-    let dest = dedupe_destination_path(&unsorted, fname);
-    if dest.exists() {
-        let sm = fs::metadata(&src_can).map_err(|e| e.to_string())?;
-        let dm = fs::metadata(&dest).map_err(|e| e.to_string())?;
-        if sm.len() == dm.len() {
-            if let (Ok(sm_m), Ok(dm_m)) = (sm.modified(), dm.modified()) {
-                if sm_m == dm_m {
-                    return Ok(Some(dest));
-                }
-            }
-        }
+    let sm = fs::metadata(&src_can).map_err(|e| e.to_string())?;
+    // Large files are read where they are: a copy doubles the disk use and, on every start
+    // that finds the file again, took minutes of disk time.
+    if sm.len() > COPY_TO_STAGING_MAX_BYTES {
+        return Ok(None);
     }
+    // Already copied (same name and size): reuse it. `dedupe_destination_path` always picks an
+    // unused name, so this has to be checked first or every start makes another copy.
+    let existing = unsorted.join(fname);
+    if fs::metadata(&existing).map(|m| m.len() == sm.len()).unwrap_or(false) {
+        return Ok(Some(existing));
+    }
+    let dest = dedupe_destination_path(&unsorted, fname);
     fs::copy(&src_can, &dest).map_err(|e| {
         format!(
             "copy {} -> {}: {e}",
