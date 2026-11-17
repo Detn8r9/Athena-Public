@@ -24,20 +24,20 @@ export interface MapType {
 
 export const MAP_CATALOG: ReadonlyArray<MapType> = [
   {
-    id: "satellite",
-    name: "Satellite",
-    description: "High-resolution MBTiles from MapTiler (saved API key).",
-    sizePerSquareMileMb: 50,
-    acquirable: true,
-    tauriCommand: "start_satellite_region_download",
-  },
-  {
     id: "streetVector",
-    name: "Street vector",
-    description: "Protomaps PMTiles cut from the public extract — streets and labels for the selected area.",
+    name: "Streets and places",
+    description: "Roads, trails, buildings and place names for the area. Best first download.",
     sizePerSquareMileMb: 2,
     acquirable: true,
     tauriCommand: "extract_pmtiles_region",
+  },
+  {
+    id: "satellite",
+    name: "Satellite",
+    description: "Aerial photos of the area. Large, and needs a MapTiler key in Settings › API keys.",
+    sizePerSquareMileMb: 50,
+    acquirable: true,
+    tauriCommand: "start_satellite_region_download",
   },
   {
     id: "topographic",

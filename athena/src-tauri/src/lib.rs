@@ -47,6 +47,10 @@ mod isoc23_shim;
 mod kiwix;
 #[path = "domains/ingestion/kiwix_serve.rs"]
 mod kiwix_serve;
+#[path = "domains/ingestion/kiwix_rag.rs"]
+mod kiwix_rag;
+#[path = "domains/deployment/station_inventory.rs"]
+mod station_inventory;
 #[path = "domains/ingestion/kiwix_tools.rs"]
 mod kiwix_tools;
 #[path = "domains/system/watch_officer.rs"]
@@ -55,6 +59,10 @@ mod watch_officer;
 mod os;
 #[path = "domains/system/lan_bridge.rs"]
 mod lan_bridge;
+#[path = "domains/system/server_mode.rs"]
+mod server_mode;
+#[path = "domains/system/dev_bridge.rs"]
+mod dev_bridge;
 #[path = "domains/system/connectivity.rs"]
 mod connectivity;
 #[path = "domains/marketplace/marketplace.rs"]
@@ -110,6 +118,8 @@ mod mesh_ai;
 mod mesh_calendar;
 #[path = "domains/mesh/mesh_router.rs"]
 mod mesh_router;
+#[path = "domains/mesh/mesh_policy.rs"]
+mod mesh_policy;
 #[path = "domains/mesh/mesh_listener.rs"]
 mod mesh_listener;
 #[path = "domains/mesh/mesh_logbook.rs"]
@@ -124,6 +134,8 @@ mod moondream;
 mod ocr;
 #[path = "domains/routing/offline_routing.rs"]
 mod offline_routing;
+#[path = "domains/routing/road_router.rs"]
+mod road_router;
 #[path = "domains/routing/offline_geocoder.rs"]
 mod offline_geocoder;
 #[path = "domains/routing/directions.rs"]
@@ -154,6 +166,8 @@ mod diagnostics;
 mod pmtiles_io;
 #[path = "domains/maps/pmtiles_region_extract.rs"]
 mod pmtiles_region_extract;
+#[path = "domains/maps/area_maps.rs"]
+mod area_maps;
 #[path = "domains/queue/quarantine.rs"]
 mod quarantine;
 #[path = "domains/radio/radio_manager.rs"]
@@ -161,6 +175,7 @@ mod radio_manager;
 #[path = "domains/vector/rag_indexer.rs"]
 mod rag_indexer;
 mod field_ops;
+mod vault;
 mod library_rag_gate;
 mod library_context;
 #[cfg(test)]
@@ -580,7 +595,7 @@ fn greet(name: &str) -> String {
 #[tauri::command]
 async fn send_mesh_message(
     control: tauri::State<'_, mesh_listener::MeshRadioControl>,
-    session: tauri::State<'_, auth::AuthSession>,
+    session: crate::auth::CallerSession,
     text: String,
     want_ack: Option<bool>,
     channel: Option<u32>,
@@ -830,7 +845,7 @@ async fn logbook_add_entry(
     parent_entry_id: Option<String>,
     notebook: Option<String>,
     state: tauri::State<'_, AppState>,
-    session: tauri::State<'_, auth::AuthSession>,
+    session: crate::auth::CallerSession,
     control: tauri::State<'_, mesh_listener::MeshRadioControl>,
 ) -> Result<LogbookEntry, String> {
     let body = body.trim().to_string();
@@ -921,7 +936,7 @@ async fn logbook_add_entry(
             mesh_logbook::wire_from_logbook_entry(&entry, mesh_listener::mesh_local_node_id());
         if let Ok(packet) = mesh_logbook::encode_logbook_packet(&wire) {
             let _ = control
-                .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+                .send_text_message(packet, false, mesh_policy::sync_channel()?, None)
                 .await;
         }
     }
@@ -963,12 +978,20 @@ fn academy_mark_lesson_complete(
         .mark_academy_lesson_complete(&args.lesson_id)
 }
 
+/// Scans a whole ZIM for the article, so it runs off the main thread, and a panic inside the ZIM
+/// reader becomes an error message instead of aborting the app.
 #[tauri::command]
-fn academy_get_lesson_html(
+async fn academy_get_lesson_html(
     app: tauri::AppHandle,
     args: academy::AcademyLessonIdArg,
 ) -> Result<academy::AcademyLessonHtml, String> {
-    academy::fetch_lesson_html(&app, &args.lesson_id)
+    run_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            academy::fetch_lesson_html(&app, &args.lesson_id)
+        }))
+        .unwrap_or_else(|_| Err("This lesson's ZIM file could not be read.".to_string()))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -999,7 +1022,7 @@ async fn logbook_broadcast_entry(
     let wire = mesh_logbook::wire_from_logbook_entry(&entry, mesh_listener::mesh_local_node_id());
     let packet = mesh_logbook::encode_logbook_packet(&wire)?;
     control
-        .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+        .send_text_message(packet, false, mesh_policy::sync_channel()?, None)
         .await
 }
 
@@ -1049,7 +1072,7 @@ async fn logbook_request_mesh_sync(
 ) -> Result<(), String> {
     let packet = mesh_logbook::encode_logbook_sync_request()?;
     control
-        .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+        .send_text_message(packet, false, mesh_policy::sync_channel()?, None)
         .await
 }
 
@@ -1130,15 +1153,65 @@ fn reject_inventory_proposal(
         .inventory_proposal_set_status(pid, "rejected", None, None)
 }
 
+/// Tauri 2 runs commands that are not `async` on the window's main thread. These call the local
+/// model, which takes seconds to minutes, and the whole window froze until it answered (every new
+/// chat froze while its title was written). Each one now runs its body on a blocking thread.
+async fn run_blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
-fn logistics_library_submit_message(
+async fn build_library_knowledge(app: tauri::AppHandle, limit: Option<u32>) -> Result<u32, String> {
+    run_blocking(move || build_library_knowledge_blocking(app, limit)).await
+}
+
+#[tauri::command]
+async fn generate_chat_title(app: tauri::AppHandle, first_message: String) -> Result<String, String> {
+    run_blocking(move || generate_chat_title_blocking(app, first_message)).await
+}
+
+#[tauri::command]
+async fn generate_chat_description(app: tauri::AppHandle, messages: Vec<SavedMessage>) -> Result<String, String> {
+    run_blocking(move || generate_chat_description_blocking(app, messages)).await
+}
+
+#[tauri::command]
+async fn send_message(
+    app: tauri::AppHandle,
+    message: String,
+    history: Option<Vec<HistoryMessage>>,
+    model_options: Option<ModelOptions>,
+) -> Result<String, String> {
+    run_blocking(move || send_message_blocking(app, message, history, model_options)).await
+}
+
+#[tauri::command]
+async fn help_assistant_ask(app: tauri::AppHandle, question: String) -> Result<String, String> {
+    run_blocking(move || help_assistant_ask_blocking(app, question)).await
+}
+
+#[tauri::command]
+async fn logistics_library_submit_message(
     app: tauri::AppHandle,
     message: String,
     attached: Option<LogisticsSubmitAttach>,
     force_apply: Option<bool>,
-    state: tauri::State<'_, AppState>,
-    session: tauri::State<'_, auth::AuthSession>,
 ) -> Result<LogisticsLibrarySubmitResponse, String> {
+    run_blocking(move || logistics_library_submit_message_blocking(app, message, attached, force_apply)).await
+}
+
+fn logistics_library_submit_message_blocking(
+    app: tauri::AppHandle,
+    message: String,
+    attached: Option<LogisticsSubmitAttach>,
+    force_apply: Option<bool>,
+) -> Result<LogisticsLibrarySubmitResponse, String> {
+    let state = app.state::<AppState>();
+    let session = app.state::<auth::AuthSession>();
     let actor = auth::authenticated_user(&session)?;
     let body = message.trim().to_string();
     if body.is_empty() {
@@ -1366,7 +1439,7 @@ async fn calendar_upsert_event(
             mesh_calendar::wire_from_calendar_event(&event, mesh_listener::mesh_local_node_id());
         if let Ok(packet) = mesh_calendar::encode_calendar_packet(&wire) {
             let _ = control
-                .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+                .send_text_message(packet, false, mesh_policy::sync_channel()?, None)
                 .await;
         }
     }
@@ -1417,7 +1490,7 @@ async fn calendar_delete_event(
         );
         if let Ok(packet) = mesh_calendar::encode_calendar_packet(&wire) {
             let _ = control
-                .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+                .send_text_message(packet, false, mesh_policy::sync_channel()?, None)
                 .await;
         }
     }
@@ -1430,7 +1503,7 @@ async fn calendar_request_mesh_sync(
 ) -> Result<(), String> {
     let packet = mesh_calendar::encode_calendar_sync_request()?;
     control
-        .send_text_message(packet, false, mesh_ai::PRIMARY_MESH_CHANNEL, None)
+        .send_text_message(packet, false, mesh_policy::sync_channel()?, None)
         .await
 }
 
@@ -1440,6 +1513,185 @@ fn get_mesh_ai_auto_reply(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(load_config(&app_data_dir)
         .mesh_ai_auto_reply
         .unwrap_or(true))
+}
+
+/// Everything on this station (archives, maps, models), with size, folder and status, plus where
+/// each kind of download goes. Reads the disk and asks the library reader; runs off the UI thread.
+#[tauri::command]
+async fn station_inventory(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session: crate::auth::CallerSession,
+) -> Result<station_inventory::StationInventory, String> {
+    crate::auth::authenticated_user(&session)?;
+    let root = crate::portable::resolved_app_data_dir(&app)?;
+    let docs = state.db.lock().map(|db| db.chat_indexed_document_count()).unwrap_or(0);
+    tauri::async_runtime::spawn_blocking(move || station_inventory::build(&root, docs))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibrarySourceFile {
+    file_name: String,
+    mime: String,
+    base64: String,
+}
+
+/// A cited library document for a browser (phone, tablet). `open_library_source` opens files on
+/// the station's own screen, which is no use to someone on the LAN. Only documents in the library
+/// index can be read this way.
+#[tauri::command]
+fn read_library_source(
+    state: tauri::State<'_, AppState>,
+    session: crate::auth::CallerSession,
+    path: String,
+) -> Result<LibrarySourceFile, String> {
+    use base64::Engine as _;
+    const MAX_BYTES: u64 = 40 * 1024 * 1024;
+    crate::auth::authenticated_user(&session)?;
+    let path = path.trim().to_string();
+    let known = state.db.lock().map(|db| db.is_library_document(&path)).unwrap_or(false);
+    if !known {
+        return Err("That document is not in the library.".to_string());
+    }
+    let p = std::path::Path::new(&path);
+    let len = std::fs::metadata(p).map_err(|_| "The document is no longer on the station.".to_string())?.len();
+    if len > MAX_BYTES {
+        return Err("This document is too large to open on this device. Open it on the station.".to_string());
+    }
+    let bytes = std::fs::read(p).map_err(|e| e.to_string())?;
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "pdf" => "application/pdf",
+        "txt" | "md" | "csv" | "vtt" | "srt" => "text/plain; charset=utf-8",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc" => "application/msword",
+        "epub" => "application/epub+zip",
+        _ => "application/octet-stream",
+    };
+    Ok(LibrarySourceFile {
+        file_name: p.file_name().and_then(|n| n.to_str()).unwrap_or("document").to_string(),
+        mime: mime.to_string(),
+        base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+/// The private ATHENA channel and how busy the radio's channel is. The join link carries the
+/// channel key, so only clearance 4 or higher receives it.
+#[tauri::command]
+fn mesh_athena_channel_status(session: tauri::State<'_, auth::AuthSession>) -> Result<mesh_listener::AthenaChannelStatus, String> {
+    crate::auth::authenticated_user(&session)?;
+    let full = crate::auth::require_clearance4_or_higher(&session).is_ok();
+    Ok(mesh_listener::athena_channel_status(full))
+}
+
+/// Create the private ATHENA channel on the connected radio (or adopt one already there).
+#[tauri::command]
+async fn mesh_setup_athena_channel(
+    control: tauri::State<'_, mesh_listener::MeshRadioControl>,
+    session: crate::auth::CallerSession,
+) -> Result<mesh_listener::AthenaChannelStatus, String> {
+    crate::auth::require_clearance4_or_higher(&session)?;
+    control.setup_athena_channel().await?;
+    Ok(mesh_listener::athena_channel_status(true))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshConnectionSettings {
+    radio_address: Option<String>,
+    link_days: u32,
+}
+
+#[tauri::command]
+fn get_mesh_connection_settings(app: tauri::AppHandle, session: tauri::State<'_, auth::AuthSession>) -> Result<MeshConnectionSettings, String> {
+    crate::auth::authenticated_user(&session)?;
+    let cfg = load_config(&crate::portable::resolved_app_data_dir(&app)?);
+    Ok(MeshConnectionSettings {
+        radio_address: cfg.mesh_radio_address,
+        link_days: cfg.mesh_link_days.unwrap_or(mesh_policy::DEFAULT_LINK_DAYS),
+    })
+}
+
+/// Radio over the network (`host` or `host:port`), or empty for USB. Takes effect when the radio
+/// link next reconnects (unplug and replug, or restart ATHENA).
+#[tauri::command]
+fn set_mesh_connection_settings(
+    app: tauri::AppHandle,
+    radio_address: Option<String>,
+    link_days: u32,
+    session: tauri::State<'_, auth::AuthSession>,
+) -> Result<MeshConnectionSettings, String> {
+    crate::auth::require_clearance4_or_higher(&session)?;
+    let dir = crate::portable::resolved_app_data_dir(&app)?;
+    let mut cfg = load_config(&dir);
+    cfg.mesh_radio_address = match radio_address.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => Some(
+            mesh_listener::radio_tcp_address(raw)
+                .ok_or_else(|| "Enter the radio's address as host or host:port, for example 192.168.1.40.".to_string())?,
+        ),
+        None => None,
+    };
+    if !(1..=365).contains(&link_days) {
+        return Err("Link length is 1 to 365 days.".to_string());
+    }
+    cfg.mesh_link_days = Some(link_days);
+    save_config(&dir, &cfg)?;
+    Ok(MeshConnectionSettings { radio_address: cfg.mesh_radio_address, link_days })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeshLinkView {
+    node_id: i64,
+    username: Option<String>,
+    key_fingerprint: String,
+    verified_at: i64,
+    expires_at: i64,
+}
+
+/// Radios linked to this station, with their pinned key and when each link expires.
+#[tauri::command]
+fn mesh_list_links(app: tauri::AppHandle, state: tauri::State<'_, AppState>, session: tauri::State<'_, auth::AuthSession>) -> Result<Vec<MeshLinkView>, String> {
+    crate::auth::require_clearance4_or_higher(&session)?;
+    let days = load_config(&crate::portable::resolved_app_data_dir(&app)?).mesh_link_days.unwrap_or(mesh_policy::DEFAULT_LINK_DAYS);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for (node_id, link) in db.mesh_link_list()? {
+        let username = db.mesh_profile_get_by_node(node_id).ok().flatten().filter(|p| p.is_registered).map(|p| p.username);
+        out.push(MeshLinkView {
+            node_id,
+            username,
+            key_fingerprint: mesh_policy::key_fingerprint(&link.public_key),
+            verified_at: link.verified_at,
+            expires_at: link.verified_at + i64::from(days) * 86_400,
+        });
+    }
+    out.sort_by_key(|l| l.expires_at);
+    Ok(out)
+}
+
+/// Start a radio's link period again, keeping its pinned key.
+#[tauri::command]
+fn mesh_renew_radio(node_id: i64, state: tauri::State<'_, AppState>, session: tauri::State<'_, auth::AuthSession>) -> Result<(), String> {
+    crate::auth::require_clearance4_or_higher(&session)?;
+    if state.db.lock().map_err(|e| e.to_string())?.mesh_link_renew(node_id, chrono::Utc::now().timestamp())? {
+        Ok(())
+    } else {
+        Err("That radio has no link to renew.".to_string())
+    }
+}
+
+/// Forget a radio's link, so its owner must send their PIN again before it can do anything.
+#[tauri::command]
+fn mesh_unlink_radio(node_id: i64, state: tauri::State<'_, AppState>, session: tauri::State<'_, auth::AuthSession>) -> Result<(), String> {
+    crate::auth::require_clearance4_or_higher(&session)?;
+    state.db.lock().map_err(|e| e.to_string())?.mesh_unlink(node_id)
 }
 
 #[tauri::command]
@@ -1479,7 +1731,9 @@ fn is_mesh_remote_registration_enabled(app: tauri::AppHandle) -> Result<bool, St
 fn set_mesh_registration_admin_password(
     app: tauri::AppHandle,
     password: Option<String>,
+    session: tauri::State<'_, auth::AuthSession>,
 ) -> Result<(), String> {
+    crate::auth::require_clearance4_or_higher(&session)?;
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let mut cfg = load_config(&app_data_dir);
     cfg.mesh_registration_admin_password = password.and_then(|s| {
@@ -1645,6 +1899,84 @@ fn is_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
         .get_webview_window("main")
         .ok_or("Main window not found")?;
     window.is_fullscreen().map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadFolderView {
+    /// Where downloads go now.
+    path: String,
+    /// The folder chosen in settings, if any (may differ from `path` when its drive is missing).
+    chosen: Option<String>,
+    /// The data folder's own downloads folder, used when nothing is chosen.
+    default_path: String,
+    free_bytes: Option<u64>,
+}
+
+fn download_folder_view(app_data_dir: &std::path::Path) -> DownloadFolderView {
+    let paths = crate::athena_paths::AthenaPaths::new(app_data_dir);
+    let path = paths.user_downloads_dir();
+    let free_bytes = {
+        let disks = sysinfo::Disks::new_with_refreshed_list();
+        let p = path.canonicalize().unwrap_or_else(|_| path.clone());
+        disks
+            .list()
+            .iter()
+            .filter(|d| p.starts_with(d.mount_point().canonicalize().unwrap_or_else(|_| d.mount_point().to_path_buf())))
+            .max_by_key(|d| d.mount_point().as_os_str().len())
+            .map(|d| d.available_space())
+    };
+    DownloadFolderView {
+        path: path.to_string_lossy().into_owned(),
+        chosen: load_config(app_data_dir).downloads_dir,
+        default_path: paths.default_downloads_dir().to_string_lossy().into_owned(),
+        free_bytes,
+    }
+}
+
+#[tauri::command]
+fn get_download_folder(app: tauri::AppHandle, session: tauri::State<'_, auth::AuthSession>) -> Result<DownloadFolderView, String> {
+    crate::auth::authenticated_user(&session)?;
+    Ok(download_folder_view(&crate::portable::resolved_app_data_dir(&app)?))
+}
+
+/// Choose where the download queue puts library packages and documents. `None` or empty goes
+/// back to the data folder. Files already downloaded stay where they are and are still found.
+#[tauri::command]
+fn set_download_folder(
+    app: tauri::AppHandle,
+    path: Option<String>,
+    session: tauri::State<'_, auth::AuthSession>,
+    queue: tauri::State<'_, std::sync::Arc<crate::deployment_queue_state::DeploymentQueueStateManager>>,
+) -> Result<DownloadFolderView, String> {
+    crate::auth::require_clearance4_or_higher(&session)?;
+    if queue.is_queue_active().unwrap_or(false) {
+        return Err("Wait for the running downloads to finish (or pause them) before changing the folder.".to_string());
+    }
+    let dir = crate::portable::resolved_app_data_dir(&app)?;
+    let chosen = match path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => None,
+        Some(raw) => {
+            let p = std::path::PathBuf::from(raw);
+            if !p.is_absolute() {
+                return Err("Enter a full folder path, for example T:\\AthenaDownloads or /Volumes/Drive/Athena.".to_string());
+            }
+            std::fs::create_dir_all(&p).map_err(|e| format!("Could not create {}: {e}", p.display()))?;
+            // Make sure ATHENA can write there before switching.
+            let probe = p.join(".athena-write-test");
+            std::fs::write(&probe, b"ok").map_err(|e| format!("ATHENA cannot write to {}: {e}", p.display()))?;
+            let _ = std::fs::remove_file(&probe);
+            for sub in ["packages", "documents"] {
+                std::fs::create_dir_all(p.join(sub)).map_err(|e| e.to_string())?;
+            }
+            Some(p)
+        }
+    };
+    let mut cfg = load_config(&dir);
+    cfg.downloads_dir = chosen.as_ref().map(|p| p.to_string_lossy().into_owned());
+    save_config(&dir, &cfg)?;
+    crate::athena_paths::set_downloads_override(&dir, chosen);
+    Ok(download_folder_view(&dir))
 }
 
 pub(crate) fn kiwix_downloads_dir(app_data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -1814,8 +2146,7 @@ fn remove_archive_watch_root(
 }
 
 
-#[tauri::command]
-fn build_library_knowledge(app: tauri::AppHandle, limit: Option<u32>) -> Result<u32, String> {
+fn build_library_knowledge_blocking(app: tauri::AppHandle, limit: Option<u32>) -> Result<u32, String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     let models = load_models_for_inference(&config);
@@ -1839,14 +2170,23 @@ fn get_indexed_files(app: tauri::AppHandle) -> Result<Vec<IndexedFile>, String> 
 
 /// Manually ingest one or more files into the index. Corrupted or unreadable files
 /// are moved to quarantine and a notification is emitted; the app does not crash.
+///
+/// Runs on a background thread and locks the database per step: this used to run on the
+/// window's main thread holding the lock for the whole batch, so dropping a book froze the app.
 #[tauri::command]
-fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+async fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
+    tauri::async_runtime::spawn_blocking(move || ingest_files_blocking(app, paths))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn ingest_files_blocking(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let state = app.state::<AppState>();
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let db_arc = state.db.clone();
     for p in paths {
         let path_buf = std::path::PathBuf::from(&p);
         let path = path_buf.as_path();
@@ -1856,9 +2196,15 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
         if !indexer::is_supported_path(path) {
             continue;
         }
-        let ctx = watcher::resolve_ingest_context(&*db, &app_data_dir, path);
+        let (ctx, up_to_date) = {
+            let db = db_arc.lock().map_err(|e| e.to_string())?;
+            let ctx = watcher::resolve_ingest_context(&*db, &app_data_dir, path);
+            let ctx_tuple = ctx.as_ref().map(|(k, r)| (k.as_str(), r.as_path()));
+            let up_to_date = indexer::skip_if_up_to_date(path, &*db, ctx_tuple, None).is_some();
+            (ctx, up_to_date)
+        };
         let ctx_tuple = ctx.as_ref().map(|(k, r)| (k.as_str(), r.as_path()));
-        if indexer::skip_if_up_to_date(path, &*db, ctx_tuple, None).is_some() {
+        if up_to_date {
             continue;
         }
         let ingest_display_name = path
@@ -1873,7 +2219,7 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
             Ok(Some(mut data)) => {
                 indexer::fill_relative_path_key(&mut data, ctx_tuple, path);
                 tracing::info!("ingest_files: index_file returned Some; upsert_file");
-                if let Err(e) = db.upsert_file(
+                let upserted = db_arc.lock().map_err(|e| e.to_string())?.upsert_file(
                     &data.path,
                     &data.file_type,
                     &data.name,
@@ -1884,16 +2230,17 @@ fn ingest_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
                     Some(data.display_title.as_str()),
                     data.page_count.map(|n| n as i64),
                     data.relative_path.as_deref(),
-                ) {
+                );
+                if let Err(e) = upserted {
                     tracing::error!(error = %e, "Fatal Ingestion Error: ingest upsert_file failed");
                     continue;
                 }
                 tracing::info!("ingest_files: upsert ok; maybe index_document");
                 if let Some(ref text) = data.text_content {
                     if !text.trim().is_empty() {
-                        tracing::info!("ingest_files: calling vector_index::index_document");
-                        match vector_index::index_document(
-                            &db,
+                        tracing::info!("ingest_files: calling vector_index::index_document_shared");
+                        match vector_index::index_document_shared(
+                            &db_arc,
                             &p,
                             &data.display_title,
                             data.index_pages.as_deref(),
@@ -2091,8 +2438,7 @@ async fn rebuild_vector_index(app: tauri::AppHandle) -> Result<RebuildVectorInde
     let app_handle = app.clone();
     let db = Arc::clone(&state.db);
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let guard = db.lock().map_err(|e| e.to_string())?;
-        let db_ref = &*guard;
+        // Lock per document write only, so the app stays usable during a full rebuild.
         let mut processed = 0u32;
         let mut failed = 0u32;
         let mut failed_files: Vec<RebuildFailedFile> = Vec::new();
@@ -2107,7 +2453,7 @@ async fn rebuild_vector_index(app: tauri::AppHandle) -> Result<RebuildVectorInde
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .unwrap_or(row.name.as_str());
-            match vector_index::index_document(db_ref, &row.path, doc_title, None, text) {
+            match vector_index::index_document_shared(&db, &row.path, doc_title, None, text) {
                 Ok(()) => processed += 1,
                 Err(e) => {
                     eprintln!("[athena] Fatal Ingestion Error: {:?}", e);
@@ -2128,7 +2474,9 @@ async fn rebuild_vector_index(app: tauri::AppHandle) -> Result<RebuildVectorInde
                 },
             );
         }
-        let _ = db_ref.rebuild_chunk_embeddings_vec();
+        if let Ok(g) = db.lock() {
+            let _ = g.rebuild_chunk_embeddings_vec();
+        }
         Ok::<RebuildVectorIndexResult, String>(RebuildVectorIndexResult {
             processed,
             failed,
@@ -3043,7 +3391,7 @@ struct MapAssistantResponse {
 async fn map_assistant_send(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-    session: tauri::State<'_, auth::AuthSession>,
+    session: crate::auth::CallerSession,
     user_message: String,
     context_json: Option<serde_json::Value>,
 ) -> Result<MapAssistantResponse, String> {
@@ -3052,6 +3400,13 @@ async fn map_assistant_send(
     let msg = user_message.trim();
     if msg.is_empty() {
         return Err("Message is empty.".to_string());
+    }
+    if let Some(title) = ai_tools::parse_add_marker_request(msg) {
+        let data = ai_tools::marker_proposal(&title, None, "", "")?;
+        return Ok(MapAssistantResponse {
+            reply: String::new(),
+            tool_results: vec![ai_tools::MapToolResult { tool: "add_marker".to_string(), ok: true, data: Some(data), error: None }],
+        });
     }
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
@@ -3064,6 +3419,7 @@ async fn map_assistant_send(
         To run a tool, output exactly one line: TOOL: {\"tool\":\"NAME\",\"args\":{...}} \
         Tools: \
         - search_markers {query} -> saved markers with lat/lng \
+        - add_marker {title, lat?, lon?, category?: water|cache|med|hazard, description?} -> suggests a new marker for the user to confirm (omit lat/lon for the map centre) \
         - search_pois {query} -> tactical POIs with lat/lon \
         - reverse_geocode {lat, lon, max_results?, region_id?} -> nearest offline geocoder labels (do not guess) \
         - directions {from, to, mode} -> road/path route when Valhalla is up, else straight-line; distance, ETA; mode: drive|walk|bike|offroad \
@@ -3190,8 +3546,10 @@ fn geocode_rebuild_from_pbf_cmd(
     pbf_path: String,
 ) -> Result<crate::offline_geocoder::GeocodeBuildStats, String> {
     let _u = auth::authenticated_user(&session)?;
+    let path = std::path::Path::new(&pbf_path);
+    let features = crate::offline_geocoder::collect_features_from_pbf(path)?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::offline_geocoder::build_index_from_pbf(&db, &region_id, std::path::Path::new(&pbf_path))
+    crate::offline_geocoder::store_features(&db, &region_id, path, &features)
 }
 
 #[tauri::command]
@@ -3697,8 +4055,7 @@ fn synthesize_speech(
     }
 }
 
-#[tauri::command]
-fn generate_chat_title(app: tauri::AppHandle, first_message: String) -> Result<String, String> {
+fn generate_chat_title_blocking(app: tauri::AppHandle, first_message: String) -> Result<String, String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     if config.ai_inference_sleep.unwrap_or(false) {
@@ -3709,8 +4066,7 @@ fn generate_chat_title(app: tauri::AppHandle, first_message: String) -> Result<S
     generate_chat_title_unified(&config, &models, &first_message)
 }
 
-#[tauri::command]
-fn generate_chat_description(
+fn generate_chat_description_blocking(
     app: tauri::AppHandle,
     messages: Vec<SavedMessage>,
 ) -> Result<String, String> {
@@ -4452,8 +4808,50 @@ fn build_user_gps_section(user_lat: Option<f64>, user_lon: Option<f64>) -> Strin
     }
 }
 
-fn build_poi_and_maps_section(app_data_dir: &std::path::Path) -> String {
+/// Whether a chat question is about places, so saved map markers belong in the prompt. Kept
+/// narrow on purpose: markers pasted into every prompt leaked into unrelated answers (a "tree
+/// down" hazard showing up in an answer about boiling water).
+fn question_is_about_places(question: &str, marker_names: &[String]) -> bool {
+    let q = question.to_lowercase();
+    const PLACE_WORDS: &[&str] = &[
+        "where", "nearest", "closest", "nearby", "near me", "how far", "distance", "route",
+        "directions", "map", "marker", "waypoint", "poi", "hazard", "location", "go to", "get to",
+    ];
+    if PLACE_WORDS.iter().any(|w| q.contains(w)) {
+        return true;
+    }
+    marker_names.iter().any(|n| {
+        let n = n.trim().to_lowercase();
+        n.chars().count() >= 3
+            && q.match_indices(n.as_str()).any(|(i, m)| {
+                let before = q[..i].chars().next_back().map_or(true, |c| !c.is_alphanumeric());
+                let after = q[i + m.len()..].chars().next().map_or(true, |c| !c.is_alphanumeric());
+                before && after
+            })
+    })
+}
+
+#[cfg(test)]
+mod place_question_tests {
+    use super::question_is_about_places;
+
+    #[test]
+    fn markers_only_for_place_questions() {
+        let names = vec!["Homebase".to_string(), "IDK tree down".to_string()];
+        assert!(!question_is_about_places("How long should I boil water to make it safe?", &names));
+        assert!(!question_is_about_places("What are the symptoms of sepsis?", &names));
+        assert!(question_is_about_places("Where is the nearest water source?", &names));
+        assert!(question_is_about_places("How do I get from homebase to town", &names));
+        assert!(!question_is_about_places("how do i make a homebased business", &names));
+    }
+}
+
+fn build_poi_and_maps_section(app_data_dir: &std::path::Path, question: &str) -> String {
     let pois = maps::get_pois(app_data_dir);
+    let names: Vec<String> = pois.iter().map(|p| p.name.clone()).collect();
+    if !question_is_about_places(question, &names) {
+        return String::new();
+    }
     let downloaded = maps::get_downloaded_maps(app_data_dir);
     if pois.is_empty() && downloaded.is_empty() {
         return String::new();
@@ -4544,28 +4942,41 @@ fn build_retrieval_from_saved_messages(
     build_retrieval_from_combined_text(&combined, message)
 }
 
-fn build_retrieval_from_combined_text(combined: &str, message: &str) -> (String, String) {
-    fn keywords(s: &str) -> std::collections::HashSet<String> {
-        s.split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
-            .filter(|w| w.len() >= 4)
-            .map(|w| w.to_ascii_lowercase())
-            .collect()
+/// True when a question cannot stand on its own and needs the earlier turns to be understood
+/// ("what about it?", "and the dose?"). A short but complete question such as "What do the
+/// Morlocks eat?" is not a follow-up: adding the previous topic to its search pulled unrelated
+/// sources into the answer.
+fn is_follow_up_question(message: &str) -> bool {
+    const FILLER: &[&str] = &[
+        "a", "an", "the", "and", "or", "but", "so", "of", "to", "in", "on", "at", "for", "with", "by", "from",
+        "is", "are", "was", "were", "be", "been", "am", "do", "does", "did", "can", "could", "should", "would",
+        "will", "may", "might", "must", "shall", "have", "has", "had", "what", "whats", "what's", "which", "who",
+        "whom", "whose", "when", "where", "why", "how", "about", "tell", "me", "my", "we", "our", "us", "you",
+        "your", "i", "please", "also", "more", "any", "some", "there", "then", "than", "else", "ok", "okay",
+        "yes", "no", "not", "just", "much", "many", "one", "ones",
+    ];
+    const REFERENTIAL: &[&str] = &[
+        "it", "its", "it's", "that", "this", "those", "these", "they", "them", "their", "he", "she", "him",
+        "her", "his", "above", "earlier", "previous", "same", "again", "former", "latter",
+    ];
+    let words: Vec<String> = message
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .collect();
+    if words.is_empty() {
+        return true;
     }
+    if words.iter().any(|w| REFERENTIAL.contains(&w.as_str())) || message.to_lowercase().contains("as before") {
+        return true;
+    }
+    let content = words.iter().filter(|w| !FILLER.contains(&w.as_str())).count();
+    content <= 1
+}
 
-    fn should_include_prior_context(combined: &str, message: &str) -> bool {
-        // If the user is making a short follow-up or using referential language, keep context for disambiguation.
-        let m = message.to_ascii_lowercase();
-        let referential = [
-            " it ", " that ", " this ", " those ", " these ", " they ", " them ", " he ", " she ", " above ",
-            " earlier ", " previous ", " same ", " again ", "as before",
-        ]
-        .iter()
-        .any(|tok| m.contains(tok));
-        let msg_kw = keywords(message);
-        // A self-contained question searches best on its own words. Earlier turns are only added
-        // when the question cannot stand alone ("what about it?", "and the second one?").
-        let _ = combined;
-        referential || msg_kw.len() < 3 || message.trim().len() < 28
+fn build_retrieval_from_combined_text(combined: &str, message: &str) -> (String, String) {
+    fn should_include_prior_context(_combined: &str, message: &str) -> bool {
+        is_follow_up_question(message)
     }
 
     let words: Vec<&str> = combined
@@ -4584,6 +4995,28 @@ fn build_retrieval_from_combined_text(combined: &str, message: &str) -> (String,
             context
         );
         (retrieval_query, conversation_context_prompt)
+    }
+}
+
+#[cfg(test)]
+mod follow_up_tests {
+    use super::*;
+
+    #[test]
+    fn a_short_complete_question_searches_on_its_own_words() {
+        assert!(!is_follow_up_question("What do the Morlocks eat?"));
+        let (q, ctx) = build_retrieval_from_combined_text("Is the north well safe?", "What do the Morlocks eat?");
+        assert_eq!(q, "What do the Morlocks eat?");
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn a_real_follow_up_keeps_the_earlier_topic() {
+        assert!(is_follow_up_question("Is it safe to drink?"));
+        assert!(is_follow_up_question("And the dose?"));
+        assert!(is_follow_up_question("why?"));
+        let (q, _) = build_retrieval_from_combined_text("How do I treat dysentery", "And the dose?");
+        assert!(q.contains("dysentery"));
     }
 }
 
@@ -4637,8 +5070,7 @@ fn insert_spatial_system_before_last_user_message(
     messages
 }
 
-#[tauri::command]
-fn send_message(
+fn send_message_blocking(
     app: tauri::AppHandle,
     message: String,
     history: Option<Vec<HistoryMessage>>,
@@ -4659,6 +5091,12 @@ fn send_message(
     let history_ref = history.as_deref().unwrap_or(&[]);
     let max_memory = config.memory_messages.unwrap_or(20) as usize;
     let (message_for_model, athena_ref_mode) = parse_athena_ref_message(&message);
+    // Offline archives are searched before the database lock is taken (see kiwix_rag).
+    let archive_passages = if athena_ref_mode || library_rag_gate::should_skip_library_rag(&message_for_model, false) {
+        Vec::new()
+    } else {
+        kiwix_rag::search_passages(&message_for_model)
+    };
 
     let messages = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -4688,7 +5126,7 @@ fn send_message(
                 model_options.map(|o| o.num_ctx),
                 message_for_model.len() + mentioned_section.len(),
             );
-            let keyword_semantic_section = match db.hybrid_search(retrieval_query) {
+            let keyword_semantic_section = match db.hybrid_search_with_archives(retrieval_query, &archive_passages) {
                 Ok(hits) => {
                     let assembled = library_context::assemble_library_context(&hits, excerpt_budget);
                     if assembled.body.is_empty() {
@@ -4742,7 +5180,7 @@ fn send_message(
         };
         let persistent_knowledge_section = build_persistent_knowledge_section(&app_data_dir);
         let location_section = build_location_section(&config);
-        let poi_maps_section = build_poi_and_maps_section(&app_data_dir);
+        let poi_maps_section = build_poi_and_maps_section(&app_data_dir, &message_for_model);
         let personality_section = build_personality_section(&config);
         let user_profile_section = build_user_profile_section(&config);
         let system_content = format!(
@@ -4774,6 +5212,30 @@ const STREAM_CHUNK_EVENT: &str = "athena:stream-chunk";
 const STREAM_DONE_EVENT: &str = "athena:stream-done";
 const STREAM_ERROR_EVENT: &str = "athena:stream-error";
 pub(crate) const STREAM_SOURCES_EVENT: &str = "athena:stream-sources";
+
+/// Where a chat reply's events go: the desktop window (app-wide event) or one LAN browser session.
+#[derive(Clone)]
+struct StreamSink {
+    app: tauri::AppHandle,
+    owner: Option<String>,
+}
+
+impl StreamSink {
+    fn new(app: &tauri::AppHandle, owner: Option<String>) -> Self {
+        Self { app: app.clone(), owner }
+    }
+
+    fn emit<S: serde::Serialize + Clone>(&self, event: &str, payload: S) -> Result<(), String> {
+        match &self.owner {
+            Some(token) => {
+                let value = serde_json::to_value(payload).map_err(|e| e.to_string())?;
+                lan_bridge::publish_to_session(token, event, value);
+                Ok(())
+            }
+            None => self.app.emit(event, payload).map_err(|e| e.to_string()),
+        }
+    }
+}
 
 /// Emitted when `ai_inference_sleep` toggles (lock screen or header power control).
 pub const AI_INFERENCE_SLEEP_EVENT: &str = "athena:ai-inference-sleep-changed";
@@ -4896,6 +5358,23 @@ pub struct LibraryFile {
     pub exists_on_disk: bool,
 }
 
+/// Group memory notes are stored under a random id (`group-memory/<uuid>.md`); show the note's
+/// title (its first line) instead, the same name chat uses when it cites the note.
+fn group_memory_display_name(path: &std::path::Path) -> Option<String> {
+    let in_memory_dir = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|n| n == field_ops::memory::MEMORY_DIR_NAME);
+    if !in_memory_dir || path.extension().and_then(|e| e.to_str()) != Some("md") {
+        return None;
+    }
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let first = std::io::BufReader::new(file).lines().next()?.ok()?;
+    let title = first.trim().trim_start_matches('#').trim();
+    (!title.is_empty()).then(|| format!("Group memory: {title}"))
+}
+
 #[tauri::command]
 fn list_library_contents(app: tauri::AppHandle) -> Result<Vec<LibraryFile>, String> {
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
@@ -4933,11 +5412,12 @@ fn list_library_contents(app: tauri::AppHandle) -> Result<Vec<LibraryFile>, Stri
             }
             let path_str = path.to_string_lossy().to_string();
             if on_disk.insert(path_str.clone()) {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
+                let name = group_memory_display_name(path).unwrap_or_else(|| {
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string()
+                });
                 let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                 out.push(LibraryFile {
                     path: path_str,
@@ -5452,8 +5932,7 @@ fn update_poi(
 }
 
 /// Short Ollama Q&A for Help: no RAG, strict “Athena app only” system prompt.
-#[tauri::command]
-fn help_assistant_ask(app: tauri::AppHandle, question: String) -> Result<String, String> {
+fn help_assistant_ask_blocking(app: tauri::AppHandle, question: String) -> Result<String, String> {
     let q = question.trim();
     if q.is_empty() {
         return Err("Type a question first.".to_string());
@@ -5528,6 +6007,7 @@ fn send_message_stream(
         skip_library_rag.unwrap_or(false),
         conversation_mode.unwrap_or(false),
         retrieval_text,
+        None,
     )
 }
 
@@ -5546,6 +6026,8 @@ pub(crate) fn start_send_message_stream_for_user(
     skip_library_rag: bool,
     conversation_mode: bool,
     retrieval_text: Option<String>,
+    // The LAN session that asked; its reply goes only to that browser. `None` for the desktop.
+    owner: Option<String>,
 ) -> Result<(), String> {
     // What the user typed, without the instructions and context the client wraps around it.
     // Library search, the chitchat gate and `/athena` detection all run on this, never on `message`.
@@ -5559,11 +6041,11 @@ pub(crate) fn start_send_message_stream_for_user(
     let app_data_dir = crate::portable::resolved_app_data_dir(&app)?;
     let config = load_config(&app_data_dir);
     if config.ai_inference_sleep.unwrap_or(false) {
-        let _ = app.emit(
+        let _ = StreamSink::new(&app, owner.clone()).emit(
             STREAM_ERROR_EVENT,
             "Local AI is asleep. Meshtastic /ai and mesh auto-replies still run when enabled. Wake the AI from the lock screen or header.",
         );
-        let _ = app.emit(STREAM_DONE_EVENT, ());
+        let _ = StreamSink::new(&app, owner.clone()).emit(STREAM_DONE_EVENT, ());
         return Ok(());
     }
     let models = load_models_for_inference(&config);
@@ -5572,27 +6054,29 @@ pub(crate) fn start_send_message_stream_for_user(
         // answers from the library: search needs only the small embedding and reranker models.
         if session_user.clearance_level > 0 && !skip_library_rag {
             let db_arc = Arc::clone(&app.state::<AppState>().db);
-            let app_emit = app.clone();
+            // Reply events go through `sink` (desktop window or the asking browser).
+            let sink = StreamSink::new(&app, owner.clone());
             let question = user_question.clone();
             std::thread::spawn(move || {
+                let archive_passages = kiwix_rag::search_passages(&question);
                 let answer = db_arc
                     .lock()
                     .ok()
-                    .and_then(|db| db.hybrid_search(&question).ok())
+                    .and_then(|db| db.hybrid_search_with_archives(&question, &archive_passages).ok())
                     .and_then(|hits| library_context::format_library_only_answer(&hits, &reason));
                 match answer {
                     Some((text, sources)) => {
-                        let _ = app_emit.emit(STREAM_SOURCES_EVENT, &sources);
-                        let _ = app_emit.emit(STREAM_CHUNK_EVENT, text);
+                        let _ = sink.emit(STREAM_SOURCES_EVENT, &sources);
+                        let _ = sink.emit(STREAM_CHUNK_EVENT, text);
                     }
                     None => {
-                        let _ = app_emit.emit(
+                        let _ = sink.emit(
                             STREAM_ERROR_EVENT,
                             format!("{reason} Nothing in your library matched this question either."),
                         );
                     }
                 }
-                let _ = app_emit.emit(STREAM_DONE_EVENT, ());
+                let _ = sink.emit(STREAM_DONE_EVENT, ());
             });
             return Ok(());
         }
@@ -5606,6 +6090,7 @@ pub(crate) fn start_send_message_stream_for_user(
     let model_opts_for_stream = model_options;
     let stream_model_override = model.clone();
     let app_emit = app.clone();
+    let sink = StreamSink::new(&app, owner.clone());
     let history_clone = history;
     let app_data_dir_clone = app_data_dir.clone();
     let chat_id_clone = chat_id.clone();
@@ -5675,10 +6160,10 @@ pub(crate) fn start_send_message_stream_for_user(
                 }
             }
             let mut on_chunk = |chunk: &str| {
-                let _ = app_emit.emit(STREAM_CHUNK_EVENT, chunk);
+                let _ = sink.emit(STREAM_CHUNK_EVENT, chunk);
             };
             let on_done = || {
-                let _ = app_emit.emit(STREAM_DONE_EVENT, ());
+                let _ = sink.emit(STREAM_DONE_EVENT, ());
             };
             if let Err(e) = chat_stream_unified(
                 &config,
@@ -5690,8 +6175,8 @@ pub(crate) fn start_send_message_stream_for_user(
                 stream_model_override.as_deref(),
                 None,
             ) {
-                let _ = app_emit.emit(STREAM_ERROR_EVENT, e);
-                let _ = app_emit.emit(STREAM_DONE_EVENT, ());
+                let _ = sink.emit(STREAM_ERROR_EVENT, e);
+                let _ = sink.emit(STREAM_DONE_EVENT, ());
             }
             return;
         }
@@ -5750,11 +6235,24 @@ pub(crate) fn start_send_message_stream_for_user(
                 (rq, cp, lq)
             };
 
+        // Offline archives are searched before the database lock is taken (see kiwix_rag). The
+        // user's own words make the best full-text query; a short follow-up borrows the topic.
+        let archive_passages = if athena_ref_mode || skip_library_rag {
+            Vec::new()
+        } else {
+            let q = if kiwix_rag::query_terms(&user_question).len() >= 2 {
+                user_question.clone()
+            } else {
+                library_lookup_query.chars().take(200).collect()
+            };
+            kiwix_rag::search_passages(&q)
+        };
+
         let (messages, stream_citations) = {
             let db = match db_arc.lock() {
                 Ok(g) => g,
                 Err(e) => {
-                    let _ = app_emit.emit(STREAM_ERROR_EVENT, format!("Database lock failed: {e}"));
+                    let _ = sink.emit(STREAM_ERROR_EVENT, format!("Database lock failed: {e}"));
                     return;
                 }
             };
@@ -5827,7 +6325,7 @@ pub(crate) fn start_send_message_stream_for_user(
                 const LIBRARY_EXCERPTS_HEADER: &str = "\n\nRelevant excerpts from the user's library (use these to answer questions about the user's documents, property, or notes when the answer appears below, and name the source you used). Addresses and property details here are from the user's Library—cite them as such. The \"current location\" line elsewhere is from Settings for general area only.\n";
                 let excerpt_budget = library_budget.saturating_sub(mentioned_section.len());
                 let (keyword_semantic_section, library_citations) =
-                    match db.hybrid_search(&library_lookup_query) {
+                    match db.hybrid_search_with_archives(&library_lookup_query, &archive_passages) {
                         Ok(hits) => {
                             // Hits are relevance-filtered and ranked; keep what fits the model's
                             // context window. Sources are exactly the documents that made it in.
@@ -5912,7 +6410,7 @@ pub(crate) fn start_send_message_stream_for_user(
 
             let persistent_knowledge_section = build_persistent_knowledge_section(&app_data_dir);
             let location_section = build_location_section(&config);
-            let poi_maps_section = build_poi_and_maps_section(&app_data_dir);
+            let poi_maps_section = build_poi_and_maps_section(&app_data_dir, &message_for_model);
             let user_gps_section = build_user_gps_section(user_lat, user_lon);
             let personality_section = build_personality_section(&config);
             let user_profile_section = build_user_profile_section(&config);
@@ -5923,16 +6421,19 @@ pub(crate) fn start_send_message_stream_for_user(
 If you are not using local sources, do NOT thank, cite, or credit the provided context.\n\n\
 Critical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
                 ATHENA_FULL_NAME,
+                // Parts that rarely change come first so Ollama can reuse the work it already did
+                // reading them (a CPU-only station reads only ~45 tokens/s). Per-question parts
+                // follow, with the library excerpts last, right before the question.
+                personality_section,
+                user_profile_section,
+                persistent_knowledge_section,
+                location_section,
                 library_rule,
                 conversation_context_prompt,
-                persistent_knowledge_section,
-                context_section,
                 athena_ref_section,
-                location_section,
                 poi_maps_section,
                 user_gps_section,
-                personality_section,
-                user_profile_section
+                context_section
             );
 
             let max_memory = config.memory_messages.unwrap_or(20) as usize;
@@ -5965,15 +6466,15 @@ Critical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
         };
 
         if !stream_citations.is_empty() {
-            let _ = app_emit.emit(STREAM_SOURCES_EVENT, &stream_citations);
+            let _ = sink.emit(STREAM_SOURCES_EVENT, &stream_citations);
         }
 
         let models = load_models_for_inference(&config);
         let mut on_chunk = |chunk: &str| {
-            let _ = app_emit.emit(STREAM_CHUNK_EVENT, chunk);
+            let _ = sink.emit(STREAM_CHUNK_EVENT, chunk);
         };
         let on_done = || {
-            let _ = app_emit.emit(STREAM_DONE_EVENT, ());
+            let _ = sink.emit(STREAM_DONE_EVENT, ());
         };
         let cluster_model = inference::resolve_model_name_with_request_override(
             &config,
@@ -5983,6 +6484,7 @@ Critical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
         if let Ok(ref m) = cluster_model {
             if crate::lan_cluster::should_attempt_cluster(&config, &models, &messages, m) {
                 let app_c = app_emit.clone();
+                let sink_c = sink.clone();
                 let model_s = m.clone();
                 let messages_c = messages.clone();
                 let opts_c = model_opts_for_stream;
@@ -5996,8 +6498,8 @@ Critical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
                     )
                     .await;
                     if let Err(e) = r {
-                        let _ = app_c.emit(STREAM_ERROR_EVENT, e);
-                        let _ = app_c.emit(STREAM_DONE_EVENT, ());
+                        let _ = sink_c.emit(STREAM_ERROR_EVENT, e);
+                        let _ = sink_c.emit(STREAM_DONE_EVENT, ());
                     }
                     let _ = tx.send(());
                 });
@@ -6015,7 +6517,7 @@ Critical rule: Do NOT guess or make up facts. {}{}{}{}{}{}{}{}{}{}",
             stream_model_override.as_deref(),
             None,
         ) {
-            let _ = app_emit.emit(STREAM_ERROR_EVENT, e);
+            let _ = sink.emit(STREAM_ERROR_EVENT, e);
         }
     });
     Ok(())
@@ -6026,6 +6528,7 @@ pub(crate) fn start_send_message_stream_from_lan_args(
     app: tauri::AppHandle,
     session_user: auth::AuthenticatedPersonnel,
     args: &serde_json::Value,
+    owner: String,
 ) -> Result<(), String> {
     let message = args
         .get("message")
@@ -6091,6 +6594,7 @@ pub(crate) fn start_send_message_stream_from_lan_args(
         skip_library_rag,
         conversation_mode,
         retrieval_text,
+        Some(owner),
     )
 }
 
@@ -6323,6 +6827,7 @@ pub fn run() {
                 });
             }
             watch_officer::spawn_background_watch(app.handle().clone());
+            dev_bridge::maybe_start(app.handle().clone());
             let mesh_control = mesh_listener::spawn_mesh_radio_listener(
                 app.handle().clone(),
                 app_data_dir.clone(),
@@ -6408,8 +6913,22 @@ pub fn run() {
             );
 
             #[cfg(not(mobile))]
+            vault::spawn_background(app.handle().clone());
+
+            #[cfg(not(mobile))]
+            server_mode::start(app.handle());
+
+            #[cfg(not(mobile))]
             let spawned_sidecar: Option<CommandChild> = match app.handle().shell().sidecar("ollama") {
-                Ok(cmd) => match cmd.args(["serve"]).spawn() {
+                Ok(cmd) => match cmd
+                    .args(["serve"])
+                    // One model at a time, one request at a time, unloaded when idle: the machine
+                    // may be busy with other things (games, media) between questions.
+                    .env("OLLAMA_KEEP_ALIVE", server_mode::keep_alive())
+                    .env("OLLAMA_MAX_LOADED_MODELS", "1")
+                    .env("OLLAMA_NUM_PARALLEL", "1")
+                    .spawn()
+                {
                     Ok((mut rx, child)) => {
                         tauri::async_runtime::spawn(async move {
                             while rx.recv().await.is_some() {}
@@ -6585,6 +7104,28 @@ pub fn run() {
             inventory::list_inventory,
             runway::get_supply_runway,
             watch_officer::get_watch_brief,
+            vault::vault_get_overview,
+            vault::vault_save_settings,
+            vault::vault_ha_test,
+            vault::vault_ha_forget_token,
+            vault::vault_ha_use_location,
+            vault::vault_cancel_job,
+            vault::vault_create_pack,
+            vault::vault_set_pack_search,
+            vault::vault_verify_pack,
+            vault::vault_delete_pack,
+            vault::vault_scan_device,
+            vault::vault_resolve_scan_items,
+            vault::vault_mesh_search,
+            vault::vault_mesh_fetch,
+            vault::vault_check_updates,
+            vault::vault_finish_update,
+            vault::vault_resolve_source,
+            vault::vault_refresh_alerts,
+            vault::vault_hunker_down,
+            vault::vault_stand_down,
+            vault::vault_fleet_sync,
+            vault::vault_fleet_ask,
             field_ops::skills::get_skills_overview,
             field_ops::skills::save_skill_entry,
             field_ops::skills::delete_skill_entry,
@@ -6793,6 +7334,8 @@ pub fn run() {
             deployment::deployment_pause_downloads,
             deployment::deployment_is_running,
             deployment::deployment_get_queue_snapshot,
+            deployment::deployment_retry_unfinished,
+            deployment::deployment_clear_last_session,
             deployment::deployment_probe_remote_sizes,
             deployment::deployment_open_athena_data_folder,
             pmtiles_region_extract::extract_pmtiles_region,
@@ -6860,6 +7403,9 @@ pub fn run() {
             routing::start_valhalla_engine,
             routing::stop_valhalla_engine,
             geofabrik_downloader::geofabrik_download_regions_within_radius,
+            road_router::road_router_status,
+            road_router::road_router_build,
+            area_maps::maps_download_my_area,
             list_chats,
             get_chat,
             save_chat,
@@ -6893,9 +7439,15 @@ pub fn run() {
             aegis_export_preflight,
             start_aegis_export_preflight,
             lan_bridge::get_lan_bridge_status,
+            dev_bridge::dev_bridge_reply,
             lan_bridge::set_lan_bridge_enabled,
+            lan_bridge::handheld::handheld_overview,
+            lan_bridge::handheld::handheld_set_character,
+            lan_bridge::handheld::handheld_forget_device,
             usb::get_available_usbs,
             commands::library_source::open_library_source,
+            read_library_source,
+            station_inventory,
             send_mesh_message,
             add_mesh_profile,
             remove_mesh_profile,
@@ -6914,6 +7466,15 @@ pub fn run() {
             get_mesh_radio_identity,
             is_mesh_remote_registration_enabled,
             set_mesh_registration_admin_password,
+            mesh_athena_channel_status,
+            get_download_folder,
+            set_download_folder,
+            mesh_setup_athena_channel,
+            get_mesh_connection_settings,
+            set_mesh_connection_settings,
+            mesh_unlink_radio,
+            mesh_list_links,
+            mesh_renew_radio,
             logbook_list_entries,
             logbook_add_entry,
             logbook_delete_entry,

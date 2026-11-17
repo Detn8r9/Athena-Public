@@ -115,8 +115,12 @@ const OLLAMA_CHAT_TIMEOUT: Duration = Duration::from_secs(120);
 const OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Idle timeout between chunks on the streaming HTTP body (no bytes received).
 const OLLAMA_STREAM_READ_IDLE: Duration = Duration::from_secs(30);
-/// Wall-clock cap for the entire streaming response (first byte to completion).
-const OLLAMA_STREAM_MAX_DURATION: Duration = Duration::from_secs(120);
+/// Wall-clock cap for the entire streaming response (first byte to completion). Generous: on a
+/// CPU-only station a sourced answer streams for minutes; the idle limits catch a real stall.
+const OLLAMA_STREAM_MAX_DURATION: Duration = Duration::from_secs(600);
+/// Time allowed before the first words: the model reads the question and its sources first,
+/// which takes a while on a CPU-only station.
+const OLLAMA_STREAM_FIRST_TOKEN_IDLE: Duration = Duration::from_secs(180);
 
 fn ollama_stream_read_idle() -> Duration {
     std::env::var("ATHENA_OLLAMA_STREAM_IDLE_MS")
@@ -193,6 +197,8 @@ pub struct OllamaChatRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<ModelOptions>,
+    /// How long Ollama keeps the model in memory after this request (e.g. "2m").
+    pub keep_alive: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -562,6 +568,7 @@ pub fn chat(
         messages,
         stream: false,
         options,
+        keep_alive: crate::server_mode::keep_alive(),
     };
     let resp = client
         .post(&url)
@@ -592,6 +599,7 @@ async fn ollama_stream_read_lines(
         messages,
         stream: true,
         options,
+        keep_alive: crate::server_mode::keep_alive(),
     };
 
     let chat_url = format!("{}/api/chat", ollama_base.trim_end_matches('/'));
@@ -609,6 +617,7 @@ async fn ollama_stream_read_lines(
     let stream_start = Instant::now();
     let mut saw_done = false;
     let mut user_cancelled = false;
+    let mut got_first_chunk = false;
 
     loop {
         if cancel
@@ -619,15 +628,30 @@ async fn ollama_stream_read_lines(
             break;
         }
         if stream_start.elapsed() > ollama_stream_max_duration() {
-            return Err("Ollama stream exceeded maximum duration (120s).".to_string());
+            return Err(format!(
+                "The answer took longer than {} minutes and was stopped.",
+                ollama_stream_max_duration().as_secs() / 60
+            ));
         }
 
-        let next = tokio::time::timeout(ollama_stream_read_idle(), stream.next()).await;
+        let idle = if got_first_chunk {
+            ollama_stream_read_idle()
+        } else {
+            ollama_stream_read_idle().max(OLLAMA_STREAM_FIRST_TOKEN_IDLE)
+        };
+        let next = tokio::time::timeout(idle, stream.next()).await;
         let stream_item = match next {
             Err(_) => {
-                return Err("Ollama stream stalled: no data for 30 seconds.".to_string());
+                return Err(if got_first_chunk {
+                    format!("The model stopped responding (nothing for {} seconds).", idle.as_secs())
+                } else {
+                    format!("The model did not start answering within {} seconds. It may be busy with another question.", idle.as_secs())
+                });
             }
-            Ok(item) => item,
+            Ok(item) => {
+                got_first_chunk = true;
+                item
+            }
         };
 
         match stream_item {

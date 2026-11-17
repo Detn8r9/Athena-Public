@@ -16,11 +16,11 @@ import {
   MessageSquare,
   Library,
   GraduationCap,
-  Store,
   Users,
 } from "lucide-react";
 import { CommsHubIcon } from "../../shared/CommsHubIcon";
 import { WatchOfficerCard } from "./WatchOfficerCard";
+import { SetupChecklist } from "./SetupChecklist";
 
 interface SystemStatsPayload {
   total_memory: number;
@@ -47,7 +47,8 @@ interface RadioLogEntry {
   timestamp: string;
 }
 
-export type DashboardDestination = AppView | "library" | "settings";
+/** `download_maps` opens Downloads → Files & queue on the Maps tab. */
+export type DashboardDestination = AppView | "library" | "settings" | "download_maps";
 
 interface DeviceStatsPayload {
   cpu_usage_pct: number;
@@ -118,7 +119,7 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
   },
   {
     key: "map",
-    label: "Tactical Map",
+    label: "Map",
     icon: (
       <LauncherIcon>
         <MapIcon size={18} strokeWidth={2} aria-hidden />
@@ -162,8 +163,8 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     ),
   },
   {
-    key: "data_acquisition",
-    label: "Data Acquisition",
+    key: "marketplace",
+    label: "Downloads",
     icon: (
       <LauncherIcon>
         <HardDriveDownload size={18} strokeWidth={2} aria-hidden />
@@ -171,17 +172,8 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
     ),
   },
   {
-    key: "marketplace",
-    label: "Marketplace",
-    icon: (
-      <LauncherIcon>
-        <Store size={18} strokeWidth={2} aria-hidden />
-      </LauncherIcon>
-    ),
-  },
-  {
     key: "comms_hub",
-    label: "Communications Hub",
+    label: "Comms",
     icon: (
       <LauncherIcon>
         <CommsHubIcon size={18} strokeWidth={2} />
@@ -190,7 +182,7 @@ function buildLauncherItems(): Array<{ key: DashboardDestination; label: string;
   },
   {
     key: "logbook",
-    label: "Field log & logistics",
+    label: "Notes & inventory",
     icon: (
       <LauncherIcon>
         <BookOpen size={18} strokeWidth={2} aria-hidden />
@@ -213,18 +205,36 @@ function filterLauncherByRank(
   items: Array<{ key: DashboardDestination; label: string; icon: ReactNode }>,
   rank: number,
 ): Array<{ key: DashboardDestination; label: string; icon: ReactNode }> {
-  void rank;
-  // Show all launcher tiles; individual screens enforce RBAC as needed.
-  return items;
+  // Match the header: hide screens this rank cannot open (the app would bounce them back to Home).
+  return items.filter((it) => {
+    if (it.key === "map" || it.key === "personnel") return rank >= 4;
+    if (it.key === "comms_hub") return rank >= 2;
+    return true;
+  });
 }
+
+/** One line per tile so a first-time user can tell what each screen is for. */
+const LAUNCHER_HINTS: Partial<Record<DashboardDestination, string>> = {
+  chat: "Ask the offline AI a question",
+  map: "Offline maps, places and routes",
+  comms_hub: "Messages, distress calls and radios",
+  academy: "Courses and lessons",
+  archive: "Documents and files on this station",
+  data_acquisition: "Download files and watch the queue",
+  marketplace: "Get AI models, maps, apps, courses and documents",
+  field_ops: "Group check-ins, roster, patients and supplies",
+  logbook: "Field notes and inventory",
+  personnel: "People, ranks and the org chart",
+  calendar: "Events and schedules",
+};
 
 type LauncherItem = { key: DashboardDestination; label: string; icon: ReactNode };
 
 /** Right column: grouped app launchers (order within sector is fixed for muscle memory). */
 const OPERATIONAL_SECTORS: Array<{ id: string; title: string; keys: DashboardDestination[] }> = [
-  { id: "tactical", title: "Tactical Operations", keys: ["chat", "map", "comms_hub"] },
-  { id: "intel", title: "Intelligence & Data", keys: ["academy", "archive", "data_acquisition", "marketplace"] },
-  { id: "command", title: "Command & Logistics", keys: ["field_ops", "logbook", "personnel", "calendar"] },
+  { id: "tactical", title: "Talk & find your way", keys: ["chat", "map", "comms_hub"] },
+  { id: "intel", title: "Knowledge & downloads", keys: ["archive", "marketplace", "academy"] },
+  { id: "command", title: "People, plans & supplies", keys: ["field_ops", "logbook", "personnel", "calendar"] },
 ];
 
 function formatUptime(sec: number): string {
@@ -390,6 +400,7 @@ export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardV
   return (
     <div className="dashboard-operational-shell">
       <div className="dashboard-system-span">
+        <SetupChecklist rank={authRank} onNavigate={onNavigate} />
         <div style={{ marginBottom: "0.6rem" }}>
           <WatchOfficerCard onNavigate={(view) => onNavigate(view)} />
         </div>
@@ -443,7 +454,9 @@ export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardV
               {[
                 stats.host_name ?? undefined,
                 `${formatUptime(stats.uptime_secs)} up`,
-                `load ${stats.load_one.toFixed(2)} ${stats.load_five.toFixed(2)} ${stats.load_fifteen.toFixed(2)}`,
+                stats.load_one + stats.load_five + stats.load_fifteen > 0
+                  ? `load ${stats.load_one.toFixed(2)} ${stats.load_five.toFixed(2)} ${stats.load_fifteen.toFixed(2)}`
+                  : undefined,
                 stats.physical_cores != null
                   ? `${stats.logical_cpus} threads / ${stats.physical_cores} cores`
                   : `${stats.logical_cpus} threads`,
@@ -646,10 +659,10 @@ export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardV
                   padding: "0.35rem 0.65rem",
                   alignSelf: "flex-start",
                 }}
-                aria-label="Open Communications Hub"
+                aria-label="Open Comms"
               >
                 <CommsHubIcon size={16} strokeWidth={2} />
-                Communications Hub
+                Comms
                 <ChevronRight size={16} strokeWidth={2} aria-hidden />
               </button>
               <h3 style={{ margin: 0, color: "var(--primary)" }}>Recent Comms</h3>
@@ -689,7 +702,6 @@ export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardV
                     className="glass-panel dashboard-sector__tile"
                     onClick={() => onNavigate(item.key)}
                     style={{
-                      aspectRatio: "1 / 1",
                       border: "none",
                       display: "grid",
                       placeItems: "center",
@@ -699,6 +711,7 @@ export function DashboardView({ onNavigate, onOpenTriage, authRank }: DashboardV
                       background: "color-mix(in srgb, var(--surface-solid) 82%, transparent)",
                     }}
                     aria-label={`Open ${item.label}`}
+                    title={LAUNCHER_HINTS[item.key] ?? item.label}
                   >
                     {item.icon}
                     <span

@@ -371,9 +371,9 @@ export function MapProvisioner({
   return (
     <section className="map-provisioner" aria-label="Offline geographic provisioning">
       <header className="map-provisioner__head">
-        <h2 className="map-provisioner__title">Interactive geographic provisioning</h2>
+        <h2 className="map-provisioner__title">Estimate map size</h2>
         <p className="map-provisioner__lead">
-          Preview a download footprint and estimated size. Existing catalog regions on disk are shown as shaded coverage. Does not change tactical map routing.
+          See roughly how much space a map of an area would take before you download it. Shaded areas are maps already on this station.
         </p>
       </header>
       <div className="map-provisioner__grid">
@@ -382,7 +382,7 @@ export function MapProvisioner({
         </div>
         <aside className="map-provisioner__aside">
           <label className="map-provisioner__field">
-            <span className="map-provisioner__label">Target location</span>
+            <span className="map-provisioner__label">Where</span>
             <input
               className="map-provisioner__input"
               type="text"
@@ -394,7 +394,7 @@ export function MapProvisioner({
               }}
             />
             <button type="button" className="map-provisioner__btn" disabled={geoBusy} onClick={() => void runResolveTarget()}>
-              {geoBusy ? "Resolving…" : "Set target"}
+              {geoBusy ? "Finding…" : "Find"}
             </button>
             {geoErr ? <p className="map-provisioner__err">{geoErr}</p> : null}
             {geoLabel && !geoErr ? <p className="map-provisioner__ok">{geoLabel}</p> : null}
@@ -402,7 +402,7 @@ export function MapProvisioner({
 
           <div className="map-provisioner__field">
             <div className="map-provisioner__label-row">
-              <span className="map-provisioner__label">Radius (miles)</span>
+              <span className="map-provisioner__label">How far around it</span>
               <span className="map-provisioner__mono">{radiusMiles} mi</span>
             </div>
             <input
@@ -415,19 +415,19 @@ export function MapProvisioner({
               className="map-provisioner__range"
             />
             <p className="map-provisioner__hint">
-              Orange box = axis-aligned bounding square (side = 2× radius) used for rough tile-area math.
+              The orange box shows the area that would be downloaded.
             </p>
           </div>
 
           <fieldset className="map-provisioner__layers">
-            <legend className="map-provisioner__label">Layers to provision</legend>
+            <legend className="map-provisioner__label">What to include</legend>
             {(Object.keys(LAYER_MB_PER_SQ_MI) as ProvisionLayerId[]).map((id) => (
               <label key={id} className="map-provisioner__check">
                 <input type="checkbox" checked={layers[id]} onChange={() => toggleLayer(id)} />
                 <span>
                   {id === "satellite" && "Satellite (high res)"}
                   {id === "topo" && "Topographic"}
-                  {id === "street" && "Street / routing"}
+                  {id === "street" && "Streets and routing"}
                   {id === "terrain3d" && "Terrain (3D)"}
                   <span className="map-provisioner__mono"> · ~{formatDensityMibPerSqMi(LAYER_MB_PER_SQ_MI[id])} MiB/mi²</span>
                 </span>
@@ -437,24 +437,23 @@ export function MapProvisioner({
 
           <div className="map-provisioner__stats">
             <div>
-              <span className="map-provisioner__stat-k">BBox area (approx.)</span>
+              <span className="map-provisioner__stat-k">Area (approx.)</span>
               <span className="map-provisioner__stat-v">{center ? `${areaSqMi.toFixed(0)} mi²` : "—"}</span>
             </div>
             <div>
-              <span className="map-provisioner__stat-k">Selected layer density</span>
+              <span className="map-provisioner__stat-k">Size per square mile</span>
               <span className="map-provisioner__stat-v">
                 {selectedMbPerSqMi > 0 ? `~${formatDensityMibPerSqMi(selectedMbPerSqMi)} MiB/mi²` : "—"}
               </span>
             </div>
             <div>
-              <span className="map-provisioner__stat-k">Estimated download (preview)</span>
+              <span className="map-provisioner__stat-k">Estimated download size</span>
               <span className="map-provisioner__stat-v">
                 {estimateBytes > 0 ? formatBytesBinary(estimateBytes) : "—"}
               </span>
             </div>
             <p className="map-provisioner__queue-hint text-muted small">
-              The live estimate updates as you move the region. Pin it to freeze this footprint in the hub total (along
-              with Packages / Academy / Models) until you clear the planned queue.
+              Add this estimate to your download plan to see the total space needed alongside your other picks.
             </p>
             <button
               type="button"
@@ -463,7 +462,7 @@ export function MapProvisioner({
               disabled={estimateBytes <= 0}
               onClick={() => pinMapProvisionBytes(estimateBytes)}
             >
-              Pin map estimate to download plan
+              Add to download plan
             </button>
           </div>
         </aside>

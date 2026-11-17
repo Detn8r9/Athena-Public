@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { ArrowLeft, Printer } from "lucide-react";
 
-const KIWIX_ORIGIN = "http://localhost:8080";
+import { kiwixHomeUrl } from "../../shared/ipc/kiwixUrl";
 
 interface AcademyLesson {
   id: string;
@@ -84,6 +84,110 @@ function makeTeacherGuideHtml(args: { subjectLabel: string; gradeLabel: string; 
     </div>
   </body>
 </html>`;
+}
+
+
+type KiwixStatus = "checking" | "up" | "down";
+
+/** Whether the offline library answers. From the station app the request is cross-origin
+ * (`no-cors`: an opaque reply means it is up); from a browser it goes through the LAN server,
+ * which answers 503 while kiwix-serve is starting. */
+async function kiwixReachable(): Promise<boolean> {
+  try {
+    const r = await fetch(kiwixHomeUrl(), { mode: "no-cors", cache: "no-store" });
+    return r.type === "opaque" || r.ok;
+  } catch {
+    return false;
+  }
+}
+
+function KiwixLibraryPanel({ tabBar, iframeKey }: { tabBar: React.ReactNode; iframeKey: number }) {
+  const [status, setStatus] = useState<KiwixStatus>("checking");
+  const [frameLoaded, setFrameLoaded] = useState(false);
+  const check = useCallback(() => {
+    setStatus("checking");
+    void kiwixReachable().then((ok) => setStatus(ok ? "up" : "down"));
+  }, []);
+  useEffect(() => {
+    check();
+  }, [check]);
+
+  return (
+    <div
+      className="glass-panel app-view-placeholder"
+      style={{ display: "flex", flexDirection: "column", gap: "0.75rem", padding: "1rem", minHeight: "min(90vh, 720px)", flex: 1 }}
+    >
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+        <h2 className="app-view-placeholder-title" style={{ margin: 0 }}>
+          Academy
+        </h2>
+        {tabBar}
+      </div>
+      <p className="text-muted" style={{ margin: 0 }}>
+        Offline encyclopedias and courses (.zim files) from the Library downloads and your library folders, served by
+        the built-in Kiwix reader.
+      </p>
+      {status === "up" ? (
+        <div
+          className="glass-panel"
+          style={{
+            flex: 1,
+            width: "100%",
+            minHeight: "55vh",
+            padding: 0,
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            position: "relative",
+          }}
+        >
+          {!frameLoaded ? (
+            <p
+              className="text-muted"
+              role="status"
+              style={{ position: "absolute", top: "1rem", left: 0, right: 0, textAlign: "center", margin: 0 }}
+            >
+              Loading the library…
+            </p>
+          ) : null}
+          <iframe
+            key={iframeKey}
+            title="Kiwix library"
+            src={kiwixHomeUrl()}
+            onLoad={() => setFrameLoaded(true)}
+            style={{
+              flex: 1,
+              width: "100%",
+              minHeight: "55vh",
+              border: "none",
+              background: frameLoaded ? "#111" : "transparent",
+            }}
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+          />
+        </div>
+      ) : (
+        <div className="glass-panel" style={{ width: "100%", padding: "1rem" }} role="status">
+          {status === "checking" ? (
+            <p style={{ margin: 0 }}>Starting the offline library…</p>
+          ) : (
+            <>
+              <p style={{ marginTop: 0 }}>
+                <strong>No offline encyclopedias are available yet.</strong>
+              </p>
+              <p className="text-muted">
+                Get some from Downloads (for example WikiMed, Vikidia for children, or PhET
+                science simulations), or copy .zim files into a library folder. They appear here once the download
+                finishes. Files copied in by hand appear after ATHENA restarts.
+              </p>
+              <button type="button" className="secondary" onClick={check}>
+                Check again
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function AcademyModule() {
@@ -231,30 +335,7 @@ export function AcademyModule() {
 
   if (mainTab === "library") {
     return (
-      <div
-        className="glass-panel app-view-placeholder"
-        style={{ display: "flex", flexDirection: "column", gap: "0.75rem", padding: "1rem", minHeight: "min(90vh, 720px)", flex: 1 }}
-      >
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", justifyContent: "space-between" }}>
-          <h2 className="app-view-placeholder-title" style={{ margin: 0 }}>
-            Academy
-          </h2>
-          {tabBar}
-        </div>
-        <p className="text-muted" style={{ margin: 0 }}>
-          Offline ZIMs in <code>payload/ZIM_Archives</code> are served at{" "}
-          <code>{KIWIX_ORIGIN}</code> by the bundled <code>kiwix-serve</code> sidecar. Use the native Kiwix UI below to browse.
-        </p>
-        <div className="glass-panel" style={{ flex: 1, minHeight: "55vh", padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          <iframe
-            key={iframeKey}
-            title="Kiwix library"
-            src={`${KIWIX_ORIGIN}/`}
-            style={{ flex: 1, width: "100%", minHeight: "55vh", border: "none", background: "#111" }}
-            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-downloads"
-          />
-        </div>
-      </div>
+      <KiwixLibraryPanel tabBar={tabBar} iframeKey={iframeKey} />
     );
   }
 

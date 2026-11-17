@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { isAthenaDesktopRuntime } from "../../shared/ipc/athenaRuntime";
 import { athenaInvoke as invoke } from "../../shared/ipc/athenaIpc";
 import { athenaListen as listen } from "../../shared/ipc/athenaIpc";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -523,7 +524,7 @@ export function MarketplaceView({
           if (!inst || inst.status === "missing") return false;
         }
       }
-      if (category !== "All" && c.category !== category) return false;
+      if (category !== "All" && tab !== "models" && tab !== "maps" && c.category !== category) return false;
       if (!q) return true;
       const hay = [c.name, c.tagline, c.description, c.developer, c.category, c.kind, ...(c.tags ?? [])]
         .filter(Boolean)
@@ -905,10 +906,10 @@ export function MarketplaceView({
             <section className="store-detail-section">
               <h2>GGUF weights</h2>
               <p className="text-muted small">
-                Prefer raw Hugging Face GGUF files instead of Ollama? Queue them from Data Acquisition.
+                Prefer raw Hugging Face GGUF files instead of Ollama? Queue them from Downloads.
               </p>
               <button type="button" className="store-secondary-btn" onClick={onOpenDataAcquisitionModels}>
-                Open Data Acquisition (Models)
+                Open Downloads (Models)
               </button>
             </section>
           ) : null}
@@ -917,10 +918,10 @@ export function MarketplaceView({
             <section className="store-detail-section">
               <h2>Area extracts</h2>
               <p className="text-muted small">
-                Need a custom radius extract or Kiwix regional pack? Continue in Data Acquisition.
+                Need a custom radius extract or Kiwix regional pack? Continue in Downloads.
               </p>
               <button type="button" className="store-secondary-btn" onClick={onOpenDataAcquisitionMaps}>
-                Open Data Acquisition (Maps)
+                Open Downloads (Maps)
               </button>
             </section>
           ) : null}
@@ -972,10 +973,6 @@ export function MarketplaceView({
     <div className="store-shell home-view-scroll">
       <header className="store-topbar">
         <div className="store-topbar-left">
-          <h1 className="store-brand">
-            <Store size={22} strokeWidth={2} aria-hidden />
-            Marketplace
-          </h1>
           <nav className="store-tabs" aria-label="Marketplace sections">
             {(
               [
@@ -1031,17 +1028,14 @@ export function MarketplaceView({
       </header>
 
       <p className="store-status-line text-muted small">
-        {overview
-          ? `Docker ${overview.docker.version ? `v${overview.docker.version}` : dockerOk ? "ready" : "needed"}`
-          : "Docker…"}
-        {overview && !overview.internetAllowed
-          ? " · Offline — new downloads blocked"
-          : " · Online — downloads allowed"}
+        {overview && !overview.internetAllowed ? "Offline: new downloads are paused" : "Online"}
         {overview?.autoUpdate ? " · Auto-update on" : ""}
-        {" · "}
-        {catalog.length} items
+        {` · ${catalog.length} items`}
         {modelEntries.length > 0 ? ` · ${modelEntries.length} models` : ""}
         {mapEntries.length > 0 ? ` · ${mapEntries.length} maps` : ""}
+        {(tab === "apps" || tab === "modules") && overview
+          ? ` · Docker ${overview.docker.version ? `v${overview.docker.version}` : dockerOk ? "ready" : "not installed"}`
+          : ""}
       </p>
 
       {err ? (
@@ -1070,7 +1064,12 @@ export function MarketplaceView({
         </div>
       ) : null}
 
-      {!showDockerCatalog && (tab === "discover" || tab === "apps" || tab === "modules") && overview ? (
+      {!showDockerCatalog && tab === "discover" && overview ? (
+        <p className="text-muted small" style={{ margin: "0 0 0.75rem" }}>
+          Apps and modules also need Docker on the station. Models and maps don't.
+        </p>
+      ) : null}
+      {!showDockerCatalog && (tab === "apps" || tab === "modules") && overview ? (
         <div className="store-docker-needed glass-panel" style={{ marginBottom: "1rem" }}>
           <div className="store-hero-eyebrow">DOCKER OPTIONAL</div>
           <h2 style={{ marginTop: "0.35rem", fontSize: "1.1rem" }}>Apps &amp; modules need Docker</h2>
@@ -1079,7 +1078,7 @@ export function MarketplaceView({
           </p>
           <p className="text-muted small">{overview.docker.installHint}</p>
           <div className="store-detail-links">
-            {overview.docker.installUrl ? (
+            {overview.docker.installUrl && isAthenaDesktopRuntime() ? (
               <button type="button" className="store-get-btn" onClick={() => void openUrl(overview.docker.installUrl!)}>
                 Open Docker install page
               </button>
@@ -1091,6 +1090,7 @@ export function MarketplaceView({
         </div>
       ) : null}
 
+      {tab === "models" || tab === "maps" ? null : (
       <div className="store-category-chips" role="tablist" aria-label="Categories">
         {CATEGORY_ORDER.map((cat) => (
           <button
@@ -1105,6 +1105,7 @@ export function MarketplaceView({
           </button>
         ))}
       </div>
+      )}
 
       {dockerBlockedBrowse ? (
         <p className="text-muted">Install Docker to browse this section, or open Models / Maps.</p>
@@ -1197,7 +1198,7 @@ export function MarketplaceView({
             <p className="text-muted small" style={{ margin: "0 0 0.85rem" }}>
               Ollama pulls install here.{" "}
               <button type="button" className="store-inline-link" onClick={onOpenDataAcquisitionModels}>
-                Queue GGUF files in Data Acquisition
+                Queue GGUF files in Downloads
               </button>
             </p>
           ) : null}
@@ -1205,7 +1206,7 @@ export function MarketplaceView({
             <p className="text-muted small" style={{ margin: "0 0 0.85rem" }}>
               Regional archives install here.{" "}
               <button type="button" className="store-inline-link" onClick={onOpenDataAcquisitionMaps}>
-                Custom extracts in Data Acquisition
+                Custom extracts in Downloads
               </button>
             </p>
           ) : null}

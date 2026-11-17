@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { athenaInvoke as invoke } from "../../../shared/ipc/athenaIpc";
 import { motion } from "framer-motion";
-import { tilesIntersectingCircle, MAX_EXTRACT_RADIUS_MILES } from "../../../shared/lib/MapCatalogIndex";
+import {
+  MAP_CATALOG,
+  bboxFromCenterAndRadiusMiles,
+  tilesIntersectingCircle,
+  MAX_EXTRACT_RADIUS_MILES,
+} from "../../../shared/lib/MapCatalogIndex";
+import { MapArchiveMapTypeCard } from "./MapArchiveMapTypeCard";
 import { ErrorBoundary } from "../../../app/ErrorBoundary";
 import { MapArchivePreviewMap } from "./MapArchivePreviewMap";
 
@@ -100,6 +106,11 @@ export function OfflineMapManagerDashboard({
     return tilesIntersectingCircle(center.lat, center.lon, radiusMiles);
   }, [center, radiusMiles]);
 
+  const bbox = useMemo(
+    () => (center ? bboxFromCenterAndRadiusMiles(center.lat, center.lon, radiusMiles) : null),
+    [center, radiusMiles],
+  );
+
   if (!open) {
     return null;
   }
@@ -119,15 +130,15 @@ export function OfflineMapManagerDashboard({
       >
         <div className="map-archive-manager__head map-routing-setup-modal__head--sticky">
           <h2 id="offline-map-manager-title" className="map-archive-manager__h2">
-            Map archive manager
+            Download maps
           </h2>
-          <button type="button" className="close-btn" onClick={onClose} aria-label="Close map archive manager">
+          <button type="button" className="close-btn" onClick={onClose} aria-label="Close">
             ×
           </button>
         </div>
         <p className="map-archive-manager__lead text-muted small">
-          Set a place, pick a radius, and download satellite or street vector for that area. Routing &amp; Valhalla setup lives in{" "}
-          <strong>Directions</strong> (settings gear on the panel).
+          Pick a place and how far around it, then download a map of that area so the Map screen works without
+          internet.
         </p>
 
         <div
@@ -186,10 +197,10 @@ export function OfflineMapManagerDashboard({
 
         <div className="map-archive-radius">
           <label className="map-archive-radius__label" htmlFor="map-archive-radius-mi">
-            <span>Radius: </span>
+            <span>How far around it: </span>
             <strong className="map-archive-radius__value">{tileRadiusMiles}</strong>
             <span className="text-muted"> mi</span>{" "}
-            <span className="text-muted small" style={{ fontWeight: 400 }}>(max {MAX_EXTRACT_RADIUS_MILES} for extracts)</span>
+            <span className="text-muted small" style={{ fontWeight: 400 }}>(up to {MAX_EXTRACT_RADIUS_MILES} mi)</span>
           </label>
           <input
             id="map-archive-radius-mi"
@@ -206,7 +217,7 @@ export function OfflineMapManagerDashboard({
 
         {geocoding && (
           <p className="text-muted small map-archive-manager__subtle" style={{ textAlign: "center" }}>
-            Resolving place…
+            Finding the place…
           </p>
         )}
         {geocodeError && !geocoding ? (
@@ -221,24 +232,36 @@ export function OfflineMapManagerDashboard({
           </ErrorBoundary>
         </div>
 
-        <div className="map-archive-manager__recs" aria-label="Map acquisition">
-          <h3 className="map-archive-manager__h3">Acquire map archives</h3>
-          <p className="text-muted small" style={{ marginTop: 0, marginBottom: 16, maxWidth: 44 * 16 }}>
-            Raster and vector tile jobs for this preview are started from the centralized <strong>Data Acquisition</strong> hub under{" "}
-            <strong>Maps</strong>. Use the preview above to plan radius and placement, then open the hub to queue downloads.
-          </p>
+        <div className="map-archive-manager__recs" aria-label="Map downloads">
+          <h3 className="map-archive-manager__h3">Download this area</h3>
+          {MAP_CATALOG.filter((m) => m.acquirable).map((m) => (
+            <MapArchiveMapTypeCard
+              key={m.id}
+              mapType={m}
+              radiusMiles={radiusMiles}
+              canRun={bbox != null && !geocoding}
+              minLon={bbox?.min_lon ?? 0}
+              minLat={bbox?.min_lat ?? 0}
+              maxLon={bbox?.max_lon ?? 0}
+              maxLat={bbox?.max_lat ?? 0}
+              locationLabel={geocodeQuery}
+              open={open}
+            />
+          ))}
           {onOpenDataAcquisition ? (
-            <button
-              type="button"
-              className="primary"
-              style={{ width: "100%", maxWidth: 360 }}
-              onClick={() => {
-                onClose();
-                onOpenDataAcquisition();
-              }}
-            >
-              Open Data Acquisition (Maps)
-            </button>
+            <p className="text-muted small" style={{ margin: "0.75rem 0 0" }}>
+              Need a whole country or the world?{" "}
+              <button
+                type="button"
+                className="store-inline-link"
+                onClick={() => {
+                  onClose();
+                  onOpenDataAcquisition();
+                }}
+              >
+                Browse ready-made maps
+              </button>
+            </p>
           ) : null}
         </div>
       </motion.div>

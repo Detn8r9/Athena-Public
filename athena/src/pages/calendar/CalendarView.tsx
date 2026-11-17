@@ -856,7 +856,9 @@ export function CalendarView({
                       <span className={`calendar-mini-dot ${categoryDotClass(row.category)}`} />
                       <div className="calendar-mini-body">
                         <div className="calendar-mini-title">{row.title}</div>
-                        <div className="calendar-mini-meta text-muted small">{formatDateTime(row.occurrence_start_ts, timeFormat)}</div>
+                        <div className="calendar-mini-meta text-muted small">{row.all_day
+                            ? `${new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(row.occurrence_start_ts))} · ${lx.calendarAllDay}`
+                            : formatDateTime(row.occurrence_start_ts, timeFormat)}</div>
                       </div>
                       {row.linked_marker_id ? (
                         <button type="button" className="secondary small-btn" onClick={() => onGoToMarker(row.linked_marker_id)}>

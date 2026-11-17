@@ -1,0 +1,1379 @@
+/**
+ * Modern theme — clean, elevated, high-contrast field UI.
+ *
+ * Scoped only under [data-athena-theme="modern"] (+ [data-appearance]); other packages are untouched.
+ * Design rules:
+ *  - Legibility first: body text ≥ 7:1 on its surface in both appearances (sun + night).
+ *  - Panels are near-opaque elevated cards; blur is reserved for floating chrome (header, nav, sheets).
+ *  - Touch targets ≥ 44px on coarse pointers.
+ *  - Motion is 150–260 ms, transform/opacity only, and disabled under prefers-reduced-motion.
+ */
+
+/* ───────────────────────── Tokens ───────────────────────── */
+
+body.theme-modern,
+.app[data-athena-theme="modern"] {
+  color-scheme: light;
+  --m-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --m-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --m-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --m-dur-fast: 150ms;
+  --m-dur: 220ms;
+  --m-dur-slow: 260ms;
+  --m-radius-sm: 10px;
+  --m-radius: 14px;
+  --m-radius-lg: 20px;
+  --m-target: 40px;
+  /* Labelled phone tab bar height; shared with responsive.css if it reads this variable. */
+  --bottom-nav-height: 4.25rem;
+  --ease-out: var(--m-ease);
+  --ease-in-out: var(--m-ease-in-out);
+  --transition-fast: var(--m-dur-fast);
+  --transition-normal: var(--m-dur);
+}
+
+body.theme-modern[data-appearance="light"],
+.app[data-athena-theme="modern"][data-appearance="light"] {
+  color-scheme: light;
+  --bg: #eef0f3;
+  --surface: rgba(255, 255, 255, 0.86);
+  --surface-solid: #ffffff;
+  --theme-elevated: #ffffff;
+  --m-surface-2: #f6f7f9;
+  --m-chrome: rgba(250, 251, 252, 0.78);
+  --primary: #0a5fd1;
+  --secondary: #0b4fae;
+  --m-on-primary: #ffffff;
+  --text: #0b0d10;
+  --text-muted: #4b525c;
+  --border: rgba(11, 13, 16, 0.14);
+  --theme-hairline: rgba(11, 13, 16, 0.08);
+  --glow: rgba(10, 95, 209, 0.22);
+  --user-bubble: rgba(10, 95, 209, 0.1);
+  --hover-overlay: rgba(11, 13, 16, 0.05);
+  --theme-danger: #c8231b;
+  --theme-success: #0f7a55;
+  --tertiary: #c8231b;
+  --warning: #a14b00;
+  --warning-soft: rgba(161, 75, 0, 0.12);
+  --theme-radius: 14px;
+  --theme-shadow: 0 1px 2px rgba(11, 13, 16, 0.06), 0 8px 24px rgba(11, 13, 16, 0.08);
+  --m-shadow-float: 0 2px 6px rgba(11, 13, 16, 0.06), 0 18px 48px rgba(11, 13, 16, 0.16);
+  --m-focus: 0 0 0 3px rgba(10, 95, 209, 0.35);
+  --font: var(--m-font);
+}
+
+body.theme-modern[data-appearance="dark"],
+.app[data-athena-theme="modern"][data-appearance="dark"] {
+  color-scheme: dark;
+  --bg: #07090c;
+  --surface: rgba(20, 24, 30, 0.86);
+  --surface-solid: #13171d;
+  --theme-elevated: #1b2028;
+  --m-surface-2: #181d24;
+  --m-chrome: rgba(12, 15, 19, 0.72);
+  --primary: #4ea4ff;
+  --secondary: #7bbcff;
+  --m-on-primary: #04121f;
+  --text: #f3f5f7;
+  --text-muted: #a2abb7;
+  --border: rgba(255, 255, 255, 0.14);
+  --theme-hairline: rgba(255, 255, 255, 0.08);
+  --glow: rgba(78, 164, 255, 0.28);
+  --user-bubble: rgba(78, 164, 255, 0.16);
+  --hover-overlay: rgba(255, 255, 255, 0.06);
+  --theme-danger: #ff5d52;
+  --theme-success: #3ddc97;
+  --tertiary: #ff5d52;
+  --warning: #fbbf24;
+  --warning-soft: rgba(251, 191, 36, 0.14);
+  --theme-radius: 14px;
+  --theme-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 12px 32px rgba(0, 0, 0, 0.5);
+  --m-shadow-float: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 24px 64px rgba(0, 0, 0, 0.6);
+  --m-focus: 0 0 0 3px rgba(78, 164, 255, 0.45);
+  --font: var(--m-font);
+}
+
+/* Night vision still wins over Modern (red, low-blue for dark adaptation). */
+.app[data-athena-theme="modern"][data-nightvision="true"] {
+  color-scheme: dark;
+  --bg: #050000;
+  --surface: rgba(18, 1, 1, 0.92);
+  --surface-solid: #120101;
+  --theme-elevated: #1c0303;
+  --m-surface-2: #170202;
+  --m-chrome: rgba(10, 0, 0, 0.82);
+  --primary: #f97373;
+  --secondary: #b91c1c;
+  --m-on-primary: #1a0000;
+  --text: #fed7d7;
+  --text-muted: #fca5a5;
+  --border: rgba(248, 113, 113, 0.42);
+  --theme-hairline: rgba(248, 113, 113, 0.2);
+  --glow: rgba(248, 113, 113, 0.3);
+  --user-bubble: rgba(127, 29, 29, 0.6);
+  --hover-overlay: rgba(248, 113, 113, 0.1);
+  --theme-danger: #ff8a8a;
+  --theme-success: #fca5a5;
+  --warning: #fca5a5;
+  --m-focus: 0 0 0 3px rgba(248, 113, 113, 0.45);
+}
+
+/* ───────────────────────── Base ───────────────────────── */
+
+.app[data-athena-theme="modern"] {
+  font-family: var(--font);
+  letter-spacing: -0.006em;
+  background: var(--bg);
+  color: var(--text);
+  scrollbar-color: color-mix(in srgb, var(--text) 28%, transparent) transparent;
+  --glass-bg: var(--surface);
+  --glass-bg-soft: color-mix(in srgb, var(--surface-solid) 70%, transparent);
+  --glass-bg-strong: color-mix(in srgb, var(--surface-solid) 92%, transparent);
+  --glass-border: 1px solid var(--theme-hairline);
+  --glass-border-subtle: 1px solid var(--theme-hairline);
+  --glass-shadow-lift: var(--theme-shadow);
+  --glass-shadow-modal: var(--m-shadow-float);
+  --glass-shadow-popover: var(--m-shadow-float);
+  --glass-shadow-trigger: var(--theme-shadow);
+  --glass-edge: 0 0 0 0 transparent;
+  --radius-card: var(--m-radius-lg);
+  --radius-modal: 24px;
+  --radius-pill: 999px;
+  --danger: var(--theme-danger);
+}
+
+html:has(body.theme-modern) {
+  background-color: rgb(var(--theme-bg-rgb));
+}
+
+.app[data-athena-theme="modern"] ::selection {
+  background: color-mix(in srgb, var(--primary) 30%, transparent);
+}
+
+.app[data-athena-theme="modern"] h1,
+.app[data-athena-theme="modern"] h2,
+.app[data-athena-theme="modern"] h3 {
+  letter-spacing: -0.02em;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.app[data-athena-theme="modern"] .text-muted,
+.app[data-athena-theme="modern"] .fo-muted,
+.app[data-athena-theme="modern"] .sidebar-tagline,
+.app[data-athena-theme="modern"] .welcome-hint {
+  color: var(--text-muted) !important;
+}
+
+.app[data-athena-theme="modern"] .error,
+.app[data-athena-theme="modern"] .library-tab-error {
+  color: var(--theme-danger);
+}
+
+/* Numbers that update (status, counts, clocks) don't jitter. */
+.app[data-athena-theme="modern"] .dashboard-system-metric,
+.app[data-athena-theme="modern"] .universal-header-calendar-merge-text,
+.app[data-athena-theme="modern"] .battery-text,
+.app[data-athena-theme="modern"] .map-coordinate-hud,
+.app[data-athena-theme="modern"] .lock-screen-sparkline-value,
+.app[data-athena-theme="modern"] table {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Kill retro chrome effects. */
+.app[data-athena-theme="modern"][data-fx-scanlines="1"]::before,
+.app[data-athena-theme="modern"][data-fx-scanlines="1"]::after,
+body.theme-modern::after {
+  display: none !important;
+}
+
+/* ───────────────────────── Surfaces ───────────────────────── */
+
+.app[data-athena-theme="modern"] .glass-panel {
+  background: var(--surface);
+  border: 1px solid var(--theme-hairline);
+  border-radius: var(--m-radius-lg);
+  box-shadow: var(--theme-shadow);
+  /* Page panels are near-opaque: no blur. It costs GPU on low-end devices, and it would make each
+     panel the containing block for fixed dialogs opened inside it. Floating chrome keeps its blur. */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app[data-athena-theme="modern"] .glass-panel::before,
+.app[data-athena-theme="modern"] .chat-sidebar::before,
+.app[data-athena-theme="modern"] .chat-main.glass-panel::before {
+  display: none !important;
+}
+
+.app[data-athena-theme="modern"] .fo-panel,
+.app[data-athena-theme="modern"] .library-section,
+.app[data-athena-theme="modern"] .calendar-inspector-section {
+  border-radius: var(--m-radius);
+  border-color: var(--theme-hairline);
+}
+
+/* ───────────────────────── Controls ───────────────────────── */
+
+.app[data-athena-theme="modern"] button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app[data-athena-theme="modern"] button.secondary,
+.app[data-athena-theme="modern"] button.glass-action-btn,
+.app[data-athena-theme="modern"] .sidebar-new-chat,
+.app[data-athena-theme="modern"] .btn-primary-cta,
+.app[data-athena-theme="modern"] .library-btn {
+  min-height: var(--m-target);
+  padding: 0.5rem 1rem;
+  border-radius: var(--m-radius-sm);
+  font-weight: 590;
+  font-size: 0.9rem;
+  letter-spacing: -0.005em;
+  transition:
+    background-color var(--m-dur-fast) var(--m-ease),
+    border-color var(--m-dur-fast) var(--m-ease),
+    color var(--m-dur-fast) var(--m-ease),
+    box-shadow var(--m-dur-fast) var(--m-ease),
+    transform var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] button.secondary {
+  background: var(--m-surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.app[data-athena-theme="modern"] button.secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--m-surface-2) 88%, var(--text) 6%);
+  border-color: color-mix(in srgb, var(--text) 24%, transparent);
+}
+
+/* Primary actions: solid fill, high contrast in sun. */
+.app[data-athena-theme="modern"] button.glass-action-btn,
+.app[data-athena-theme="modern"] .sidebar-new-chat,
+.app[data-athena-theme="modern"] .btn-primary-cta,
+.app[data-athena-theme="modern"] button.primary,
+.app[data-athena-theme="modern"] .lock-screen-submit,
+.app[data-athena-theme="modern"] .send-btn.send-btn-active:not(:disabled) {
+  background: var(--primary) !important;
+  border: 1px solid transparent !important;
+  color: var(--m-on-primary) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.app[data-athena-theme="modern"] button.glass-action-btn:hover:not(:disabled),
+.app[data-athena-theme="modern"] .sidebar-new-chat:hover,
+.app[data-athena-theme="modern"] .btn-primary-cta:hover,
+.app[data-athena-theme="modern"] button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 88%, var(--text) 12%) !important;
+}
+
+.app[data-athena-theme="modern"] button.secondary:active:not(:disabled),
+.app[data-athena-theme="modern"] button.glass-action-btn:active:not(:disabled),
+.app[data-athena-theme="modern"] .sidebar-new-chat:active,
+.app[data-athena-theme="modern"] .universal-header-icon-btn:active,
+.app[data-athena-theme="modern"] .universal-header-bottom-nav-btn:active,
+.app[data-athena-theme="modern"] .map-left-rail__btn:active {
+  transform: scale(0.97);
+}
+
+.app[data-athena-theme="modern"] button:disabled {
+  opacity: 0.5;
+}
+
+/* Disabled primary actions: neutral and still legible ("not yet") instead of a washed-out blue. */
+.app[data-athena-theme="modern"] button.glass-action-btn:disabled,
+.app[data-athena-theme="modern"] button.primary:disabled,
+.app[data-athena-theme="modern"] .lock-screen-submit:disabled,
+.app[data-athena-theme="modern"] .logbook-save-note:disabled,
+.app[data-athena-theme="modern"] .logbook-pull-mesh:disabled,
+.app[data-athena-theme="modern"] .calendar-add-event-btn:disabled,
+.app[data-athena-theme="modern"] .calendar-save-btn:disabled,
+.app[data-athena-theme="modern"] .map-manager-download-btn:disabled,
+.app[data-athena-theme="modern"] .mesh-profile-add-btn:disabled,
+.app[data-athena-theme="modern"] .library-section button:disabled,
+.app[data-athena-theme="modern"] .map-chat-send:disabled,
+.app[data-athena-theme="modern"] .btn-primary-cta:disabled {
+  opacity: 1;
+  background: var(--m-surface-2) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-muted) !important;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.app[data-athena-theme="modern"] .small-btn {
+  white-space: nowrap;
+  font-size: 0.78rem !important;
+  padding: 0.3rem 0.65rem !important;
+  min-height: 32px;
+}
+
+.app[data-athena-theme="modern"] button:focus-visible,
+.app[data-athena-theme="modern"] a:focus-visible,
+.app[data-athena-theme="modern"] [role="tab"]:focus-visible,
+.app[data-athena-theme="modern"] input:focus-visible,
+.app[data-athena-theme="modern"] select:focus-visible,
+.app[data-athena-theme="modern"] textarea:focus-visible {
+  outline: none !important;
+  box-shadow: var(--m-focus) !important;
+}
+
+.app[data-athena-theme="modern"] input[type="text"],
+.app[data-athena-theme="modern"] input[type="search"],
+.app[data-athena-theme="modern"] input[type="password"],
+.app[data-athena-theme="modern"] input[type="number"],
+.app[data-athena-theme="modern"] input[type="email"],
+.app[data-athena-theme="modern"] input[type="date"],
+.app[data-athena-theme="modern"] input[type="time"],
+.app[data-athena-theme="modern"] input[type="datetime-local"],
+.app[data-athena-theme="modern"] select,
+.app[data-athena-theme="modern"] textarea,
+.app[data-athena-theme="modern"] .theme-select,
+.app[data-athena-theme="modern"] .fo-input,
+.app[data-athena-theme="modern"] .lock-screen-input {
+  background: var(--m-surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--m-radius-sm);
+  min-height: var(--m-target);
+  font-family: inherit;
+  transition:
+    border-color var(--m-dur-fast) var(--m-ease),
+    box-shadow var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] input:focus,
+.app[data-athena-theme="modern"] select:focus,
+.app[data-athena-theme="modern"] textarea:focus {
+  border-color: var(--primary);
+}
+
+.app[data-athena-theme="modern"] ::placeholder {
+  color: color-mix(in srgb, var(--text-muted) 85%, transparent);
+}
+
+.app[data-athena-theme="modern"] hr,
+.app[data-athena-theme="modern"] .divider {
+  border: none;
+  border-top: 1px solid var(--theme-hairline);
+}
+
+.app[data-athena-theme="modern"] table th {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.app[data-athena-theme="modern"] table td,
+.app[data-athena-theme="modern"] table th {
+  border-color: var(--theme-hairline);
+}
+
+/* ───────────────────────── Shell: header ───────────────────────── */
+
+.app[data-athena-theme="modern"] .universal-header.glass-panel {
+  margin: 0.6rem 0.75rem 0.4rem;
+  padding: 0.3rem 0.5rem;
+  background: var(--m-chrome);
+  border: 1px solid var(--theme-hairline);
+  border-radius: 18px;
+  box-shadow: var(--theme-shadow);
+  backdrop-filter: saturate(180%) blur(24px);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+}
+
+.app[data-athena-theme="modern"] .universal-header-icon-btn {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  color: var(--text-muted);
+  transition:
+    color var(--m-dur-fast) var(--m-ease),
+    background-color var(--m-dur-fast) var(--m-ease),
+    transform var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] .universal-header-icon-btn:hover {
+  color: var(--text);
+  background: var(--hover-overlay);
+}
+
+/* Active view: filled pill + accent, readable at a glance (was colour-only). */
+.app[data-athena-theme="modern"] .universal-header-icon-btn-active,
+.app[data-athena-theme="modern"] .universal-header-icon-btn[aria-current="page"] {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.app[data-athena-theme="modern"] .universal-header-icon-btn[aria-current="page"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 16px;
+  height: 3px;
+  margin-left: -8px;
+  border-radius: 2px;
+  background: var(--primary);
+  animation: modern-indicator-in var(--m-dur) var(--m-ease) both;
+}
+
+.app[data-athena-theme="modern"] .universal-header-clock-btn {
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid var(--theme-hairline);
+  background: var(--m-surface-2);
+  color: var(--text);
+  font-weight: 590;
+}
+
+.app[data-athena-theme="modern"] .universal-header-calendar-merge-active {
+  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+  background: color-mix(in srgb, var(--primary) 12%, var(--m-surface-2));
+  color: var(--primary);
+}
+
+.app[data-athena-theme="modern"] .battery-pill,
+.app[data-athena-theme="modern"] .universal-header-ingestion,
+.app[data-athena-theme="modern"] .universal-header-power-save-indicator {
+  border-radius: 999px;
+  border: 1px solid var(--theme-hairline);
+  background: var(--m-surface-2);
+}
+
+.app[data-athena-theme="modern"] .battery-pill-low {
+  border-color: color-mix(in srgb, var(--theme-danger) 60%, transparent);
+  color: var(--theme-danger);
+}
+
+.app[data-athena-theme="modern"] .universal-header-power-menu.glass-panel {
+  background: var(--surface-solid);
+  box-shadow: var(--m-shadow-float);
+  border-radius: var(--m-radius);
+  animation: modern-pop-in var(--m-dur) var(--m-ease) both;
+  transform-origin: top left;
+}
+
+.app[data-athena-theme="modern"] .universal-header-power-menu-item {
+  min-height: 44px;
+  border-radius: var(--m-radius-sm);
+}
+
+/* ───────────────────────── Shell: bottom tab bar (phones) ───────────────────────── */
+
+.app[data-athena-theme="modern"] .universal-header-bottom-nav {
+  background: var(--m-chrome);
+  border-top: 1px solid var(--theme-hairline);
+  box-shadow: 0 -1px 0 var(--theme-hairline), 0 -12px 32px rgba(0, 0, 0, 0.12);
+  backdrop-filter: saturate(180%) blur(24px);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+}
+
+.app[data-athena-theme="modern"] .universal-header-bottom-nav-btn,
+.app[data-athena-theme="modern"] .universal-header-bottom-nav-btn.universal-header-bottom-nav-btn-active {
+  flex-direction: column;
+  gap: 2px;
+  width: auto;
+  min-width: 56px;
+  height: 52px;
+  padding: 4px 8px 2px;
+  border-radius: 14px;
+  transition:
+    color var(--m-dur-fast) var(--m-ease),
+    background-color var(--m-dur-fast) var(--m-ease),
+    transform var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] .universal-header-bottom-nav-btn-active {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 13%, transparent);
+}
+
+/* Labels under tab-bar icons (hidden in other themes). */
+.app[data-athena-theme="modern"] .uh-nav-label {
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+/* ───────────────────────── View transitions ───────────────────────── */
+
+/* Each view remounts on switch (keyed ErrorBoundary); fade only — no transform, so fixed map panels stay put. */
+.app[data-athena-theme="modern"] .app-content-stage > * {
+  animation: modern-fade-in var(--m-dur) var(--m-ease) both;
+}
+
+/* ───────────────────────── Dialogs & sheets ───────────────────────── */
+
+.app[data-athena-theme="modern"] .modal-backdrop,
+.app[data-athena-theme="modern"] .lock-screen-help-backdrop {
+  background: color-mix(in srgb, var(--bg) 40%, rgba(0, 0, 0, 0.45));
+  backdrop-filter: blur(10px) saturate(120%);
+  -webkit-backdrop-filter: blur(10px) saturate(120%);
+  animation: modern-fade-in var(--m-dur-fast) var(--m-ease) both;
+}
+
+.app[data-athena-theme="modern"] .modal,
+.app[data-athena-theme="modern"] .modal-content,
+.app[data-athena-theme="modern"] .qm-modal,
+.app[data-athena-theme="modern"] .library-modal,
+.app[data-athena-theme="modern"] .library-modal.glass-panel,
+.app[data-athena-theme="modern"] .settings-panel,
+.app[data-athena-theme="modern"] .triage-overlay-panel,
+.app[data-athena-theme="modern"] .lock-screen-help-sheet {
+  background: var(--surface-solid);
+  color: var(--text);
+  border: 1px solid var(--theme-hairline);
+  border-radius: 24px;
+  box-shadow: var(--m-shadow-float);
+  animation: modern-sheet-in var(--m-dur-slow) var(--m-ease) both;
+}
+
+.app[data-athena-theme="modern"] .qm-modal-actions {
+  gap: 0.6rem;
+}
+
+/* ───────────────────────── Lock screen ───────────────────────── */
+
+.app[data-athena-theme="modern"] .lock-screen-login-panel,
+.app[data-athena-theme="modern"] .lock-screen-ambient-panel {
+  background: var(--surface);
+  border: 1px solid var(--theme-hairline);
+  border-radius: 24px;
+  box-shadow: var(--m-shadow-float);
+  backdrop-filter: saturate(160%) blur(22px);
+  -webkit-backdrop-filter: saturate(160%) blur(22px);
+}
+
+.app[data-athena-theme="modern"] .lock-screen-login-panel {
+  animation: modern-sheet-in var(--m-dur-slow) var(--m-ease) both;
+}
+
+.app[data-athena-theme="modern"] .lock-screen-status-chip {
+  border-radius: 999px;
+  border: 1px solid var(--theme-hairline);
+  background: var(--m-surface-2);
+  color: var(--text);
+}
+
+.app[data-athena-theme="modern"] .lock-screen-error {
+  color: var(--theme-danger);
+  font-weight: 600;
+}
+
+/* ───────────────────────── Dashboard / Watch Officer ───────────────────────── */
+
+.app[data-athena-theme="modern"] .dashboard-sector__header {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0.6rem;
+}
+
+.app[data-athena-theme="modern"] .dashboard-sector__grid {
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: 0.75rem;
+}
+
+.app[data-athena-theme="modern"] .dashboard-sector__tile,
+.app[data-athena-theme="modern"] .dashboard-widget-sidebar__block {
+  border: 1px solid var(--theme-hairline) !important;
+  box-shadow: var(--theme-shadow);
+}
+
+.app[data-athena-theme="modern"] .dashboard-sector__tile {
+  transition:
+    transform var(--m-dur-fast) var(--m-ease),
+    box-shadow var(--m-dur-fast) var(--m-ease),
+    border-color var(--m-dur-fast) var(--m-ease);
+}
+
+@media (hover: hover) {
+  .app[data-athena-theme="modern"] .dashboard-sector__tile:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--primary) 40%, transparent) !important;
+    box-shadow: var(--m-shadow-float);
+  }
+}
+
+.app[data-athena-theme="modern"] .dashboard-sector__tile:active {
+  transform: scale(0.98);
+}
+
+/* Launcher tiles: shorter cards with a real icon chip and a readable label (inline styles need !important). */
+.app[data-athena-theme="modern"] .dashboard-sector__tile {
+  aspect-ratio: auto !important;
+  min-height: 104px;
+  align-content: center;
+  gap: 0.55rem !important;
+  padding: 0.9rem 0.6rem !important;
+  background: var(--surface-solid) !important;
+}
+
+.app[data-athena-theme="modern"] .dashboard-sector__tile > span:first-child {
+  width: 2.6rem !important;
+  height: 2.6rem !important;
+  border-radius: 12px !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--primary) !important;
+  background: color-mix(in srgb, var(--primary) 14%, transparent) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app[data-athena-theme="modern"] .dashboard-sector__tile > span:first-child svg {
+  width: 22px;
+  height: 22px;
+}
+
+.app[data-athena-theme="modern"] .dashboard-sector__tile > span:last-child {
+  font-size: 0.95rem !important;
+  font-weight: 600;
+  color: var(--text) !important;
+}
+
+.app[data-athena-theme="modern"] .dashboard-system-metric {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--theme-hairline);
+}
+
+.app[data-athena-theme="modern"] .dashboard-system-metric:last-child {
+  border-bottom: none;
+}
+
+.app[data-athena-theme="modern"] .dashboard-system-metric span:last-child {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Triage stays loud: solid danger, not a gradient. */
+.app[data-athena-theme="modern"] .dashboard-triage-wrap {
+  border: none;
+  border-radius: var(--m-radius);
+  box-shadow: none;
+}
+
+.app[data-athena-theme="modern"] .dashboard-triage-tile {
+  min-height: 56px;
+  border-radius: var(--m-radius);
+  background: var(--theme-danger);
+  color: #fff !important;
+  font-weight: 700;
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--theme-danger) 35%, transparent);
+  transition: transform var(--m-dur-fast) var(--m-ease), filter var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"][data-appearance="dark"] .dashboard-triage-tile {
+  background: #d8352b;
+}
+
+.app[data-athena-theme="modern"] .dashboard-triage-tile:active {
+  transform: scale(0.98);
+}
+
+/* ───────────────────────── Chat ───────────────────────── */
+
+.app[data-athena-theme="modern"] .chat-sidebar {
+  background: var(--surface-solid);
+  border-right: 1px solid var(--theme-hairline);
+}
+
+.app[data-athena-theme="modern"] .chat-main.glass-panel {
+  background: var(--surface);
+}
+
+.app[data-athena-theme="modern"] .sidebar-title,
+.app[data-athena-theme="modern"] .message-role {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.app[data-athena-theme="modern"] .sidebar-chat-item,
+.app[data-athena-theme="modern"] .sidebar-chat-btn,
+.app[data-athena-theme="modern"] .chat-list-item {
+  border-radius: var(--m-radius-sm);
+}
+
+.app[data-athena-theme="modern"] .sidebar-chat-btn:hover,
+.app[data-athena-theme="modern"] .chat-list-btn:hover {
+  background: var(--hover-overlay);
+}
+
+.app[data-athena-theme="modern"] .message {
+  animation: modern-rise-in var(--m-dur) var(--m-ease) both;
+}
+
+.app[data-athena-theme="modern"] .message-content {
+  background: var(--m-surface-2);
+  border: 1px solid var(--theme-hairline);
+  border-radius: 18px;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  line-height: 1.55;
+}
+
+.app[data-athena-theme="modern"] .message.user .message-content,
+.app[data-athena-theme="modern"] .message-user .message-content,
+.app[data-athena-theme="modern"] .message[data-role="user"] .message-content {
+  background: var(--primary);
+  border-color: transparent;
+  color: var(--m-on-primary);
+}
+
+.app[data-athena-theme="modern"] .message.user .message-content a,
+.app[data-athena-theme="modern"] .message-user .message-content a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.app[data-athena-theme="modern"] .chat-input-wrap {
+  border-radius: 22px;
+}
+
+.app[data-athena-theme="modern"] .chat-input,
+.app[data-athena-theme="modern"] textarea.chat-input {
+  background: var(--m-surface-2);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  min-height: 48px;
+  padding: 0.8rem 1.1rem;
+}
+
+.app[data-athena-theme="modern"] .send-btn {
+  border-radius: 999px;
+  transition: transform var(--m-dur-fast) var(--m-ease), background-color var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] .chat-workspace-tab,
+.app[data-athena-theme="modern"] .chat-surface-btn,
+.app[data-athena-theme="modern"] .sidebar-surface-btn {
+  border-radius: 999px;
+  transition: background-color var(--m-dur-fast) var(--m-ease), color var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] .chat-workspace-tab-active,
+.app[data-athena-theme="modern"] .chat-surface-btn--active,
+.app[data-athena-theme="modern"] .sidebar-surface-btn--active {
+  background: var(--primary);
+  color: var(--m-on-primary);
+}
+
+.app[data-athena-theme="modern"] .chat-tools-menu {
+  background: var(--surface-solid);
+  border: 1px solid var(--theme-hairline);
+  border-radius: var(--m-radius);
+  box-shadow: var(--m-shadow-float);
+  animation: modern-pop-in var(--m-dur) var(--m-ease) both;
+}
+
+.app[data-athena-theme="modern"] .chat-md-codeblock,
+.app[data-athena-theme="modern"] .chat-md-pre {
+  border-radius: var(--m-radius-sm);
+  border: 1px solid var(--theme-hairline);
+}
+
+/* ───────────────────────── Map ───────────────────────── */
+
+.app[data-athena-theme="modern"] .map-left-rail {
+  background: var(--m-chrome);
+  border: 1px solid var(--theme-hairline);
+  border-radius: 18px;
+  box-shadow: var(--m-shadow-float);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+.app[data-athena-theme="modern"] .map-left-rail__btn {
+  border-radius: 12px;
+  transition:
+    background-color var(--m-dur-fast) var(--m-ease),
+    color var(--m-dur-fast) var(--m-ease),
+    transform var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] .map-view-chat-zone,
+.app[data-athena-theme="modern"] .map-smart-bar,
+.app[data-athena-theme="modern"] .map-coordinate-hud,
+.app[data-athena-theme="modern"] .map-layers-popout,
+.app[data-athena-theme="modern"] .map-directions-panel,
+.app[data-athena-theme="modern"] .tactical-sidebar {
+  background: var(--m-chrome);
+  color: var(--text);
+  border: 1px solid var(--theme-hairline);
+  border-radius: 18px;
+  box-shadow: var(--m-shadow-float);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+.app[data-athena-theme="modern"] .map-layers-popout,
+.app[data-athena-theme="modern"] .map-directions-panel {
+  animation: modern-pop-in var(--m-dur) var(--m-ease) both;
+}
+
+.app[data-athena-theme="modern"] .map-chat-input {
+  border-radius: 999px;
+}
+
+.app[data-athena-theme="modern"] .maplibregl-ctrl-group {
+  border-radius: 12px !important;
+  overflow: hidden;
+  box-shadow: var(--theme-shadow) !important;
+}
+
+.app[data-athena-theme="modern"] .maplibregl-popup-content {
+  border-radius: var(--m-radius) !important;
+  background: var(--surface-solid);
+  color: var(--text);
+  box-shadow: var(--m-shadow-float);
+}
+
+.app[data-athena-theme="modern"] .map-archive-card,
+.app[data-athena-theme="modern"] .map-manager-catalog-card {
+  border-radius: var(--m-radius);
+  border-color: var(--theme-hairline);
+}
+
+/* ───────────────────────── Field ops / Vault / Logistics / Calendar ───────────────────────── */
+
+.app[data-athena-theme="modern"] .fo-table,
+.app[data-athena-theme="modern"] .fo-table-wrap {
+  border-radius: var(--m-radius-sm);
+}
+
+.app[data-athena-theme="modern"] .fo-row {
+  border-color: var(--theme-hairline);
+}
+
+.app[data-athena-theme="modern"] .fo-empty {
+  border-radius: var(--m-radius);
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+}
+
+.app[data-athena-theme="modern"] [role="tablist"] {
+  gap: 0.25rem;
+}
+
+.app[data-athena-theme="modern"] [role="tab"] {
+  border-radius: 999px;
+  min-height: 36px;
+  transition: background-color var(--m-dur-fast) var(--m-ease), color var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] [role="tab"][aria-selected="true"] {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
+}
+
+/* Field Ops / Vault tab rows. */
+.app[data-athena-theme="modern"] .fo-tabs {
+  gap: 0.25rem;
+  padding: 0.3rem;
+  border-radius: 16px;
+}
+
+.app[data-athena-theme="modern"] .fo-tab {
+  min-height: 38px;
+  border-radius: 11px;
+  font-weight: 550;
+  transition: background-color var(--m-dur-fast) var(--m-ease), color var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] .fo-tab[aria-selected="true"],
+.app[data-athena-theme="modern"] .fo-tab[aria-pressed="true"] {
+  color: var(--primary);
+  border-color: transparent;
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+}
+
+/* Field Ops two-level tabs: row 1 (areas) is the stronger control; row 2 (sections) stays light. */
+.app[data-athena-theme="modern"] .fo-tabs[aria-label="Field Ops areas"] {
+  background: var(--m-surface-2);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app[data-athena-theme="modern"] .fo-tabs[aria-label="Field Ops areas"] .fo-tab {
+  min-height: 42px;
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+}
+
+.app[data-athena-theme="modern"] .fo-tabs[aria-label="Field Ops areas"] .fo-tab[aria-selected="true"] {
+  color: var(--m-on-primary);
+  background: var(--primary);
+}
+
+.app[data-athena-theme="modern"] .fo-tabs[aria-label$=" sections"] {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  padding-left: 0;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Library / archive tabs: segmented control instead of underlined tabs on a black strip. */
+.app[data-athena-theme="modern"] .library-tablist {
+  gap: 0.25rem;
+  padding: 0.25rem;
+  margin: 0.25rem 0 0.5rem;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--theme-hairline);
+  border-radius: 14px;
+  background: var(--m-surface-2);
+  scrollbar-width: none;
+}
+
+.app[data-athena-theme="modern"] .library-tab {
+  min-height: 36px;
+  padding: 0.4rem 0.95rem;
+  border: none;
+  border-radius: 10px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.app[data-athena-theme="modern"] .library-tab:hover {
+  color: var(--text);
+}
+
+.app[data-athena-theme="modern"] .library-tab.library-tab-active,
+.app[data-athena-theme="modern"] .library-tab[aria-selected="true"] {
+  color: var(--text);
+  background: var(--surface-solid);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--theme-hairline);
+  margin: 0;
+}
+
+.app[data-athena-theme="modern"] .calendar-nav-btn {
+  border-radius: 999px;
+  min-width: 40px;
+  min-height: 40px;
+}
+
+/* ───────────────────────── Settings ───────────────────────── */
+
+.app[data-athena-theme="modern"] .settings-nav button {
+  border-radius: var(--m-radius-sm);
+  min-height: 40px;
+  transition: background-color var(--m-dur-fast) var(--m-ease), color var(--m-dur-fast) var(--m-ease);
+}
+
+.app[data-athena-theme="modern"] .settings-nav button:hover {
+  background: var(--hover-overlay);
+}
+
+/* ───────────────────────── Toasts & menus ───────────────────────── */
+
+.app[data-athena-theme="modern"] .lan-clients-chip {
+  font-family: var(--font);
+  font-weight: 600;
+  color: var(--text);
+  background: var(--m-chrome);
+  border: 1px solid var(--theme-hairline);
+  box-shadow: var(--theme-shadow);
+  backdrop-filter: saturate(180%) blur(16px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+}
+
+.app[data-athena-theme="modern"] .soft-toast,
+.app[data-athena-theme="modern"] .calendar-notice-stack > * {
+  border-radius: var(--m-radius);
+  box-shadow: var(--m-shadow-float);
+  animation: modern-rise-in var(--m-dur) var(--m-ease) both;
+}
+
+/* ───────────────────────── Touch ───────────────────────── */
+
+@media (pointer: coarse) {
+  .app[data-athena-theme="modern"] {
+    --m-target: 44px;
+  }
+
+  .app[data-athena-theme="modern"] .universal-header-icon-btn,
+  .app[data-athena-theme="modern"] .universal-header-clock-btn {
+    min-width: 44px;
+    height: 44px;
+  }
+
+  .app[data-athena-theme="modern"] .small-btn {
+    min-height: 40px;
+    padding: 0.45rem 0.8rem !important;
+  }
+
+  .app[data-athena-theme="modern"] [role="tab"] {
+    min-height: 44px;
+  }
+
+  /* 16px inputs stop iOS Safari from zooming on focus. */
+  .app[data-athena-theme="modern"] input,
+  .app[data-athena-theme="modern"] select,
+  .app[data-athena-theme="modern"] textarea {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 768px) {
+  /* No blur on the phone header: it would trap the fixed tab bar inside it. */
+  .app[data-athena-theme="modern"] .universal-header.glass-panel.universal-header--mobile {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--surface-solid);
+  }
+}
+
+@media (max-width: 640px) {
+  .app[data-athena-theme="modern"] .universal-header.glass-panel {
+    margin: 0.4rem 0.5rem 0.3rem;
+    border-radius: 16px;
+  }
+
+  .app[data-athena-theme="modern"] .modal,
+  .app[data-athena-theme="modern"] .qm-modal,
+  .app[data-athena-theme="modern"] .library-modal {
+    border-radius: 20px;
+  }
+}
+
+/* ───────────────────────── Accessibility preferences ───────────────────────── */
+
+@media (prefers-reduced-transparency: reduce) {
+  .app[data-athena-theme="modern"] {
+    --surface: var(--surface-solid);
+    --m-chrome: var(--surface-solid);
+  }
+
+  .app[data-athena-theme="modern"] .glass-panel,
+  .app[data-athena-theme="modern"] .universal-header.glass-panel,
+  .app[data-athena-theme="modern"] .universal-header-bottom-nav,
+  .app[data-athena-theme="modern"] .map-left-rail,
+  .app[data-athena-theme="modern"] .map-smart-bar,
+  .app[data-athena-theme="modern"] .modal-backdrop {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .app[data-athena-theme="modern"] {
+    --theme-hairline: var(--border);
+    --text-muted: color-mix(in srgb, var(--text) 82%, var(--bg));
+  }
+}
+
+/* ───────────────────────── Keyframes ───────────────────────── */
+
+@keyframes modern-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modern-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes modern-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes modern-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes modern-indicator-in {
+  from {
+    opacity: 0;
+    transform: scaleX(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Labelled tab bar is taller (52px buttons): reserve matching space on phones. */
+@media (max-width: 768px) {
+  .app[data-athena-theme="modern"] .app-shell {
+    padding-bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .app[data-athena-theme="modern"] .universal-header-bottom-nav {
+    min-height: calc(4rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .app[data-athena-theme="modern"] .lan-clients-chip {
+    bottom: calc(4.6rem + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Small phones: keep the header on one row (the date button was pushing Help onto a second line). */
+@media (max-width: 420px) {
+  .app[data-athena-theme="modern"] .universal-header--mobile .universal-header-mobile-row1-right,
+  .app[data-athena-theme="modern"] .universal-header--mobile .universal-header-mobile-row1-left {
+    gap: 0.15rem;
+  }
+
+  .app[data-athena-theme="modern"] .universal-header--mobile .universal-header-mobile-calendar {
+    padding: 0 0.55rem;
+  }
+
+  .app[data-athena-theme="modern"] .universal-header--mobile .universal-header-mobile-calendar .universal-header-calendar-merge-icon {
+    display: none;
+  }
+
+  .app[data-athena-theme="modern"] .universal-header--mobile .universal-header-calendar-merge-text {
+    font-size: 0.78rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .app[data-athena-theme="modern"] .universal-header--mobile .universal-header-icon-btn {
+    width: 40px;
+    min-width: 40px;
+  }
+
+  .app[data-athena-theme="modern"] .universal-header--mobile .universal-header-mobile-calendar {
+    padding: 0 0.45rem;
+  }
+
+  .app[data-athena-theme="modern"] .universal-header--mobile .universal-header-calendar-merge-text {
+    font-size: 0.74rem;
+    letter-spacing: -0.01em;
+  }
+}
+
+/* Phone header: drop the idle status row (empty progress track + empty ingestion slot) so the
+   header is one clean row; it reappears as soon as a download, index or power-save notice is active. */
+@media (max-width: 768px) {
+  .app[data-athena-theme="modern"]
+    .universal-header--mobile
+    .universal-header-mobile-status:not(:has(.universal-header-mini-progress--active, .universal-header-ingestion, .universal-header-power-save-indicator)) {
+    display: none;
+  }
+}
+
+/* ───────────────────────── Home: "Get set up" checklist ───────────────────────── */
+
+.app[data-athena-theme="modern"] .setup-checklist {
+  padding: 1rem 1.1rem;
+  animation: modern-rise-in var(--m-dur) var(--m-ease) both;
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__progress {
+  /* Holds a full sentence ("3 of 5 done. Work down the list…"): plain hint text under the title, not a pill. */
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 52px;
+  padding: 0.45rem 0.25rem;
+  border-top: 1px solid var(--theme-hairline);
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__item:first-child {
+  border-top: none;
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__mark {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  border: 1.5px solid var(--border);
+}
+
+/* Done rows stay fully opaque (beats the inline 0.6) so the green ✓ reads in sun; the title is muted instead. */
+.app[data-athena-theme="modern"] .setup-checklist__item[data-done="true"] {
+  opacity: 1 !important;
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__item[data-done="true"] .setup-checklist__mark {
+  color: #fff;
+  border-color: transparent;
+  background: var(--theme-success);
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__item[data-done="true"] .setup-checklist__text strong {
+  color: var(--text-muted);
+  font-weight: 550;
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 0.1rem;
+  line-height: 1.35;
+}
+
+.app[data-athena-theme="modern"] .setup-checklist__go {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 480px) {
+  .app[data-athena-theme="modern"] .setup-checklist__item {
+    flex-wrap: wrap;
+  }
+
+  .app[data-athena-theme="modern"] .setup-checklist__go {
+    margin-left: calc(28px + 0.75rem);
+  }
+}
+
+/* Phones ≤560px: responsive.css makes library sheets full-screen; keep them square-cornered in Modern too. */
+@media (max-width: 560px) {
+  .app[data-athena-theme="modern"] .modal-backdrop > .library-modal {
+    border-radius: 0;
+  }
+}
+
+/* ───────────────────────── Settings: "Settings on other screens" ───────────────────────── */
+
+.app[data-athena-theme="modern"] .settings-elsewhere {
+  display: grid;
+  gap: 1rem;
+}
+
+.app[data-athena-theme="modern"] .settings-elsewhere__group {
+  border: 1px solid var(--theme-hairline);
+  border-radius: var(--m-radius);
+  background: var(--surface-solid);
+  padding: 0.35rem 0.9rem;
+}
+
+.app[data-athena-theme="modern"] .settings-elsewhere__group h4 {
+  margin: 0.55rem 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.app[data-athena-theme="modern"] .settings-elsewhere__group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.app[data-athena-theme="modern"] .settings-elsewhere__item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 52px;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--theme-hairline);
+}
+
+.app[data-athena-theme="modern"] .settings-elsewhere__item:first-child {
+  border-top: none;
+}
+
+.app[data-athena-theme="modern"] .settings-elsewhere__item > button.secondary {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* "Go to" target highlight: a soft accent ring that pulses once, then fades (no layout shift). */
+.app[data-athena-theme="modern"] [data-goto-flash] {
+  outline: none !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 55%, transparent), 0 0 0 8px var(--glow) !important;
+  border-radius: var(--m-radius);
+  animation: modern-goto-flash 1.8s var(--m-ease) both;
+}
+
+@keyframes modern-goto-flash {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 70%, transparent), 0 0 0 0 var(--glow);
+  }
+  15% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 60%, transparent), 0 0 0 10px var(--glow);
+  }
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 0%, transparent), 0 0 0 10px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app[data-athena-theme="modern"] [data-goto-flash] {
+    animation: none;
+  }
+}

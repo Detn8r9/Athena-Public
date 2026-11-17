@@ -175,6 +175,12 @@ fn fts_keywords_to_match_query(keywords: &[String]) -> Option<String> {
 pub const PERSONNEL_ARCHITECT_LOGIN: &str = "demo-operator";
 
 /// SHA-256 hex digest of trimmed UTF-8 PIN bytes (interim; prefer Argon2 for production hardening).
+const MESH_LINKS_SQL: &str = "CREATE TABLE IF NOT EXISTS mesh_links (
+    node_id INTEGER PRIMARY KEY NOT NULL,
+    public_key BLOB NOT NULL,
+    verified_at INTEGER NOT NULL
+);";
+
 pub fn personnel_pin_hash(pin: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -304,6 +310,22 @@ pub struct MeshManifestRow {
     #[serde(default)]
     pub modified_at: Option<i64>,
 }
+
+/// One chunk row to store: index, layer, parent id, page start, page end, text, retrieval text,
+/// vector, needs embedding, sync to the vector index, timestamp start.
+pub type ChunkEmbeddingRow<'a> = (
+    i64,
+    Option<&'a str>,
+    Option<i64>,
+    Option<i32>,
+    Option<i32>,
+    String,
+    String,
+    Vec<f32>,
+    bool,
+    bool,
+    Option<f64>,
+);
 
 pub struct Database {
     conn: Mutex<Connection>,
@@ -2441,14 +2463,17 @@ END;
     ) -> Result<CommandNotificationRow, String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn
-            .execute(
+        {
+            // Release the connection before re-reading: `command_notification_get_by_id` locks it
+            // again, and std's Mutex is not re-entrant (holding it here froze the whole app).
+            let conn = self.conn.lock().map_err(|e| e.to_string())?;
+            conn.execute(
                 "INSERT INTO command_notifications (id, kind, severity, title, body, ref_id, created_at, ack_by_user_id, ack_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL)",
                 params![id, kind, severity, title, body, ref_id, now_ms],
             )
             .map_err(|e| e.to_string())?;
+        }
         self.command_notification_get_by_id(&id)?
             .ok_or_else(|| "Failed to read new notification row.".to_string())
     }
@@ -4218,6 +4243,44 @@ END;
         }
     }
 
+    /// True for a multi-page document whose chunks were all stored without page numbers.
+    /// Documents in the chat index (books, PDFs, notes; not archive articles).
+    pub fn chat_indexed_document_count(&self) -> u64 {
+        let Ok(conn) = self.conn.lock() else { return 0 };
+        conn.query_row("SELECT COUNT(DISTINCT file_path) FROM chunk_embeddings", [], |r| r.get::<_, i64>(0))
+            .map(|n| n.max(0) as u64)
+            .unwrap_or(0)
+    }
+
+    /// True when `path` is a document in the library (indexed or chunked). Used to decide which
+    /// files a signed-in member may read through the LAN server.
+    pub fn is_library_document(&self, path: &str) -> bool {
+        let Ok(conn) = self.conn.lock() else {
+            return false;
+        };
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM indexed_files WHERE path = ?1)
+                OR EXISTS (SELECT 1 FROM chunk_embeddings WHERE file_path = ?1)",
+            params![path],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    }
+
+    pub fn file_chunks_lack_page_numbers(&self, file_path: &str) -> bool {
+        let Ok(conn) = self.conn.lock() else {
+            return false;
+        };
+        conn.query_row(
+            "SELECT COALESCE((SELECT page_count FROM indexed_files WHERE path = ?1), 0) > 1
+                AND EXISTS (SELECT 1 FROM chunk_embeddings WHERE file_path = ?1)
+                AND NOT EXISTS (SELECT 1 FROM chunk_embeddings WHERE file_path = ?1 AND page_start IS NOT NULL)",
+            params![file_path],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    }
+
     /// Count of embedding rows for a library file (used to detect missing vector coverage).
     pub fn chunk_embedding_count_for_file_path(&self, file_path: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -4694,17 +4757,44 @@ LIMIT ?2
         &self,
         query: &str,
     ) -> Result<Vec<IndexedFile>, String> {
-        let all = self.get_all()?;
+        // Match in SQL: this runs on every chat message, and loading every file's full text (large
+        // ZIM articles and books included) just to compare names made each message slower as the
+        // library grew. SQLite's lower() only folds ASCII, so re-check in Rust for exactness.
         let query_lower = query.to_lowercase();
-        let out: Vec<IndexedFile> = all
-            .into_iter()
-            .filter(|f| {
-                f.text_content
-                    .as_deref()
-                    .is_some_and(|t| !t.trim().is_empty())
-                    && query_lower.contains(&f.name.to_lowercase())
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, path, file_type, name, size, modified_at, text_content, metadata_json, created_at, display_title, page_count
+                 FROM indexed_files
+                 WHERE length(name) >= 4 AND instr(?1, lower(name)) > 0
+                   AND file_type != 'zim'
+                   AND text_content IS NOT NULL AND trim(text_content) != ''",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![query_lower], |row| {
+                Ok(IndexedFile {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    file_type: row.get(2)?,
+                    name: row.get(3)?,
+                    size: row.get(4)?,
+                    modified_at: row.get(5)?,
+                    text_content: row.get(6)?,
+                    metadata_json: row.get(7)?,
+                    created_at: row.get(8)?,
+                    display_title: row.get(9)?,
+                    page_count: row.get(10)?,
+                })
             })
-            .collect();
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            let f = row.map_err(|e| e.to_string())?;
+            if name_is_mentioned(&query_lower, &f.name.to_lowercase()) {
+                out.push(f);
+            }
+        }
         Ok(out)
     }
 
@@ -5914,76 +6004,77 @@ LIMIT ?2
     pub fn replace_file_chunk_embeddings_batched(
         &self,
         file_path: &str,
-        rows: Vec<(
-            i64,
-            Option<&str>,
-            Option<i64>,
-            Option<i32>,
-            Option<i32>,
-            String,
-            String,
-            Vec<f32>,
-            bool,
-            bool,
-            Option<f64>,
-        )>,
+        rows: Vec<ChunkEmbeddingRow<'_>>,
     ) -> Result<(), String> {
-        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
-        {
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
-            Self::delete_embeddings_for_file_tx(&tx, file_path)?;
-            tx.commit().map_err(|e| e.to_string())?;
-        }
+        self.delete_chunk_embeddings_for_file(file_path)?;
         let mut last_parent_rowid: Option<i64> = None;
         let mut iter = rows.into_iter().peekable();
         while iter.peek().is_some() {
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
-            let mut n_in_tx: usize = 0;
-            while n_in_tx < Self::CHUNK_EMBED_SQLITE_BATCH {
-                let Some((
-                    chunk_index,
-                    chunk_layer,
-                    parent_id,
-                    page_start,
-                    page_end,
-                    chunk_text,
-                    retrieval_text,
-                    vector,
-                    needs_embedding,
-                    sync_to_vec_index,
-                    timestamp_start,
-                )) = iter.next()
-                else {
-                    break;
-                };
-                let effective_parent_id = if chunk_layer == Some("child") && parent_id.is_none() {
-                    last_parent_rowid
-                } else {
-                    parent_id
-                };
-                let _ = Self::insert_chunk_embedding_row_tx(
-                    &tx,
-                    file_path,
-                    chunk_index,
-                    chunk_layer,
-                    effective_parent_id,
-                    page_start,
-                    page_end,
-                    &chunk_text,
-                    &retrieval_text,
-                    &vector,
-                    needs_embedding,
-                    sync_to_vec_index,
-                    timestamp_start,
-                )?;
-                if chunk_layer == Some("parent") {
-                    last_parent_rowid = Some(tx.last_insert_rowid());
-                }
-                n_in_tx += 1;
-            }
-            tx.commit().map_err(|e| e.to_string())?;
+            let batch: Vec<_> = iter.by_ref().take(Self::CHUNK_EMBED_SQLITE_BATCH).collect();
+            last_parent_rowid = self.insert_chunk_embedding_batch(file_path, batch, last_parent_rowid)?;
         }
         Ok(())
+    }
+
+    /// Remove every stored chunk of a file, before its fresh chunks are written.
+    pub fn delete_chunk_embeddings_for_file(&self, file_path: &str) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        Self::delete_embeddings_for_file_tx(&tx, file_path)?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Write one batch of a file's chunks in a single transaction. `last_parent_rowid` carries the
+    /// most recent parent row across batches (children name it as their parent); the updated value
+    /// is returned for the next batch.
+    pub fn insert_chunk_embedding_batch(
+        &self,
+        file_path: &str,
+        rows: Vec<ChunkEmbeddingRow<'_>>,
+        mut last_parent_rowid: Option<i64>,
+    ) -> Result<Option<i64>, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for (
+            chunk_index,
+            chunk_layer,
+            parent_id,
+            page_start,
+            page_end,
+            chunk_text,
+            retrieval_text,
+            vector,
+            needs_embedding,
+            sync_to_vec_index,
+            timestamp_start,
+        ) in rows
+        {
+            let effective_parent_id = if chunk_layer == Some("child") && parent_id.is_none() {
+                last_parent_rowid
+            } else {
+                parent_id
+            };
+            let _ = Self::insert_chunk_embedding_row_tx(
+                &tx,
+                file_path,
+                chunk_index,
+                chunk_layer,
+                effective_parent_id,
+                page_start,
+                page_end,
+                &chunk_text,
+                &retrieval_text,
+                &vector,
+                needs_embedding,
+                sync_to_vec_index,
+                timestamp_start,
+            )?;
+            if chunk_layer == Some("parent") {
+                last_parent_rowid = Some(tx.last_insert_rowid());
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(last_parent_rowid)
     }
 
     pub fn upsert_chunk_embedding(
@@ -6376,6 +6467,53 @@ LIMIT ?2
             .filter(|h| h.relevant)
             .map(|h| h.hit)
             .collect())
+    }
+
+    /// [`Self::hybrid_search`] plus passages from the offline archives (see `kiwix_rag`). Both kinds
+    /// are scored by the same cross-encoder against the question, so an encyclopedia article and
+    /// the user's own notes compete on relevance alone. The archive passages are fetched by the
+    /// caller before the database lock is taken.
+    pub fn hybrid_search_with_archives(
+        &self,
+        query: &str,
+        archives: &[crate::kiwix_rag::KiwixPassage],
+    ) -> Result<Vec<HybridSearchHit>, String> {
+        let local = self.hybrid_search_scored(query)?;
+        if archives.is_empty() {
+            return Ok(local.into_iter().filter(|h| h.relevant).map(|h| h.hit).collect());
+        }
+        let to_hit = |p: &crate::kiwix_rag::KiwixPassage, score: f32| HybridSearchHit {
+            expanded_text: p.text.clone(),
+            display_title: Some(p.display_title()),
+            page_number: None,
+            file_path: p.source_path(),
+            timestamp_start: None,
+            score,
+            parent_id: None,
+            parent_text: None,
+        };
+        let reranked = crate::rerank::global_is_onnx_loaded();
+        if !reranked {
+            // No relevance model: keep the user's own documents first, then a few archive passages
+            // in the order kiwix-serve ranked them.
+            let mut out: Vec<HybridSearchHit> = local.into_iter().filter(|h| h.relevant).map(|h| h.hit).collect();
+            out.extend(archives.iter().take(3).map(|p| to_hit(p, 0.0)));
+            return Ok(out);
+        }
+        let texts: Vec<String> = archives.iter().map(|p| p.text.clone()).collect();
+        let scores = crate::rerank::score_pairs_global(query, &texts)?;
+        let mut pool: Vec<HybridSearchHit> = local.into_iter().map(|h| h.hit).collect();
+        pool.extend(archives.iter().zip(scores).map(|(p, sc)| to_hit(p, sc)));
+        pool.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        let top = pool.first().map(|h| h.score).unwrap_or(f32::MIN);
+        let mut out = Vec::new();
+        for h in pool {
+            if out.len() >= HYBRID_SEARCH_TOP_CHUNKS || !hybrid_rerank_score_is_relevant(h.score, top) {
+                break;
+            }
+            out.push(h);
+        }
+        Ok(out)
     }
 
     /// Same pipeline as [`Self::hybrid_search`] but returns every reranked candidate with its
@@ -7437,6 +7575,62 @@ LIMIT ?2
             out.push(r.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    /// Radio key and last PIN check for a linked node (see `mesh_policy`).
+    pub fn mesh_link_get(&self, node_id: i64) -> Result<Option<crate::mesh_policy::Link>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch(MESH_LINKS_SQL).map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT public_key, verified_at FROM mesh_links WHERE node_id = ?1",
+            params![node_id],
+            |r| Ok(crate::mesh_policy::Link { public_key: r.get(0)?, verified_at: r.get(1)? }),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn mesh_link_set(&self, node_id: i64, public_key: &[u8], verified_at: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch(MESH_LINKS_SQL).map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO mesh_links (node_id, public_key, verified_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(node_id) DO UPDATE SET public_key = excluded.public_key, verified_at = excluded.verified_at",
+            params![node_id, public_key, verified_at],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Restart a radio's link period without changing its pinned key.
+    pub fn mesh_link_renew(&self, node_id: i64, verified_at: i64) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch(MESH_LINKS_SQL).map_err(|e| e.to_string())?;
+        let n = conn
+            .execute("UPDATE mesh_links SET verified_at = ?2 WHERE node_id = ?1", params![node_id, verified_at])
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    /// Links for the operator's list: node, key, last PIN check.
+    pub fn mesh_link_list(&self) -> Result<Vec<(i64, crate::mesh_policy::Link)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch(MESH_LINKS_SQL).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT node_id, public_key, verified_at FROM mesh_links").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, crate::mesh_policy::Link { public_key: r.get(1)?, verified_at: r.get(2)? })))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Forget a radio: its link and its profile, so it must be linked again with a PIN.
+    pub fn mesh_unlink(&self, node_id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch(MESH_LINKS_SQL).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM mesh_links WHERE node_id = ?1", params![node_id]).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE mesh_profiles SET is_registered = 0 WHERE node_id = ?1", params![node_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn mesh_profile_get_by_node(&self, node_id: i64) -> Result<Option<MeshProfile>, String> {
@@ -8717,6 +8911,12 @@ LIMIT ?2
         Ok(n)
     }
 
+    /// Run plain SQL such as `BEGIN` / `COMMIT` around a large batch of inserts.
+    pub fn exec_batch(&self, sql: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute_batch(sql).map_err(|e| e.to_string())
+    }
+
     pub fn geocode_insert(
         &self,
         id: &str,
@@ -9363,5 +9563,43 @@ mod tests {
             )
             .unwrap();
         assert_eq!(flag, 1);
+    }
+}
+
+/// True when `name` (lower-case) appears in `query` (lower-case) as a whole name: at least four
+/// characters and not glued to letters or digits on either side. "boil water" must not pull in
+/// documents called "I", "it" or "Bo", which used to show up as nonsense sources.
+fn name_is_mentioned(query: &str, name: &str) -> bool {
+    if name.chars().count() < 4 {
+        return false;
+    }
+    let mut from = 0;
+    while let Some(pos) = query[from..].find(name) {
+        let start = from + pos;
+        let end = start + name.len();
+        let before_ok = query[..start].chars().next_back().map_or(true, |c| !c.is_alphanumeric());
+        let after_ok = query[end..].chars().next().map_or(true, |c| !c.is_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + name.chars().next().map_or(1, |c| c.len_utf8());
+    }
+    false
+}
+
+#[cfg(test)]
+mod name_mentioned_tests {
+    use super::name_is_mentioned;
+
+    #[test]
+    fn only_whole_names_count() {
+        let q = "how long should i boil water to make it safe?";
+        for short in ["i", "it", "bo", "b", "mak", "oi", "at"] {
+            assert!(!name_is_mentioned(q, short), "{short}");
+        }
+        assert!(!name_is_mentioned(q, "wate"));
+        assert!(name_is_mentioned(q, "water"));
+        assert!(name_is_mentioned("look in house color.pages please", "house color.pages"));
+        assert!(!name_is_mentioned("waterproofing tips", "water"));
     }
 }

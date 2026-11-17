@@ -465,9 +465,9 @@
   flex-shrink: 0;
   padding: 8px 12px;
   border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--tertiary) 70%, transparent);
-  background: color-mix(in srgb, var(--tertiary) 18%, transparent);
-  color: #fff;
+  border: 1px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--text);
   font-weight: 800;
   font-size: 0.72rem;
   letter-spacing: 0.06em;
@@ -477,12 +477,12 @@
 }
 
 .data-acquisition__queue-btn:hover {
-  background: color-mix(in srgb, var(--tertiary) 30%, transparent);
-  border-color: color-mix(in srgb, var(--tertiary) 85%, transparent);
+  background: color-mix(in srgb, var(--primary) 26%, transparent);
+  border-color: var(--primary);
 }
 
 .data-acquisition__queue-btn--active {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tertiary) 35%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 45%, transparent);
 }
 
 .data-acquisition__queue-badge {
@@ -953,4 +953,24 @@
 
 .data-acquisition .text-muted {
   color: var(--text-muted) !important;
+}
+
+/* Phones: all six sections visible as a tidy 3 x 2 grid (a sideways strip hid half of them). */
+@media (max-width: 560px) {
+  .data-acquisition__tabs-main {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    overflow: visible !important;
+  }
+
+  .data-acquisition__tabs-main .data-acquisition__tab {
+    min-width: 0;
+    min-height: 40px;
+    padding: 6px 4px;
+    font-size: 0.82rem;
+    white-space: nowrap;
+    text-align: center;
+    justify-content: center;
+  }
 }

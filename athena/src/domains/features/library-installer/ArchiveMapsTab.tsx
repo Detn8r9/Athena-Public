@@ -78,30 +78,37 @@ export function ArchiveMapsTab({
   onRemoveDownloadedMap,
   onRemoveLibraryFile,
 }: ArchiveMapsTabProps) {
+  const hasKiwixMaps =
+    mapCatalog.length > 0 ||
+    mapDownloadJobs.length > 0 ||
+    downloadedMaps.length > 0 ||
+    mapZimsOnDiskOnly.length > 0 ||
+    mapsSuggestion !== null;
   return (
     <>
       <section className="library-section library-section-map-archives">
-        <h3>Map files (PMTiles / MBTiles)</h3>
+        <h3>Map files</h3>
         <p className="text-muted small library-section-lead">
-          <strong>Download or import</strong> map tile archives for the viewer. Same tool as <strong>Layers → gear</strong> on the map.
+          Download a map of your area so the Map screen works without internet.
         </p>
         <div className="library-maps-action-row">
-          <button type="button" onClick={onOpenMapFileManager}>
-            Open map file manager…
+          <button type="button" className="primary" onClick={onOpenMapFileManager}>
+            Download maps for an area
+          </button>
+          <button type="button" className="secondary" onClick={onOpenOfflineMapSettings}>
+            Offline map settings
           </button>
         </div>
       </section>
+      {hasKiwixMaps ? (
       <section className="library-section library-section-maps">
-        <h3>Offline map packs (Kiwix)</h3>
+        <h3>Kiwix map packs</h3>
         <p className="text-muted small library-section-lead">
-          <strong>Regional map ZIMs</strong> for the map viewer. Downloads also show in Settings → Offline maps.
+          Regional map archives from Kiwix. They also show in Settings → Offline maps.
         </p>
         <div className="library-maps-action-row">
-          <button type="button" className="secondary" onClick={onOpenOfflineMapSettings}>
-            Offline map settings…
-          </button>
           <button type="button" onClick={() => void onOpenExternalUrl("https://library.kiwix.org")}>
-            Kiwix Library (browse ZIMs)
+            Browse the Kiwix library
           </button>
         </div>
         <div className="settings-network-row text-muted small library-maps-network" aria-live="polite">
@@ -115,21 +122,13 @@ export function ArchiveMapsTab({
             Check again
           </button>
         </div>
-        {mapCatalog.length === 0 && (
-          <p className="text-muted small settings-map-catalog-empty-note" role="status">
-            <strong>No regional map ZIMs are listed right now.</strong> The official Kiwix mirror&apos;s{" "}
-            <code>zim/maps/</code> folder is sometimes empty, so direct links can 404. For the <strong>in-app map</strong>, use{" "}
-            <strong>Offline map settings</strong> for raster basemaps and tile imports. For other Kiwix content, use the{" "}
-            <strong>Documents</strong> tab → <strong>Download more data</strong> and place <code>.zim</code> files in your library folder.
-          </p>
-        )}
         {mapsSuggestion !== null && (
           <div className="settings-map-suggestion-banner">
             <strong>Suggested for your location:</strong> {mapsSuggestion.name} ({mapsSuggestion.size_label})
             {downloadedMaps.some((m) => m.region === mapsSuggestion.region && m.style === mapsSuggestion.style) ? (
               <span className="text-muted"> — already downloaded</span>
             ) : (
-              <span className="text-muted small"> — acquire via Data Acquisition → Maps</span>
+              <span className="text-muted small"> — acquire via Downloads → Maps</span>
             )}
           </div>
         )}
@@ -153,7 +152,7 @@ export function ArchiveMapsTab({
                     {acquired ? (
                       <span className="text-muted small">Downloaded</span>
                     ) : (
-                      <span className="text-muted small">Use Data Acquisition → Maps</span>
+                      <span className="text-muted small">Use Downloads → Maps</span>
                     )}
                   </li>
                 );
@@ -246,18 +245,9 @@ export function ArchiveMapsTab({
             </ul>
           </>
         )}
-        {mapDownloadJobs.length === 0 &&
-          downloadedMaps.length === 0 &&
-          mapZimsOnDiskOnly.length === 0 &&
-          mapCatalog.length === 0 &&
-          mapsSuggestion === null && (
-            <p className="text-muted">
-              No map downloads in progress and no map packs on disk yet. When mirrors list regional ZIMs, download from the catalog above; otherwise use{" "}
-              <strong>Offline map settings</strong> for raster basemaps, or add a <code>maps_*</code> ZIM where the app can see it.
-            </p>
-          )}
       </section>
-      {stats !== null && (
+      ) : null}
+      {stats !== null && hasKiwixMaps && (
         <section className="library-section library-stats library-stats-maps">
           <div className="stats">
             <span className="stat">Map ZIM files: {mapLibraryFileCount}</span>

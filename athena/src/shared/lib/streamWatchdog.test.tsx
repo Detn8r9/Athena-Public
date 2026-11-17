@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import { useEffect, useRef, useState } from "react";
-import { evaluateMainChatWatchdog } from "./streamWatchdog";
+import { evaluateMainChatWatchdog, IDLE_TIMEOUT_MESSAGE, IDLE_TIMEOUT_MS } from "./streamWatchdog";
 
 /** Must match the fake clock base used in tests */
 const WATCHDOG_TEST_T0 = 10_000_000;
@@ -58,7 +58,7 @@ describe("main chat stream watchdog (Phase 1)", () => {
     vi.useRealTimers();
   });
 
-  it("after 30s idle with no new chunks, clears sending and shows stall banner", async () => {
+  it("after the idle limit with no new chunks, clears sending and shows stall banner", async () => {
     const t0 = WATCHDOG_TEST_T0;
     vi.setSystemTime(t0);
 
@@ -66,8 +66,8 @@ describe("main chat stream watchdog (Phase 1)", () => {
 
     expect(screen.getByTestId("sending-state")).toHaveTextContent("sending");
 
-    // Last chunk at t0; first chunk already received. Jump forward 31s — exceeds 30s idle.
-    vi.setSystemTime(t0 + 31_000);
+    // Last chunk at t0; first chunk already received. Jump just past the idle limit.
+    vi.setSystemTime(t0 + IDLE_TIMEOUT_MS + 1_000);
 
     await act(async () => {
       vi.advanceTimersByTime(2000);
@@ -76,6 +76,6 @@ describe("main chat stream watchdog (Phase 1)", () => {
     expect(screen.getByTestId("sending-state")).toHaveTextContent("idle");
     const banner = screen.getByRole("alert");
     expect(banner).toHaveClass("chat-stream-stall-banner");
-    expect(banner).toHaveTextContent("The local AI stalled (no output for 30s).");
+    expect(banner).toHaveTextContent(IDLE_TIMEOUT_MESSAGE);
   });
 });

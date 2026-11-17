@@ -419,14 +419,14 @@ export type Lexicon = {
 };
 
 const SURVIVAL_LEXICON: Lexicon = {
-  navArchiveView: "The Archive",
+  navArchiveView: "Library",
   archiveScreenTitle: "The Forge",
   archiveScreenSubtitle:
     "Autonomous Tactical Heuristic Emergency Network Archive (ATHENA) — unified offline library and data sources.",
-  tabLocalArchive: "Local Archive",
+  tabLocalArchive: "Library",
   tabDownloadNetwork: "Download Network",
   archiveHubIntro:
-    "Local Archive: what is already on your drives (filter by Packages, Documents, Maps, Academy; search and sort). Download Network: install tiers, Academy ZIMs, RAG documents, and maps.",
+    "Everything already on this station. Filter by type or search by name. To get more, open Downloads.",
   archivePrimaryTablistAria: "Archive: local files or download network",
   archiveNetworkTablistAria: "Download network sections",
   tabArchivePackages: "Packages",
@@ -458,7 +458,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   archiveLocalNoMatches: "No files match this category or search.",
   archiveLocalTitle: "Your archive",
   archiveLocalSubtitle:
-    "Data source folders and indexed files. Use the same categories as Download Network, plus search and sort, to find what you already have.",
+    "The folders ATHENA reads from and every file it has found in them.",
   regionalMapsNotSet: "Not set",
   sectionTierPackages: "The Forge",
   sectionAlacarte: "The Cache",
@@ -468,9 +468,9 @@ const SURVIVAL_LEXICON: Lexicon = {
   actionRequisitionFile: "Requisition",
   cancelDownload: "Cancel download",
   emptyLocalArchive:
-    "No files were found under your data sources yet. Add folders in Data Sources or install packages from Download Network.",
+    "No files found yet. Add a folder under Data Sources, or get packs from Downloads.",
   noDataSourcesHint:
-    "Add at least one data source folder so downloads know where to land. Network and shared volumes can be used if they are mounted as a path on this Mac.",
+    "Add at least one folder so downloads know where to go. Network drives work too if they show up as a normal folder on this computer.",
   addDataSource: "Add folder",
   removeDataSource: "Remove",
   pathPlaceholder: "Paste path (for example /Volumes/Share/Athena)",
@@ -498,11 +498,11 @@ const SURVIVAL_LEXICON: Lexicon = {
   navHome: "Home",
   navChat: "Chat",
   navMap: "Map",
-  navArchive: "Archive",
+  navArchive: "Library",
   navMeshTitle: "Mesh network (LoRa inbox)",
   navMeshAria: "Open mesh network and Meshtastic inbox",
-  navRadio: "Communications Hub",
-  navLogbook: "Field & logistics",
+  navRadio: "Comms",
+  navLogbook: "Notes & inventory",
   navCalendar: "Calendar",
   navOpenCalendar: "Open Calendar",
   navOpenCalendarAria: "Open calendar and date time settings",
@@ -777,7 +777,7 @@ const SURVIVAL_LEXICON: Lexicon = {
   logbookTacticalDraftPlaceholder: "OPORD fragments, grid refs, call signs, timings…",
   logbookTacticalLocalOnly: "Local only — not relayed over mesh or shared logbook sync.",
 
-  logisticsHubTitle: "Field log & logistics",
+  logisticsHubTitle: "Notes & inventory",
   logisticsHubSubtitle: "Notes, tactical notebook, inventory, and audit trail",
   logisticsHubTabsAria: "Field log and logistics sections",
   logisticsHubTabNotes: "Field notes",
@@ -846,11 +846,11 @@ const SURVIVAL_LEXICON: Lexicon = {
 
 const FALLOUT_LEXICON: Lexicon = {
   ...SURVIVAL_LEXICON,
-  navArchiveView: "The Archive",
+  navArchiveView: "Library",
   archiveScreenTitle: "The Workbench",
   archiveScreenSubtitle:
     "Vault-Tec sanctioned offline archive — stash your holotapes, manuals, and scavenged packs.",
-  tabLocalArchive: "Vault Storage",
+  tabLocalArchive: "Library",
   tabDownloadNetwork: "Wasteland Network",
   archiveHubIntro:
     "Vault Storage: what you already have (filter like the network: Packages, Documents, Maps, Academy; search and sort). Wasteland Network: install bundles, Academy holotapes, documents, maps.",
@@ -922,13 +922,13 @@ const FALLOUT_LEXICON: Lexicon = {
   catalogDuplicateNote: "Same asset may appear in The Stash for single pulls.",
 
   navHome: "Home",
-  navChat: "Comms",
+  navChat: "Terminal",
   navMap: "Surface map",
-  navArchive: "Archive",
+  navArchive: "Library",
   navMeshTitle: "Mesh network (vault uplink)",
   navMeshAria: "Open mesh network inbox",
-  navRadio: "Communications Hub",
-  navLogbook: "Field & logistics",
+  navRadio: "Comms",
+  navLogbook: "Notes & inventory",
   navCalendar: "Schedule",
   navOpenCalendar: "Open schedule",
   navOpenCalendarAria: "Open schedule and chronometer settings",
@@ -1201,7 +1201,7 @@ const FALLOUT_LEXICON: Lexicon = {
   logbookTacticalDraftPlaceholder: "Fragment orders, grids, brevity, timings…",
   logbookTacticalLocalOnly: "Held locally — no mesh or shared logbook relay.",
 
-  logisticsHubTitle: "Field log & logistics",
+  logisticsHubTitle: "Notes & inventory",
   logisticsHubSubtitle: "Notes, tactical pad, stores, audit",
   logisticsHubTabsAria: "Field log and logistics",
   logisticsHubTabNotes: "Field notes",
@@ -1291,7 +1291,7 @@ const FRUIT_LEXICON: Lexicon = {
   emptyLocalArchive:
     "Nothing here yet. Add a folder under Folders, or install content from Get Content.",
   noDataSourcesHint:
-    "Add at least one folder so downloads know where to save. Network and shared volumes work if they appear as a path on this Mac.",
+    "Add at least one folder so downloads know where to save. Network drives work too if they show up as a normal folder on this computer.",
   addDataSource: "Add Folder",
   regionalMaps: "Maps for your area",
   setDownloadArea: "Choose your area",

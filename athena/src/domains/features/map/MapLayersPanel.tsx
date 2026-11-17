@@ -13,6 +13,8 @@ type MapLayersPanelProps = {
   enabledMainMapRasterArchiveFileNames?: string[];
   onMainMapArchiveRasterLayersChange?: (archiveFileNames: string[]) => void;
   onOpenDataAcquisition?: () => void;
+  /** Bumped by the app to open the map file manager directly. */
+  openFilesSeq?: number;
 };
 
 /**
@@ -24,11 +26,15 @@ export function MapLayersPanel({
   enabledMainMapRasterArchiveFileNames = [],
   onMainMapArchiveRasterLayersChange,
   onOpenDataAcquisition,
+  openFilesSeq = 0,
 }: MapLayersPanelProps) {
   const [hasSat, setHasSat] = useState(false);
   const [downloadedIds, setDownloadedIds] = useState<string[]>([]);
   const [catalog, setCatalog] = useState<OfflineMapCatalogEntry[]>([]);
   const [archivesOpen, setArchivesOpen] = useState(false);
+  useEffect(() => {
+    if (openFilesSeq > 0) setArchivesOpen(true);
+  }, [openFilesSeq]);
   const [tileRadiusMiles, setTileRadiusMiles] = useState(12);
   const [savedUserLocationAddress, setSavedUserLocationAddress] = useState("");
 
@@ -153,7 +159,7 @@ export function MapLayersPanel({
             className={`close-btn${archivesOpen ? " is-active" : ""}`}
             onClick={() => setArchivesOpen(true)}
             aria-label="Open map archives"
-            title="Map archives"
+            title="Choose map files"
           >
             <Settings size={16} />
           </button>
@@ -165,31 +171,30 @@ export function MapLayersPanel({
       </div>
       <div className="map-panel__body">
         <p className="map-layers-hint" style={{ fontSize: 12, opacity: 0.9 }}>
-          Use Map settings (gear) to switch basemaps. Tactical / resource / hazard overlays are under{" "}
-          <strong>Overlays</strong> on the left rail.
+          Maps saved on this station. Switch between street and satellite in <strong>Map settings</strong>; markers,
+          resources and hazards are under <strong>Overlays</strong>.
         </p>
         {hasSat ? (
           <p className="map-satellite-chip" style={{ marginTop: 8, fontSize: 12, color: "var(--accent, #38bdf8)" }}>
-            Satellite: enabled archives detected. Choose “Satellite” in map settings to overlay.
+            Satellite imagery is available. Choose “Satellite” in Map settings to show it.
           </p>
-        ) : (
-          <p style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-            No satellite MBTiles in your enabled archives. Use the gear above to download an area.
-          </p>
-        )}
+        ) : null}
 
         <div
           className="map-layers-downloads"
           style={{ marginTop: 14, paddingTop: 14, boxShadow: "0 -1px 0 0 color-mix(in srgb, var(--border) 20%, transparent)" }}
         >
-          <strong style={{ fontSize: 13, letterSpacing: 0.02, fontWeight: 600 }}>Downloaded archives</strong>
-          <p className="text-muted small" style={{ margin: "6px 0 10px" }}>
-            Vector (PMTiles) and raster (MBTiles) on disk. Only MBTiles can be added as a basemap layer here; PMTiles stay available to the Protomaps-style overlay path.
-          </p>
+          <strong style={{ fontSize: 13, letterSpacing: 0.02, fontWeight: 600 }}>Offline maps on this station</strong>
           {downloadedIds.length === 0 ? (
-            <p className="text-muted small" style={{ margin: 0 }}>
-              None yet. Use the <strong>gear</strong> above to download an area.
-            </p>
+            <div style={{ display: "grid", gap: 10, marginTop: 6 }}>
+              <p className="text-muted small" style={{ margin: 0 }}>
+                None yet. Without an offline map, the map only shows while the station is online. Download your area
+                so it works without internet.
+              </p>
+              <button type="button" className="primary" onClick={() => setArchivesOpen(true)} style={{ justifySelf: "start" }}>
+                Download maps
+              </button>
+            </div>
           ) : (
             <ul className="map-layers-archives" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 }}>
               {downloadedIds.map((id) => {

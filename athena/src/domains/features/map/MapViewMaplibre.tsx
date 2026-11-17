@@ -57,6 +57,10 @@ import { ChevronDown, ChevronUp, Crosshair, Globe } from "lucide-react";
 import type { GeoJSONSource } from "maplibre-gl";
 import type { Feature, LineString } from "geojson";
 import { SoftToast } from "../../../ui/components/SoftToast";
+import { formatMapToolChipText, markerProposalOf, summarizeMapToolResults, type MapToolResult } from "./mapToolSummary";
+import { addStreetMaps, placeFromFeatures, streetMapAssetUrls, streetMapFiles, type PlaceAtPoint } from "./streetMapLayers";
+import { PlaceCard } from "./PlaceCard";
+import { MAP_PANEL_EVENT, takeMapPanelRequest } from "../../../shared/navigation/goTo";
 
 export type { CoordinateConversionResult, MapBasemap } from "./mapViewTypes";
 export type { MapMarkerCategory } from "./mapMarkerTypes";
@@ -105,65 +109,6 @@ type RouteBlockageMapRow = {
   geometryJson: string;
   severity?: string;
 };
-
-type MapToolResult = { tool: string; ok: boolean; error?: string; data?: unknown };
-
-function formatMapToolChipText(t: MapToolResult): string {
-  if (!t.ok) return t.tool;
-  const d = t.data as
-    | {
-        ambiguous?: boolean;
-        haversineMeters?: number;
-        route?: {
-          source?: string;
-          distanceMeters?: number | null;
-          durationSeconds?: number | null;
-        } | null;
-        distanceMeters?: number;
-        durationSeconds?: number;
-        source?: string;
-      }
-    | undefined;
-  if (t.tool === "directions" && d) {
-    if (d.ambiguous) return "directions · pick endpoint(s)";
-    const route = d.route;
-    const distM =
-      (typeof route?.distanceMeters === "number" && Number.isFinite(route.distanceMeters)
-        ? route.distanceMeters
-        : null) ??
-      (typeof d.haversineMeters === "number" && Number.isFinite(d.haversineMeters) ? d.haversineMeters : null);
-    if (distM == null) return "directions";
-    const mi = distM / 1609.34;
-    const distStr = mi >= 10 ? `${mi.toFixed(0)} mi` : `${mi.toFixed(1)} mi`;
-    const durS = route?.durationSeconds;
-    if (typeof durS === "number" && Number.isFinite(durS) && route?.source === "valhalla") {
-      return `directions · ${distStr} · ${Math.max(1, Math.round(durS / 60))}m`;
-    }
-    if (route?.source === "straight_line_fallback") {
-      return `directions · ${distStr} · straight line`;
-    }
-    return `directions · ${distStr}`;
-  }
-  if (t.tool === "route" && d) {
-    const distM =
-      (typeof d.distanceMeters === "number" && Number.isFinite(d.distanceMeters) ? d.distanceMeters : null) ??
-      null;
-    const src = d.source;
-    if (distM != null) {
-      const mi = distM / 1609.34;
-      const distStr = mi >= 10 ? `${mi.toFixed(0)} mi` : `${mi.toFixed(1)} mi`;
-      const durS = d.durationSeconds;
-      if (typeof durS === "number" && Number.isFinite(durS) && src === "valhalla") {
-        return `route · ${distStr} · ${Math.max(1, Math.round(durS / 60))}m`;
-      }
-      if (src === "straight_line_fallback") {
-        return `route · ${distStr} · straight line`;
-      }
-      return `route · ${distStr}`;
-    }
-  }
-  return t.tool;
-}
 
 const SRC_TERRITORIES = "athena-ml-territories";
 const LAYER_TERR_FILL = "athena-ml-territories-fill";
@@ -409,7 +354,8 @@ function buildRasterStyle(
     paint: { "line-color": "#a855f7", "line-width": 4, "line-opacity": 0.92 },
   });
 
-  return { version: 8, name: "athena-ml", sources, layers };
+  const assets = streetMapAssetUrls();
+  return { version: 8, name: "athena-ml", sources, layers, glyphs: assets.glyphs, sprite: assets.sprite };
 }
 
 interface MapViewProps {
@@ -469,11 +415,6 @@ export function MapView({
   embedded = false,
   onAddPoi: _onAddPoi,
   onRemovePoi: _onRemovePoi,
-  mapChatInput,
-  setMapChatInput,
-  onMapChatSend,
-  mapChatSending,
-  mapChatMessage,
   layerFilters,
   setLayerFilters,
   convertFileSrcFn,
@@ -530,6 +471,8 @@ export function MapView({
   } | null>(null);
   const [routeHereLatLng, setRouteHereLatLng] = useState<{ lat: number; lng: number } | null>(null);
   const [routeHereSeq, setRouteHereSeq] = useState(0);
+  /** Building or place the user tapped on the offline street map. */
+  const [tappedPlace, setTappedPlace] = useState<PlaceAtPoint | null>(null);
   const [toast, setToast] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
   const [blockages, setBlockages] = useState<RouteBlockageMapRow[]>([]);
   const [savedPlaces, setSavedPlaces] = useState<unknown[]>([]);
@@ -538,6 +481,29 @@ export function MapView({
   const [showBlockages, setShowBlockages] = useState(false);
   const [overlaysOpen, setOverlaysOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
+  // Links from Settings / "find anything" can open a map panel directly.
+  const [mapSettingsOpenSeq, setMapSettingsOpenSeq] = useState(0);
+  const [mapFilesOpenSeq, setMapFilesOpenSeq] = useState(0);
+  const [routingSetupOpenSeq, setRoutingSetupOpenSeq] = useState(0);
+  useEffect(() => {
+    const apply = () => {
+      const panel = takeMapPanelRequest();
+      if (panel === "layers") setLayersOpen(true);
+      else if (panel === "map_files") {
+        setLayersOpen(true);
+        setMapFilesOpenSeq((n) => n + 1);
+      }
+      else if (panel === "map_settings") setMapSettingsOpenSeq((n) => n + 1);
+      else if (panel === "directions") setShowDirections(true);
+      else if (panel === "routing_setup") {
+        setShowDirections(true);
+        setRoutingSetupOpenSeq((n) => n + 1);
+      }
+    };
+    apply();
+    window.addEventListener(MAP_PANEL_EVENT, apply);
+    return () => window.removeEventListener(MAP_PANEL_EVENT, apply);
+  }, []);
   const [savedOpen, setSavedOpen] = useState(false);
   const [territoriesOpen, setTerritoriesOpen] = useState(false);
   const [territoriesVisible, setTerritoriesVisible] = useState(true);
@@ -1013,6 +979,47 @@ export function MapView({
     offlineImportedRoot,
     archiveRasterFileNames,
   ]);
+
+  // Offline street maps (downloaded Protomaps extracts): roads, names, buildings, addresses.
+  // Over aerial imagery only roads and labels are drawn so the imagery shows through.
+  useEffect(() => {
+    const m = mlMap;
+    if (!m) return;
+    let cancelled = false;
+    let streetLayerIds: string[] = [];
+    const overImagery = basemap === "offline_archive_raster" && hasSatelliteHeuristic;
+    const onClick = (e: maplibregl.MapMouseEvent) => {
+      if (isDrawingTerritoryRef.current || satelliteDrawModeEnabled || streetLayerIds.length === 0) return;
+      const live = streetLayerIds.filter((id) => m.getLayer(id));
+      const pad = 4;
+      const hits = m.queryRenderedFeatures(
+        [
+          [e.point.x - pad, e.point.y - pad],
+          [e.point.x + pad, e.point.y + pad],
+        ],
+        { layers: live },
+      );
+      const place = placeFromFeatures(hits, e.lngLat.lat, e.lngLat.lng);
+      setTappedPlace(place);
+    };
+    const add = () => {
+      void invoke<string[]>("list_downloaded_offline_map_ids")
+        .then((ids) => {
+          if (cancelled || !Array.isArray(ids)) return;
+          const files = streetMapFiles(ids);
+          if (files.length === 0) return;
+          streetLayerIds = addStreetMaps(m, files, overImagery, LAYER_TERR_FILL);
+        })
+        .catch(() => undefined);
+    };
+    if (m.isStyleLoaded()) add();
+    else m.once("load", add);
+    m.on("click", onClick);
+    return () => {
+      cancelled = true;
+      m.off("click", onClick);
+    };
+  }, [mlMap, basemap, hasSatelliteHeuristic, satelliteDrawModeEnabled]);
 
   useEffect(() => {
     const m = mapRef.current;
@@ -1748,6 +1755,7 @@ export function MapView({
           <MapLayersPanel
             open={layersOpen}
             onClose={() => setLayersOpen(false)}
+            openFilesSeq={mapFilesOpenSeq}
             enabledMainMapRasterArchiveFileNames={enabledMainMapRasterArchiveFileNames}
             onMainMapArchiveRasterLayersChange={onMainMapArchiveRasterLayersChange}
             onOpenDataAcquisition={onOpenDataAcquisition}
@@ -1912,6 +1920,51 @@ export function MapView({
                     </div>
                   ) : null}
                   {!isProcessing ? <p className="map-view-response-text">{mapAssistantReply}</p> : null}
+                  {!isProcessing
+                    ? mapAssistantToolResults.map((t, i) => {
+                        const proposal = markerProposalOf(t);
+                        if (!proposal) return null;
+                        return (
+                          <div key={`proposal-${i}`} style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              className="glass-action-btn"
+                              onClick={() => {
+                                const c = mlMap?.getCenter();
+                                const lat = proposal.lat ?? c?.lat;
+                                const lng = proposal.lng ?? c?.lng;
+                                if (lat == null || lng == null) return;
+                                void invoke<MapMarker>("add_map_marker", {
+                                  lat,
+                                  lng,
+                                  title: proposal.title,
+                                  description: proposal.description,
+                                  category: proposal.category,
+                                })
+                                  .then((m) => {
+                                    setMapMarkers((p) => [...p.filter((x) => x.id !== m.id), m]);
+                                    setMapAssistantToolResults([]);
+                                    setMapAssistantReply(`Added the marker "${m.title}".`);
+                                  })
+                                  .catch((e) => setMapAssistantReply(`Could not add the marker: ${String(e)}`));
+                              }}
+                            >
+                              Add marker “{proposal.title}”
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => {
+                                setMapAssistantToolResults([]);
+                                setMapAssistantReply("Marker not added.");
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        );
+                      })
+                    : null}
                 </>
               ) : null}
             </div>
@@ -1929,10 +1982,9 @@ export function MapView({
                       ? { center: [m.getCenter().lng, m.getCenter().lat], zoom: m.getZoom() }
                       : null,
                   );
-                  console.log("TAURI RESPONSE:", response);
                   return response;
                 } catch (e) {
-                  console.error("TAURI CATCH ERROR:", e);
+                  console.error("Map assistant failed:", e);
                   return { reply: String(e), toolResults: [] };
                 } finally {
                   setIsProcessing(false);
@@ -1974,7 +2026,15 @@ export function MapView({
                       setMapAssistantCollapsed(false);
                       return;
                     }
-                    setMapAssistantReply("");
+                    setMapAssistantReply(summarizeMapToolResults(tools));
+                    setMapAssistantToolResults(tools);
+                    setMapAssistantCollapsed(false);
+                    return;
+                  }
+                  if (!reply) {
+                    setMapAssistantReply(
+                      "The map assistant had nothing to do for that. It can find saved markers and places, give directions and routes, mark territory status, and add a marker (say: add a marker here called North well).",
+                    );
                     setMapAssistantToolResults([]);
                     setMapAssistantCollapsed(false);
                     return;
@@ -2005,6 +2065,23 @@ export function MapView({
             routeToLatLng={routeHereLatLng}
             routeRequestSeq={routeHereSeq}
             onOpenDataAcquisition={onOpenDataAcquisition}
+            openRoutingSetupSeq={routingSetupOpenSeq}
+          />
+        ) : null}
+        {tappedPlace ? (
+          <PlaceCard
+            place={tappedPlace}
+            onClose={() => setTappedPlace(null)}
+            onDirections={(p) => {
+              setTappedPlace(null);
+              setShowDirections(true);
+              setRouteHereLatLng(p);
+              setRouteHereSeq((s) => s + 1);
+            }}
+            onAddMarker={(p) => {
+              setTappedPlace(null);
+              setPendingMapMarkerPlacement(p);
+            }}
           />
         ) : null}
         {showRoute ? <RoutePanel map={mlMap} onClose={() => setShowRoute(false)} /> : null}
@@ -2044,6 +2121,7 @@ export function MapView({
           }}
         />
         <MapSettingsPopover
+          openRequestSeq={mapSettingsOpenSeq}
           basemap={basemap}
           onBasemapChange={onBasemapChange}
           canOfflineOsm={canOfflineOsm}
@@ -2082,37 +2160,6 @@ export function MapView({
           <h2 className="map-view-title">Map</h2>
         </header>
       )}
-      {embedded ? (
-        <div
-          className="map-view-mapchat glass-panel"
-          style={{ position: "relative", zIndex: 3, margin: 8, padding: 8, pointerEvents: "auto" }}
-        >
-          {mapChatMessage ? (
-            <p className="map-chat-last" style={{ fontSize: 12, marginBottom: 6, opacity: 0.9, whiteSpace: "pre-wrap" }}>
-              {mapChatMessage}
-            </p>
-          ) : null}
-          <div className="map-chat-form" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input
-              className="map-chat-input"
-              type="text"
-              placeholder="Map chat…"
-              value={mapChatInput}
-              onChange={(e) => setMapChatInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  onMapChatSend();
-                }
-              }}
-              disabled={mapChatSending}
-            />
-            <button type="button" onClick={onMapChatSend} disabled={mapChatSending || !mapChatInput.trim()}>
-              {mapChatSending ? "…" : "Send"}
-            </button>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

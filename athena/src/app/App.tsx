@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo
 import { createPortal } from "react-dom";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { isKiwixSource, kiwixSourceUrl } from "../shared/ipc/kiwixUrl";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   athenaInvoke as invoke,
@@ -21,7 +22,13 @@ import {
 } from "../domains/features/map/TacticalSidebar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { registerPmtilesMaplibreProtocolOnce } from "../shared/lib/maplibrePmtilesProtocolRegistration";
-import { evaluateMainChatWatchdog } from "../shared/lib/streamWatchdog";
+import {
+  evaluateMainChatWatchdog,
+  FIRST_CHUNK_TIMEOUT_MESSAGE,
+  FIRST_CHUNK_TIMEOUT_MS,
+  IDLE_TIMEOUT_MESSAGE,
+  IDLE_TIMEOUT_MS,
+} from "../shared/lib/streamWatchdog";
 import { appendMeshMessageCapped } from "../shared/lib/meshMessageLog";
 import { hexToRgbCsv } from "../shared/lib/colorUtils";
 import type { AppView } from "./appView";
@@ -106,6 +113,12 @@ import {
   isInstalledChatModelId,
 } from "../domains/models/activeChatModels";
 import type { MarketplaceInitialTab } from "../pages/marketplace/MarketplaceView";
+import { DownloadsSwitcher, type DownloadsMode } from "../pages/downloads/DownloadsSwitcher";
+import type { CommsSection } from "../pages/comms/CommunicationsHub";
+import type { ArchiveTab } from "../domains/features/library-installer/ArchiveHub";
+import { GO_TO_EVENT, requestMapPanel, scrollToAnchorWhenReady, takeMapPanelRequest, type GoToTarget } from "../shared/navigation/goTo";
+import { ElsewherePanel } from "../pages/Settings/ElsewherePanel";
+import { HandheldPanel } from "../pages/Settings/HandheldPanel";
 import type { DataAcquisitionTabId } from "../pages/data-acquisition/DataAcquisition";
 import type { MeshRadioMessage } from "../pages/mesh/MeshRadioModal";
 import type { DashboardDestination } from "../pages/dashboard/DashboardView";
@@ -514,6 +527,26 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+/** Open a cited library document in this browser (LAN clients cannot use the station's viewer). */
+async function openLibrarySourceInBrowser(path: string, page?: number | null): Promise<void> {
+  // Open the tab inside the tap so pop-up blockers allow it, then fill it in.
+  const win = window.open("", "_blank");
+  try {
+    const f = await invoke<{ fileName: string; mime: string; base64: string }>("read_library_source", { path });
+    const bin = atob(f.base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: f.mime }));
+    const target = page != null && f.mime === "application/pdf" ? `${url}#page=${page}` : url;
+    if (win) win.location.href = target;
+    else window.location.assign(target);
+    window.setTimeout(() => URL.revokeObjectURL(url), 10 * 60_000);
+  } catch (e) {
+    win?.close();
+    window.alert(e instanceof Error ? e.message : String(e));
+  }
+}
+
 function normalizeLibraryStreamSources(raw: unknown): LibraryStreamSource[] {
   if (!Array.isArray(raw)) return [];
   const out: LibraryStreamSource[] = [];
@@ -751,12 +784,13 @@ const THEMES = [
 type Theme = (typeof THEMES)[number];
 type ThemeOrCustom = Theme | "custom";
 
-type MasterThemeProfile = "tactical" | "fallout" | "night-vision";
+type MasterThemeProfile = "tactical" | "fallout" | "night-vision" | "modern";
 
 const MASTER_THEME_DEFAULT_PALETTE: Record<MasterThemeProfile, Theme> = {
   tactical: "blue",
   fallout: "lime",
   "night-vision": "night-vision",
+  modern: "slate",
 };
 
 const MASTER_THEME_ALLOWED_PALETTES: Record<MasterThemeProfile, Theme[]> = {
@@ -785,6 +819,7 @@ const MASTER_THEME_ALLOWED_PALETTES: Record<MasterThemeProfile, Theme[]> = {
   ],
   fallout: ["lime", "amber", "silver", "green"],
   "night-vision": ["night-vision"],
+  modern: ["slate"],
 };
 
 const PRESET_COLORS: Record<Theme, { bg: string; primary: string; text: string }> = {
@@ -893,6 +928,13 @@ function normalizeCustomThemeForSave(t: BackendCustomTheme): BackendCustomTheme 
   };
 }
 
+/** Matches the phone layout breakpoint in App.css / responsive.css. */
+function isPhoneWidth(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(max-width: 768px)").matches
+    : false;
+}
+
 function App() {
   const { user, logout, rankLevel, setMyPersonnelDisplayName, setMyLoginName, setMyPin } = useAuth();
   const [rosterDisplayDraft, setRosterDisplayDraft] = useState("");
@@ -971,18 +1013,30 @@ function App() {
   const [streamStallMessage, setStreamStallMessage] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [dataAcquisitionTab, setDataAcquisitionTab] = useState<DataAcquisitionTabId>("packages");
+  const [dataAcquisitionTab, setDataAcquisitionTab] = useState<DataAcquisitionTabId>("station");
   const [meshOpen, setMeshOpen] = useState(false);
   const [meshMessages, setMeshMessages] = useState<MeshRadioMessage[]>([]);
   const [profilePersonnelId, setProfilePersonnelId] = useState<string | null>(null);
   const [kiwixSearchOpen, setKiwixSearchOpen] = useState(false);
-  const [chatsOpen, setChatsOpen] = useState(true);
+  // Phones start with the chat list closed: it opens as a drawer over the conversation.
+  const [chatsOpen, setChatsOpen] = useState(() => !isPhoneWidth());
+  const closeChatsOnPhone = () => {
+    if (isPhoneWidth()) setChatsOpen(false);
+  };
   const [watchFolder, setWatchFolder] = useState<string | null>(null);
   const [ingestionState, setIngestionState] = useState<{
     isIngesting: boolean;
     currentFile: string | null;
   }>({ isIngesting: false, currentFile: null });
   const [archiveExtraction, setArchiveExtraction] = useState<UniversalHeaderArchiveExtractionState | null>(null);
+  const [commsSection, setCommsSection] = useState<CommsSection>("overview");
+  // Tabs that links (Settings, "find anything", Home) can open directly. navKey remounts the
+  // target screen so it picks up the requested tab even when it is already open.
+  const [archiveTab, setArchiveTab] = useState<ArchiveTab>("files");
+  const [vaultSection, setVaultSection] = useState<string | null>(null);
+  const [logbookTab, setLogbookTab] = useState<string | null>(null);
+  const [fieldOpsTab, setFieldOpsTab] = useState<string | null>(null);
+  const [navKey, setNavKey] = useState(0);
   useArchiveExtractionListen(setArchiveExtraction);
   const [libraryFiles, setLibraryFiles] = useState<LibraryFile[]>([]);
   const [libraryFilesModalOpen, setLibraryFilesModalOpen] = useState(false);
@@ -1126,6 +1180,10 @@ function App() {
   }
 
   function handleSettingsSearchResult(entry: SettingsSearchEntry) {
+    if (entry.goTo) {
+      handleGoTo(entry.goTo);
+      return;
+    }
     setSettingsPanel(entry.panel);
     setSettingsFocusId(entry.id);
   }
@@ -1605,6 +1663,14 @@ function App() {
   const streamSendStartRef = useRef(0);
   const streamLastChunkAtRef = useRef<number | null>(null);
   const streamGotFirstChunkRef = useRef(false);
+  /**
+   * Set when the watchdog gives up on an answer. The server keeps generating it, and without this
+   * its late text would land in the next question's reply. Cleared by that request's done/error,
+   * or after the server's own 10-minute limit in case no end event ever arrives.
+   */
+  const abandonedStreamAtRef = useRef<number | null>(null);
+  const isAbandonedStream = () =>
+    abandonedStreamAtRef.current != null && Date.now() - abandonedStreamAtRef.current < 620_000;
   /** Watchdog: map chat stream (same thresholds as backend: 120s to first token, 30s idle). */
   const mapStreamSendStartRef = useRef(0);
   const mapStreamLastChunkAtRef = useRef<number | null>(null);
@@ -1616,7 +1682,7 @@ function App() {
     currentChatIdRef.current = currentChatId;
   }, [currentChatId]);
 
-  /** Local AI stream watchdog: 120s max wait for first chunk, 30s max idle after first chunk. */
+  /** Local AI stream watchdog: see streamWatchdog.ts for the limits. */
   useEffect(() => {
     if (!sending && !mapChatSending) return;
     const tick = () => {
@@ -1630,6 +1696,7 @@ function App() {
           gotFirstChunk: streamGotFirstChunkRef.current,
         });
         if (w.action === "stall_first_timeout" || w.action === "stall_idle") {
+          abandonedStreamAtRef.current = now;
           setStreamStallMessage(w.message);
           setMessages((prev) => {
             const next = [...prev];
@@ -1655,16 +1722,16 @@ function App() {
         const last = mapStreamLastChunkAtRef.current;
         const gotFirst = mapStreamGotFirstChunkRef.current;
         if (!gotFirst) {
-          if (now - start > 120_000) {
+          if (now - start > FIRST_CHUNK_TIMEOUT_MS) {
             mapStreamActiveRef.current = false;
             mapStreamContentRef.current = "";
-            setMapChatLastMessage("The local AI did not respond in time (120s).");
+            setMapChatLastMessage(FIRST_CHUNK_TIMEOUT_MESSAGE);
             setMapChatSending(false);
           }
-        } else if (last != null && now - last > 30_000) {
+        } else if (last != null && now - last > IDLE_TIMEOUT_MS) {
           mapStreamActiveRef.current = false;
           mapStreamContentRef.current = "";
-          setMapChatLastMessage("The local AI stalled (no output for 30s).");
+          setMapChatLastMessage(IDLE_TIMEOUT_MESSAGE);
           setMapChatSending(false);
         }
       }
@@ -1877,11 +1944,19 @@ function App() {
     const pkg = getThemePackage(id);
     const persona: PersonalityId = pkg?.personaId ?? (isPersonalityId(id) ? id : "default");
     setActivePersonalityId(persona);
-    setMasterThemeProfile(id === "fallout" ? "fallout" : "tactical");
+    setMasterThemeProfile(id === "fallout" ? "fallout" : id === "modern" ? "modern" : "tactical");
     if (id === "fieldguide") {
       setTheme("amber");
       saveTheme("amber");
       const c = PRESET_COLORS.amber;
+      setCustomBg(c.bg);
+      setCustomPrimary(c.primary);
+      setCustomText(c.text);
+      saveCustomColors(c);
+    } else if (id === "modern") {
+      setTheme("slate");
+      saveTheme("slate");
+      const c = PRESET_COLORS.slate;
       setCustomBg(c.bg);
       setCustomPrimary(c.primary);
       setCustomText(c.text);
@@ -1938,6 +2013,10 @@ function App() {
   }
 
   function applyMasterThemeProfile(next: MasterThemeProfile) {
+    if (next === "modern") {
+      applyThemePreset("modern");
+      return;
+    }
     if (next === "fallout") {
       applyThemePreset("fallout");
       return;
@@ -2888,7 +2967,7 @@ function App() {
         const safeId = id === "jarvis" || id === "lastofus" ? "default" : id;
         setActiveThemeId(safeId);
         setActivePersonalityId(persona);
-        setMasterThemeProfile(safeId === "fallout" ? "fallout" : "tactical");
+        setMasterThemeProfile(safeId === "fallout" ? "fallout" : safeId === "modern" ? "modern" : "tactical");
         if (appearance === "light" || appearance === "dark" || appearance === "auto") {
           setFruitAppearance(appearance);
           saveFruitAppearance(appearance);
@@ -2913,6 +2992,14 @@ function App() {
             setTheme("amber");
             saveTheme("amber");
             const c = PRESET_COLORS.amber;
+            setCustomBg(c.bg);
+            setCustomPrimary(c.primary);
+            setCustomText(c.text);
+            saveCustomColors(c);
+          } else if (safeId === "modern") {
+            setTheme("slate");
+            saveTheme("slate");
+            const c = PRESET_COLORS.slate;
             setCustomBg(c.bg);
             setCustomPrimary(c.primary);
             setCustomText(c.text);
@@ -3267,8 +3354,63 @@ function App() {
     }
   }
 
+  /** Open any place in the app: a screen, a tab in it, a section in that tab, or a Settings panel. */
+  function handleGoTo(t: GoToTarget) {
+    if ("settings" in t) {
+      settingsPanelOnOpenRef.current = t.settings;
+      setSettingsNavQuery("");
+      setSettingsPanel(t.settings);
+      setSettingsOpen(true);
+      if (t.anchor) scrollToAnchorWhenReady(t.anchor);
+      return;
+    }
+    setSettingsOpen(false);
+    switch (t.view) {
+      case "archive":
+        setArchiveTab(t.tab === "vault" ? "vault" : "files");
+        setVaultSection(t.section ?? null);
+        break;
+      case "comms_hub":
+        setCommsSection((t.tab as CommsSection | undefined) ?? "overview");
+        break;
+      case "data_acquisition":
+        if (t.tab) setDataAcquisitionTab(t.tab as DataAcquisitionTabId);
+        break;
+      case "marketplace":
+        setMarketplaceFocusAppId(null);
+        setMarketplaceFocusTab((t.tab as MarketplaceInitialTab | undefined) ?? null);
+        break;
+      case "logbook":
+        setLogbookTab(t.tab ?? null);
+        break;
+      case "field_ops":
+        setFieldOpsTab(t.tab ?? null);
+        break;
+      default:
+        break;
+    }
+    setNavKey((n) => n + 1);
+    setCurrentView(t.view);
+    if (t.mapPanel) requestMapPanel(t.mapPanel);
+    else takeMapPanelRequest(); // drop a stale request (e.g. the map was off and never took it)
+    if (t.anchor) scrollToAnchorWhenReady(t.anchor);
+  }
+  const handleGoToRef = useRef(handleGoTo);
+  handleGoToRef.current = handleGoTo;
+  useEffect(() => {
+    const onGo = (e: Event) => {
+      const detail = (e as CustomEvent<GoToTarget>).detail;
+      if (detail) handleGoToRef.current(detail);
+    };
+    window.addEventListener(GO_TO_EVENT, onGo);
+    return () => window.removeEventListener(GO_TO_EVENT, onGo);
+  }, []);
+
   function handleSpotlightAction(action: SpotlightAction) {
     switch (action.type) {
+      case "goto":
+        handleGoTo(action.target);
+        break;
       case "view":
         setMarketplaceFocusAppId(null);
         setMarketplaceFocusTab(null);
@@ -3324,6 +3466,8 @@ function App() {
         } catch {
           /* ignore */
         }
+        setLogbookTab("inventory");
+        setNavKey((n) => n + 1);
         setCurrentView("logbook");
         break;
       case "chat":
@@ -3510,6 +3654,51 @@ function App() {
     } catch (e) {
       setTilePackEstimate(null);
       setLibraryError(e != null ? String(e) : "Could not estimate tiles");
+    } finally {
+      setTileEstimateBusy(false);
+    }
+  }
+
+  async function handleStartTilePackDownload(source: "osm" | "opentopo") {
+    const q = (tileGeocodeQuery.trim() || userLocationAddress.trim()).trim();
+    if (!q) {
+      setLibraryError("Set a location under Location settings, or enter a place name below.");
+      return;
+    }
+    setLibraryError(null);
+    setTileEstimateBusy(true);
+    try {
+      const [lat, lon] = await invoke<[number, number]>("geocode_place_query", { query: q });
+      const zoomMin = Math.min(tileZoomMin, tileZoomMax);
+      const zoomMax = Math.max(tileZoomMin, tileZoomMax);
+      const est = await invoke<TilePackEstimate>("estimate_tile_pack_tiles", {
+        centerLat: lat,
+        centerLon: lon,
+        radiusMiles: tileRadiusMiles,
+        zoomMin,
+        zoomMax,
+      });
+      setTilePackEstimate(est);
+      if (!est.within_limit) {
+        setLibraryError("That area is too big for one download. Use a smaller radius or a lower max zoom.");
+        return;
+      }
+      const label = `${source === "opentopo" ? "Terrain" : "Street"} map · ${tileRadiusMiles} mi`;
+      const packId = await invoke<string>("start_tile_pack_download", {
+        source,
+        centerLat: lat,
+        centerLon: lon,
+        radiusMiles: tileRadiusMiles,
+        zoomMin,
+        zoomMax,
+        name: label,
+      });
+      setDownloadJobs((prev) => ({
+        ...prev,
+        [`tiles:${packId}`]: { label, downloaded: 0, total: est.count },
+      }));
+    } catch (e) {
+      setLibraryError(e != null ? String(e) : "Could not start the download.");
     } finally {
       setTileEstimateBusy(false);
     }
@@ -4681,6 +4870,7 @@ function App() {
             mapStreamLastChunkAtRef.current = now;
             mapStreamGotFirstChunkRef.current = true;
           } else {
+            if (isAbandonedStream()) return;
             const chunk = e.payload ?? "";
             streamLastChunkAtRef.current = now;
             streamGotFirstChunkRef.current = true;
@@ -4723,7 +4913,7 @@ function App() {
       await register(
         listen<unknown>("athena:stream-sources", (e) => {
           const sources = normalizeLibraryStreamSources(e.payload);
-          if (sources.length > 0 && !mapStreamActiveRef.current) {
+          if (sources.length > 0 && !mapStreamActiveRef.current && !isAbandonedStream()) {
             setMessages((prev) => {
               const next = [...prev];
               const i = next.length - 1;
@@ -4744,7 +4934,11 @@ function App() {
             setMapChatHistory((prev) => [...prev, { role: "assistant", content }]);
             setMapChatLastMessage(content);
             setMapChatSending(false);
+          } else if (isAbandonedStream()) {
+            // End of the answer the watchdog already gave up on; the current request is unaffected.
+            abandonedStreamAtRef.current = null;
           } else {
+            abandonedStreamAtRef.current = null;
             setStreamStallMessage(null);
             sendingRef.current = false;
             setSending(false);
@@ -4820,6 +5014,8 @@ function App() {
             mapStreamContentRef.current = "";
             setMapChatLastMessage(`Error: ${errMsg}`);
             setMapChatSending(false);
+          } else if (isAbandonedStream()) {
+            abandonedStreamAtRef.current = null;
           } else {
             setStreamStallMessage(null);
             setMessages((prev) => {
@@ -5237,7 +5433,7 @@ ${tag}` : tag;
     let accentRgb =
       hexToRgbCsv(resolvedThemeAccentHex) ?? hexToRgbCsv(DEFAULT_CUSTOM.primary) ?? DEFAULT_THEME_ACCENT_RGB;
 
-    const { isFruit, isFalloutChrome } = applyTheme({
+    const { isFruit, isFalloutChrome, ownsThemeRgb } = applyTheme({
       themeId: activeThemeId,
       appearanceMode: fruitAppearance,
       isNight,
@@ -5246,7 +5442,9 @@ ${tag}` : tag;
       appEl: appRef.current ?? undefined,
     });
 
-    if (!isFruit) {
+    if (ownsThemeRgb) {
+      // Package (e.g. Modern) set appearance-aware glass RGB itself.
+    } else if (!isFruit) {
       if (isFalloutChrome) {
         bgRgb = FALLOUT_DEFAULT_BG_RGB;
         accentRgb = FALLOUT_DEFAULT_ACCENT_RGB;
@@ -5266,6 +5464,7 @@ ${tag}` : tag;
       document.body.classList.remove("theme-fallout");
       document.body.classList.remove("theme-survival-manual");
       document.body.classList.remove("theme-fruit");
+      document.body.classList.remove("theme-modern");
     };
   }, [
     theme,
@@ -6276,6 +6475,11 @@ ${tag}` : tag;
                     setCurrentView("data_acquisition");
                     return;
                   }
+                  if (destination === "download_maps") {
+                    setDataAcquisitionTab("maps");
+                    setCurrentView("data_acquisition");
+                    return;
+                  }
                   setMarketplaceFocusAppId(null);
                   setMarketplaceFocusTab(null);
                   setCurrentView(destination);
@@ -6283,8 +6487,23 @@ ${tag}` : tag;
               />
             </div>
           ) : null}
+          {currentView === "marketplace" || currentView === "data_acquisition" ? (
+            <DownloadsSwitcher
+              mode={currentView === "marketplace" ? "browse" : "files"}
+              onChange={(mode: DownloadsMode) => {
+                if (mode === "browse") {
+                  setMarketplaceFocusAppId(null);
+                  setMarketplaceFocusTab(null);
+                  setCurrentView("marketplace");
+                } else {
+                  setCurrentView("data_acquisition");
+                }
+              }}
+            />
+          ) : null}
           {currentView === "marketplace" ? (
             <MarketplaceView
+              key={`market-${navKey}`}
               focusAppId={marketplaceFocusAppId}
               initialTab={marketplaceFocusTab}
               initialActiveModel={activeEngineModel}
@@ -6393,7 +6612,10 @@ ${tag}` : tag;
           <button
             type="button"
             className="sidebar-new-chat"
-            onClick={newChat}
+            onClick={() => {
+              void newChat();
+              closeChatsOnPhone();
+            }}
             title="New chat"
             disabled={localChatHistoryReadOnly}
           >
@@ -6472,7 +6694,10 @@ ${tag}` : tag;
                 <button
                   type="button"
                   className={`sidebar-chat-btn ${currentChatId === c.id ? "active" : ""}`}
-                  onClick={() => loadChat(c.id)}
+                  onClick={() => {
+                    loadChat(c.id);
+                    closeChatsOnPhone();
+                  }}
                   title={c.description ? `${c.title}\n\n${c.description}` : c.title}
                 >
                   <span className="sidebar-chat-title">{c.title}</span>
@@ -6513,6 +6738,9 @@ ${tag}` : tag;
           )}
         </ul>
       </aside>
+      {chatsOpen ? (
+        <div className="chat-sidebar-scrim" aria-hidden onClick={() => setChatsOpen(false)} />
+      ) : null}
 
       <main className="chat-main glass-panel chat-main--gemini">
         {activePersonalityId === "fieldguide" && (
@@ -6546,10 +6774,10 @@ ${tag}` : tag;
             type="button"
             className="glass-action-btn chat-workspace-mesh-home-btn"
             onClick={() => setCurrentView("comms_hub")}
-            title="Open Communications Hub (use Mesh Data to open the full mesh screen)"
+            title="Open Comms (use Mesh Data to open the full mesh screen)"
           >
             <CommsHubIcon size={16} strokeWidth={2} className="chat-workspace-mesh-home-btn-icon" />
-            Communications Hub
+            Comms
           </button>
           <button
             type="button"
@@ -6926,6 +7154,18 @@ ${tag}` : tag;
                           className="glass-action-btn"
                           style={{ marginRight: "0.35rem", marginTop: "0.25rem" }}
                           onClick={() => {
+                            if (isKiwixSource(c.filePath)) {
+                              // Archive article: open it in the offline library reader.
+                              const url = kiwixSourceUrl(c.filePath);
+                              if (isAthenaDesktopRuntime()) void openUrl(url);
+                              else window.open(url, "_blank", "noopener");
+                              return;
+                            }
+                            if (!isAthenaDesktopRuntime()) {
+                              // On a phone or tablet: fetch the document and open it here.
+                              void openLibrarySourceInBrowser(c.filePath, c.pageNumber);
+                              return;
+                            }
                             void invoke("open_library_source", {
                               path: c.filePath,
                               page: c.pageNumber,
@@ -7346,8 +7586,10 @@ ${tag}` : tag;
                 enabledMainMapRasterArchiveFileNames={enabledArchiveRasterFileNames}
                 onMainMapArchiveRasterLayersChange={handleMainMapArchiveRasterLayersChange}
                 onOpenDataAcquisition={() => {
-                  setDataAcquisitionTab("maps");
-                  setCurrentView("data_acquisition");
+                  // Ready-made maps (regions, world) live in the catalog's Maps tab.
+                  setMarketplaceFocusAppId(null);
+                  setMarketplaceFocusTab("maps");
+                  setCurrentView("marketplace");
                 }}
                 resolvedInferenceModel={mapInferenceModel}
               />
@@ -7364,6 +7606,7 @@ ${tag}` : tag;
               <div className="app-view-placeholder-actions">
                 <button
                   type="button"
+                  className="glass-action-btn"
                   onClick={() => {
                     setSettingsOpen(true);
                     goToSettingsSubpanel("location");
@@ -7378,8 +7621,29 @@ ${tag}` : tag;
             </div>
           ) : null}
           {currentView === "academy" ? <AcademyModule /> : null}
-          {currentView === "field_ops" ? <FieldOpsHub /> : null}
-          {currentView === "archive" ? <ArchiveHub libraryError={libraryError} /> : null}
+          {currentView === "field_ops" ? (
+            <FieldOpsHub
+              key={`field-ops-${navKey}`}
+              initialTab={fieldOpsTab}
+              onOpenComms={
+                user.rank_level >= 2
+                  ? (section: CommsSection) => {
+                      setCommsSection(section);
+                      setCurrentView("comms_hub");
+                    }
+                  : undefined
+              }
+            />
+          ) : null}
+          {currentView === "archive" ? (
+            <ArchiveHub
+              key={`archive-${navKey}`}
+              libraryError={libraryError}
+              tab={archiveTab}
+              onTabChange={setArchiveTab}
+              vaultSection={vaultSection}
+            />
+          ) : null}
           {currentView === "data_acquisition" ? (
             <div className="home-view-scroll" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
               <DataAcquisition
@@ -7400,6 +7664,7 @@ ${tag}` : tag;
                   formatLibraryFileSizeBytes,
                   onDownloadMap: handleDownloadMap,
                   onOpenMapFileManager: () => {
+                    requestMapPanel("map_files");
                     setCurrentView("map");
                   },
                   onOpenOfflineMapSettings: () => {
@@ -7423,6 +7688,8 @@ ${tag}` : tag;
               onOpenMesh={() => setCurrentView("mesh")}
               onOpenVoiceComms={() => setCurrentView("radio")}
               meshEmergencyStrip={meshCommsHubEmergencyStrip}
+              section={commsSection}
+              onSectionChange={setCommsSection}
             />
           ) : null}
           {currentView === "radio" ? (
@@ -7449,7 +7716,7 @@ ${tag}` : tag;
             </div>
           ) : null}
           {currentView === "logbook" ? (
-            <LogisticsLogbookHub meshConnected={meshRadioConnected === true} />
+            <LogisticsLogbookHub key={`logbook-${navKey}`} meshConnected={meshRadioConnected === true} initialTab={logbookTab} />
           ) : null}
           {currentView === "calendar" ? (
             <CalendarView
@@ -7544,6 +7811,7 @@ ${tag}` : tag;
         <button
           type="button"
           className="lan-clients-chip"
+          data-net={internetAllowed ? "online" : "offline"}
           aria-live="polite"
           title="Connectivity (Settings → AI). Click to change."
           onClick={() => {
@@ -7755,8 +8023,11 @@ ${tag}` : tag;
               query={settingsNavQuery}
               onQueryChange={setSettingsNavQuery}
               onSelectSearchResult={handleSettingsSearchResult}
+              rank={user?.rank_level ?? 0}
               detailTitle={
-                settingsPanel === "me"
+                settingsPanel === "elsewhere"
+                  ? "Settings on other screens"
+                  : settingsPanel === "me"
                   ? lx.settingsPanelMe
                   : settingsPanel === "general"
                     ? lx.settingsPanelGeneral
@@ -8026,6 +8297,7 @@ ${tag}` : tag;
                     </div>
                   </div>
                 </section>
+                <HandheldPanel />
               </>
             )}
             {settingsPanel === "general" && (
@@ -9232,15 +9504,22 @@ ${tag}` : tag;
             )}
             {settingsPanel === "maps" && (
               <>
+                {libraryError !== null && mapCatalog.length === 0 && mapsSuggestion === null && downloadedMaps.length === 0 ? (
+                  <p className="error settings-maps-error-banner" role="alert">
+                    {libraryError}
+                  </p>
+                ) : null}
+                {mapCatalog.length > 0 || mapsSuggestion !== null || downloadedMaps.length > 0 ? (
+                <>
                 <section className="library-section">
-                  <h3>Offline map packs (Kiwix)</h3>
+                  <h3>Kiwix map packs</h3>
                   {libraryError !== null && (
                     <p className="error settings-maps-error-banner" role="alert">
                       {libraryError}
                     </p>
                   )}
                   <p className="text-muted small">
-                    <strong>Kiwix</strong> regional map files for the built-in map. The app can suggest a small pack for your saved location; pick others from the list. Use Wi‑Fi for large downloads.
+                    Regional map archives from Kiwix for the built-in map.
                   </p>
                   {mapCatalog.length === 0 && (
                     <p className="text-muted small settings-map-catalog-empty-note" role="status">
@@ -9259,7 +9538,7 @@ ${tag}` : tag;
                       ) ? (
                         <span className="text-muted"> — already downloaded</span>
                       ) : (
-                        <span className="text-muted small"> — acquire via Data Acquisition → Maps</span>
+                        <span className="text-muted small"> — acquire via Downloads → Maps</span>
                       )}
                     </div>
                   )}
@@ -9284,20 +9563,17 @@ ${tag}` : tag;
                           {acquired ? (
                             <span className="text-muted small">Downloaded</span>
                           ) : (
-                            <span className="text-muted small">Use Data Acquisition → Maps</span>
+                            <span className="text-muted small">Use Downloads → Maps</span>
                           )}
                         </li>
                       );
                     })}
                   </ul>
-                  {mapCatalog.length === 0 && (
-                    <p className="text-muted small">Enable location-aware answers and set a location to highlight matching regions.</p>
-                  )}
                 </section>
                 <section className="library-section">
                   <h3>Downloaded maps</h3>
                   {downloadedMaps.length === 0 ? (
-                    <p className="text-muted small">No map ZIMs in app storage yet.</p>
+                    <p className="text-muted small">None yet.</p>
                   ) : (
                     <ul className="settings-downloaded-maps-list">
                       {downloadedMaps.map((m) => (
@@ -9318,19 +9594,17 @@ ${tag}` : tag;
                     </ul>
                   )}
                 </section>
+                </>
+                ) : null}
                 <section className="library-section settings-map-phase2">
-                  <h3>Offline raster basemaps</h3>
+                  <h3>Street and terrain map tiles</h3>
                   <p className="text-muted small">
-                    Download map <strong>tiles</strong> (not satellite) for offline use in the in-app map: <strong>OpenStreetMap</strong> street style and{" "}
-                    <strong>OpenTopoMap</strong> terrain/hillshade. Requires internet during download; respects OSM tile policy (throttled). Use a smaller radius or zoom range if the job is too large.
+                    Save street (OpenStreetMap) or terrain (OpenTopoMap) map pictures for an area so the map works offline. Needs
+                    internet while downloading and goes slowly to respect the map servers. For most people,{" "}
+                    <strong>Map › Layers › Download maps</strong> is the quicker way to get a map of your area.
                   </p>
                   <p className="text-muted small">
-                    <strong>Interchange:</strong> export any pack to <code>.mbtiles</code>, or import <strong>raster</strong>{" "}
-                    <code>.mbtiles</code> / <code>.pmtiles</code> (vector MVT archives are not supported). Latest user import wins in the map picker.{" "}
-                    <strong>Satellite / aerial:</strong> not bundled—use your own legally obtained raster MBTiles or PMTiles (e.g. from imagery you’re licensed to cache offline).
-                  </p>
-                  <p className="text-muted small">
-                    Place to geocode defaults to your saved location; override below. Attribution is shown on the map.
+                    Already have a map file? Import a <code>.mbtiles</code> or <code>.pmtiles</code> file below.
                   </p>
                   <div className="settings-inline-actions settings-tile-actions settings-tile-import-row" style={{ marginTop: "0.5rem" }}>
                     <button type="button" className="secondary" onClick={() => void handleImportMbtiles()}>
@@ -9342,7 +9616,7 @@ ${tag}` : tag;
                   </div>
                   <div className="settings-tile-options">
                     <label className="settings-tile-field">
-                      <span>Geocode query (optional)</span>
+                      <span>Place (optional, defaults to your saved location)</span>
                       <input
                         type="text"
                         className="settings-input"
@@ -9435,29 +9709,17 @@ ${tag}` : tag;
                     )}
                     <div className="settings-inline-actions settings-tile-actions">
                       <button type="button" className="secondary" disabled={tileEstimateBusy} onClick={() => void handlePreviewTileEstimate()}>
-                        {tileEstimateBusy ? "Estimating…" : "Preview tile count"}
+                        {tileEstimateBusy ? "Working…" : "Check size first"}
+                      </button>
+                      <button type="button" disabled={tileEstimateBusy} onClick={() => void handleStartTilePackDownload("osm")}>
+                        Download street map
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          setSettingsOpen(false);
-                          setMarketplaceFocusAppId(null);
-                          setMarketplaceFocusTab("maps");
-                          setCurrentView("marketplace");
-                        }}
+                        disabled={tileEstimateBusy}
+                        onClick={() => void handleStartTilePackDownload("opentopo")}
                       >
-                        Open Marketplace → Maps
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => {
-                          setSettingsOpen(false);
-                          setDataAcquisitionTab("maps");
-                          setCurrentView("data_acquisition");
-                        }}
-                      >
-                        Data Acquisition (Maps)
+                        Download terrain map
                       </button>
                     </div>
                   </div>
@@ -9523,7 +9785,7 @@ ${tag}` : tag;
                     </ul>
                   )}
                   <p className="text-muted small settings-phase2-note">
-                    True satellite imagery is licensing-heavy for bulk offline cache; not included here. Terrain view uses OpenTopoMap (SRTM + OSM). User-supplied MBTiles may be any compatible raster source—comply with its license.
+                    Map data © OpenStreetMap contributors and OpenTopoMap. Imported files must be ones you are allowed to use.
                   </p>
                 </section>
               </>
@@ -9939,6 +10201,8 @@ ${tag}` : tag;
                   label: THEME_LABELS[id],
                 }))}
                 onChangeMasterThemeProfile={applyMasterThemeProfile}
+                appearance={fruitAppearance}
+                onChangeAppearance={handleFruitAppearanceChange}
                 handlePresetChange={handlePresetChange}
                 handleCustomColorChange={handleCustomColorChange}
               />
@@ -10180,7 +10444,7 @@ ${tag}` : tag;
                   {EXPERIENCE_PRESETS.find((p) => p.id === activeThemeId)?.description ??
                     (customThemes.some((t) => t.id === activeThemeId) ? "Your saved theme (effects and colors from Theme studio)." : "")}
                 </p>
-                {activeThemeId === "fruit" ? (
+                {activeThemeId === "fruit" || activeThemeId === "modern" ? (
                   <div className="color-preset-wrap" style={{ marginTop: "0.75rem" }}>
                     <label htmlFor="fruit-appearance-select">Appearance</label>
                     <select
@@ -10188,14 +10452,16 @@ ${tag}` : tag;
                       className="theme-select"
                       value={fruitAppearance}
                       onChange={(e) => handleFruitAppearanceChange(e.target.value as AppearanceMode)}
-                      aria-label="Fruit light or dark appearance"
+                      aria-label="Light or dark appearance"
                     >
                       <option value="light">Light</option>
                       <option value="dark">Dark</option>
                       <option value="auto">Auto (time of day)</option>
                     </select>
                     <p className="text-muted small" style={{ marginTop: "0.35rem" }}>
-                      Auto follows local day and night. It does not turn on tactical night vision.
+                      {activeThemeId === "modern"
+                        ? "Light is tuned for bright sun, Dark for night. Auto follows local day and night; night vision (red) still overrides when on."
+                        : "Auto follows local day and night. It does not turn on tactical night vision."}
                     </p>
                   </div>
                 ) : null}
@@ -10209,6 +10475,8 @@ ${tag}` : tag;
                     <>Field guide uses fixed warm paper tones (amber). Switch experience above to edit palette colors.</>
                   ) : activeThemeId === "fruit" ? (
                     <>Fruit uses its own light and dark surfaces. Switch experience above to edit palette colors.</>
+                  ) : activeThemeId === "modern" ? (
+                    <>Modern uses its own high-contrast light and dark surfaces. Switch experience above to edit palette colors.</>
                   ) : (
                     <>
                       Palette applies to built-in looks and Fallout accents—even before you save a custom theme. Choose{" "}
@@ -10225,7 +10493,7 @@ ${tag}` : tag;
                       value={theme}
                       onChange={handlePresetChange}
                       aria-label="Color palette preset"
-                      disabled={activeThemeId === "fieldguide" || activeThemeId === "fruit"}
+                      disabled={activeThemeId === "fieldguide" || activeThemeId === "fruit" || activeThemeId === "modern"}
                     >
                       {THEMES.map((t) => (
                         <option key={t} value={t}>
@@ -10365,6 +10633,9 @@ ${tag}` : tag;
                   USB export and drive format are available only on the Athena desktop host, not from a LAN browser.
                 </p>
               </section>
+            )}
+            {settingsPanel === "elsewhere" && (
+              <ElsewherePanel rank={user?.rank_level ?? 0} onOpen={(target) => handleGoTo(target)} />
             )}
             {settingsPanel === "troubleshooting" && (
               <>
@@ -10621,7 +10892,19 @@ ${tag}` : tag;
 
       {helpOpen ? (
         <Suspense fallback={null}>
-          <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+          <HelpModal
+            open={helpOpen}
+            onClose={() => setHelpOpen(false)}
+            rank={user ? user.rank_level : undefined}
+            onGo={
+              user
+                ? (target) => {
+                    setHelpOpen(false);
+                    handleGoTo(target);
+                  }
+                : undefined
+            }
+          />
         </Suspense>
       ) : null}
 

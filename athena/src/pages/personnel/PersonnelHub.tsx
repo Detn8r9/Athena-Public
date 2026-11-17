@@ -111,6 +111,7 @@ export function PersonnelHub({
 
   const [rows, setRows] = useState<PersonnelPublic[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
@@ -297,6 +298,8 @@ export function PersonnelHub({
       );
     } catch (e) {
       setErr(e != null ? String(e) : "Failed to load personnel.");
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
@@ -488,10 +491,9 @@ export function PersonnelHub({
 
       <header className="personnel-hub-top">
         <div className="personnel-hub-top-text">
-          <h1 className="quartermaster-hub-title">Personnel registry</h1>
+          <h1 className="quartermaster-hub-title">People</h1>
           <p className="quartermaster-hub-subtitle text-muted">
-            Roster sorted by rank (Level 4 — General and above may add or remove accounts). At most two Level V
-            (Command) operators; the ATHENA architect badge is separate from rank and cannot be reassigned here.
+            Everyone who can sign in to this station, highest rank first. Level 4 and above can add or remove people.
           </p>
         </div>
         {onOpenOrgChart ? (
@@ -542,7 +544,7 @@ export function PersonnelHub({
               {sortedRows.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="text-muted">
-                    No personnel rows.
+                    {loaded ? "No one has been added yet." : "Loading…"}
                   </td>
                 </tr>
               ) : (

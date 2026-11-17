@@ -12,25 +12,13 @@ import {
   partitionJobsForHubUi,
   useDownloadQueueStore,
 } from "../../stores/downloadQueueStore";
-import { DownloadManagerDashboard } from "./DownloadManagerDashboard";
+import { DownloadQueueView } from "./DownloadQueueView";
+import { StationInventoryView } from "./StationInventoryView";
+import type { DeploymentQueueSnapshot, DiskReport } from "./downloadsTypes";
+import { DownloadFolderSetting } from "./DownloadFolderSetting";
 import "./DataAcquisition.css";
 
-export type DataAcquisitionTabId = "queue" | "packages" | "academy" | "maps" | "models" | "documents";
-
-type DeploymentQueueSnapshot = {
-  formatVersion: number;
-  queueActive: boolean;
-  jobs: Array<{
-    totalBytes: number | null;
-    bytesDownloaded: number;
-  }>;
-};
-
-type DiskReport = {
-  availableBytes: number;
-  totalBytes: number;
-  mountPoint: string;
-};
+export type DataAcquisitionTabId = "station" | "queue" | "packages" | "academy" | "maps" | "models" | "documents";
 
 function queueDownloadedBytes(snapshot: DeploymentQueueSnapshot | null): number {
   if (!snapshot?.jobs?.length) return 0;
@@ -66,12 +54,13 @@ export interface DataAcquisitionProps {
   onOpenMesh: () => void;
 }
 
-const CATEGORY_TABS: Array<{ id: DataAcquisitionTabId; label: string }> = [
-  { id: "packages", label: "Packages" },
+export const CATEGORY_TABS: Array<{ id: DataAcquisitionTabId; label: string }> = [
+  { id: "station", label: "Installed" },
+  { id: "packages", label: "Library" },
   { id: "academy", label: "Academy" },
   { id: "maps", label: "Maps" },
-  { id: "models", label: "AI Models" },
-  { id: "documents", label: "Documents / Media" },
+  { id: "models", label: "AI models" },
+  { id: "documents", label: "Documents" },
 ];
 
 export function DataAcquisition({
@@ -96,7 +85,6 @@ export function DataAcquisition({
   const queueToastTimerRef = useRef<number | null>(null);
   const dlSampleRef = useRef<{ at: number; downloaded: number } | null>(null);
   const [measuredSpeedMibPerSec, setMeasuredSpeedMibPerSec] = useState<number | null>(null);
-  const [speedSamples, setSpeedSamples] = useState<number[]>([]);
   // Remote-size probe is intentionally removed: header metrics use planned bytes (fast + stable).
   const showQueueToast = useCallback((message: string) => {
     if (queueToastTimerRef.current) window.clearTimeout(queueToastTimerRef.current);
@@ -174,23 +162,11 @@ export function DataAcquisition({
     return () => window.clearInterval(id);
   }, [refreshFooter]);
 
-  useEffect(() => {
-    const v = queueSnap?.queueActive ? measuredSpeedMibPerSec : null;
-    if (v == null || !Number.isFinite(v) || v <= 0) return;
-    setSpeedSamples((prev) => {
-      const next = [...prev, v];
-      return next.length > 48 ? next.slice(next.length - 48) : next;
-    });
-  }, [measuredSpeedMibPerSec, queueSnap?.queueActive]);
 
   /** Only count running deployment bytes when a session is active *and* the snapshot still lists jobs. */
   const backendActiveJobCount = queueSnap?.jobs?.length ?? 0;
   const backendQueueBytes =
     queueSnap?.queueActive && backendActiveJobCount > 0 ? queueTotalBytes(queueSnap) : 0;
-  const peakSpeedMibPerSec = useMemo(() => {
-    if (speedSamples.length === 0) return measuredSpeedMibPerSec ?? null;
-    return speedSamples.reduce((m, n) => (n > m ? n : m), 0);
-  }, [measuredSpeedMibPerSec, speedSamples]);
 
   // (reserved for future dashboard enhancements)
 
@@ -245,6 +221,41 @@ export function DataAcquisition({
     }
   };
 
+  const pauseDownloads = async () => {
+    setUnifiedBusy(true);
+    try {
+      await invoke("deployment_pause_downloads");
+      showQueueToast("Pausing. Finished files stay, and partial files resume next time.");
+      void refreshFooter();
+    } catch (e) {
+      showQueueToast(String(e));
+    } finally {
+      setUnifiedBusy(false);
+    }
+  };
+
+  const retryUnfinished = async () => {
+    setUnifiedBusy(true);
+    try {
+      const n = await invoke<number>("deployment_retry_unfinished");
+      showQueueToast(`Downloading ${n} file${n === 1 ? "" : "s"} again. Partial files pick up where they stopped.`);
+      void refreshFooter();
+    } catch (e) {
+      showQueueToast(String(e));
+    } finally {
+      setUnifiedBusy(false);
+    }
+  };
+
+  const clearLastRun = async () => {
+    try {
+      await invoke("deployment_clear_last_session");
+      void refreshFooter();
+    } catch (e) {
+      showQueueToast(String(e));
+    }
+  };
+
   const queueBadgeCount =
     mergedDeployJobs.length + (queueSnap?.queueActive && backendActiveJobCount > 0 ? backendActiveJobCount : 0);
 
@@ -252,19 +263,18 @@ export function DataAcquisition({
     <div className="relative w-full h-full flex flex-col">
       <div
         className="data-acquisition"
-        aria-label="Data acquisition hub"
+        aria-label="Downloads"
       >
         <header className="data-acquisition__head">
           <div className="data-acquisition__head-row">
-            <h1 className="data-acquisition__title">Data acquisition</h1>
             <div className="data-acquisition__head-right">
               <div className="data-acquisition__head-metrics" aria-label="Planning and disk metrics">
                 <div className="data-acquisition__head-metric">
-                  <span className="data-acquisition__head-metric-k">Planned</span>
+                  <span className="data-acquisition__head-metric-k">To download</span>
                   <span className="data-acquisition__head-metric-v">{fmtBytes(footerQueueBytes)}</span>
                 </div>
                 <div className="data-acquisition__head-metric">
-                  <span className="data-acquisition__head-metric-k">Disk</span>
+                  <span className="data-acquisition__head-metric-k">Free space</span>
                   <span className="data-acquisition__head-metric-v">
                     {disk ? fmtBytes(disk.availableBytes) : "—"}
                   </span>
@@ -303,6 +313,9 @@ export function DataAcquisition({
       <main className={"data-acquisition__body" + (activeTab === "queue" ? " data-acquisition__body--queue" : "")}>
         <div className={"data-acquisition__body-inner" + (activeTab === "queue" ? " data-acquisition__body-inner--queue" : "")}>
           {libraryError != null ? <p className="error" style={{ marginBottom: 12 }}>{libraryError}</p> : null}
+          <div hidden={activeTab !== "station"} className="data-acquisition__tab-panel" role="tabpanel">
+            <StationInventoryView onOpenTab={(t) => onActiveTabChange(t)} />
+          </div>
           {isOnline ? (
             <div
               hidden={activeTab !== "queue"}
@@ -310,28 +323,29 @@ export function DataAcquisition({
               role="tabpanel"
             >
               <div className="data-acquisition__queue-tab-wrap">
-                <DownloadManagerDashboard
+                <DownloadQueueView
                   queueActive={Boolean(queueSnap?.queueActive)}
+                  runningJobs={queueSnap?.queueActive ? queueSnap.jobs : []}
+                  planned={mergedDeployJobs.map((j) => ({ id: j.fileName, label: j.fileName, bytes: j.expectedBytes }))}
+                  plannedBytes={footerQueueBytes}
                   activePct={activeDownloadPct}
-                  currentSpeedMibPerSec={queueSnap?.queueActive ? measuredSpeedMibPerSec : null}
-                  peakSpeedMibPerSec={queueSnap?.queueActive ? peakSpeedMibPerSec : null}
-                  totalPlannedBytes={footerQueueBytes}
+                  speedMibPerSec={queueSnap?.queueActive ? measuredSpeedMibPerSec : null}
                   disk={disk}
-                  speedSamples={speedSamples}
-                  upNext={mergedDeployJobs.map((j) => ({ id: j.fileName, label: j.fileName, bytes: j.expectedBytes }))}
-                  completed={[]}
                   planExceedsDisk={planExceedsDisk}
-                  canStartDownloads={
-                    isOnline &&
-                    !unifiedBusy &&
-                    mergedDeployJobs.length > 0 &&
-                    !Boolean(queueSnap?.queueActive) &&
-                    !planExceedsDisk
+                  lastRun={queueSnap?.lastSession ?? []}
+                  lastRunEndedAt={queueSnap?.lastSessionEndedAt ?? null}
+                  busy={unifiedBusy}
+                  onStart={() => void startUnifiedDownloads()}
+                  onPause={() => void pauseDownloads()}
+                  onClearPlanned={() => clearPlannedQueue()}
+                  onRetryUnfinished={() => void retryUnfinished()}
+                  onClearLastRun={() => void clearLastRun()}
+                  footer={
+                    <DownloadFolderSetting
+                      disabled={Boolean(queueSnap?.queueActive)}
+                      onChanged={() => void refreshFooter()}
+                    />
                   }
-                  startDownloads={() => void startUnifiedDownloads()}
-                  clearPlannedQueue={() => clearPlannedQueue()}
-                  clearCompleted={() => undefined}
-                  onClose={() => onActiveTabChange("packages")}
                 />
               </div>
             </div>
@@ -352,11 +366,11 @@ export function DataAcquisition({
           ) : null}
           {isOnline ? (
             <div hidden={activeTab !== "maps"} className="data-acquisition__tab-panel" role="tabpanel">
+              <ArchiveMapsTab {...mapsTabProps} />
               <MapProvisioner
                 downloadedMaps={mapsTabProps.downloadedMaps}
                 onProvisionEstimateBytesChange={setMapProvisionEstimateBytes}
               />
-              <ArchiveMapsTab {...mapsTabProps} />
             </div>
           ) : null}
           {isOnline ? (
@@ -371,7 +385,7 @@ export function DataAcquisition({
           ) : null}
         </div>
 
-        {!isOnline ? (
+        {!isOnline && activeTab !== "station" ? (
           <div className="data-acquisition__offline" role="alertdialog" aria-modal="true" aria-label="Offline mode">
             <div className="data-acquisition__offline-card">
               <h2 className="data-acquisition__offline-title">Offline mode</h2>

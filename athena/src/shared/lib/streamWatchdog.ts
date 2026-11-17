@@ -1,8 +1,15 @@
 /**
  * Main chat stream watchdog (mirrors App.tsx thresholds):
- * - 120s max wait for the first chunk
- * - 30s max idle after the first chunk
+ * - 200s max wait for the first chunk (longer than the server's own 180s first-token limit, so the
+ *   server's more specific error wins; a busy CPU-only station can take minutes to read a long prompt)
+ * - 60s max idle after the first chunk
  */
+
+export const FIRST_CHUNK_TIMEOUT_MS = 200_000;
+export const IDLE_TIMEOUT_MS = 60_000;
+export const FIRST_CHUNK_TIMEOUT_MESSAGE =
+  "The AI took too long to start answering. The station may be busy; try again in a minute, or choose a smaller model in Settings › AI & Models.";
+export const IDLE_TIMEOUT_MESSAGE = "The AI stopped partway through its answer. Try asking again.";
 
 export type MainChatWatchdogResult =
   | { action: "none" }
@@ -21,16 +28,16 @@ export function evaluateMainChatWatchdog(input: {
     return { action: "none" };
   }
   if (!gotFirstChunk) {
-    if (nowMs - sendStartMs > 120_000) {
+    if (nowMs - sendStartMs > FIRST_CHUNK_TIMEOUT_MS) {
       return {
         action: "stall_first_timeout",
-        message: "The local AI did not respond in time (120s).",
+        message: FIRST_CHUNK_TIMEOUT_MESSAGE,
       };
     }
-  } else if (lastChunkAtMs != null && nowMs - lastChunkAtMs > 30_000) {
+  } else if (lastChunkAtMs != null && nowMs - lastChunkAtMs > IDLE_TIMEOUT_MS) {
     return {
       action: "stall_idle",
-      message: "The local AI stalled (no output for 30s).",
+      message: IDLE_TIMEOUT_MESSAGE,
     };
   }
   return { action: "none" };

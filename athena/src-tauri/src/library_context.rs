@@ -24,8 +24,10 @@ const RESERVED_SYSTEM_TOKENS: usize = 900;
 const RESERVED_ANSWER_TOKENS: usize = 700;
 /// Never offer fewer characters than this: one full chunk should always fit.
 const MIN_LIBRARY_CHARS: usize = 1_800;
-/// Past this the excerpts stop helping and slow small local models down.
-const MAX_LIBRARY_CHARS: usize = 24_000;
+/// Past this the excerpts stop helping and slow small local models down: on a CPU-only station
+/// the model reads about 40 tokens a second, so every 1,000 characters is ~7 seconds before the
+/// first word. About four good passages.
+const MAX_LIBRARY_CHARS: usize = 6_000;
 /// Sources listed under a reply.
 const MAX_SOURCES: usize = 8;
 
@@ -384,9 +386,9 @@ mod tests {
         let small = library_context_char_budget(Some(4096), 400);
         let large = library_context_char_budget(Some(8192), 400);
         let busy = library_context_char_budget(Some(4096), 6000);
-        assert!(small >= 6_000 && small <= 9_000, "4k window budget was {small}");
-        assert!(large > small);
-        assert!(busy < small);
+        assert_eq!(small, MAX_LIBRARY_CHARS, "a 4k window fills the cap");
+        assert!(large >= small && large <= MAX_LIBRARY_CHARS);
+        assert!(busy < small, "long history leaves less room ({busy})");
         assert_eq!(library_context_char_budget(Some(1024), 50_000), MIN_LIBRARY_CHARS);
         assert_eq!(library_context_char_budget(None, 400), small);
     }

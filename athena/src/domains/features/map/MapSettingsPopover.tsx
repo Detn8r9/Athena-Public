@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { Layers } from "lucide-react";
+import { Settings2 } from "lucide-react";
 import type { MapBasemap } from "./mapViewTypes";
 
 const GLASS_PANEL =
@@ -16,6 +16,8 @@ export type MapSettingsPopoverProps = {
   canOfflineArchiveRaster: boolean;
   /** When false, hide satellite basemap chip, select option, and satellite download tools (e.g. no satellite MBTiles downloaded). */
   showSatelliteUi?: boolean;
+  /** Bumped by the app ("find anything" / Settings links) to open this popover. */
+  openRequestSeq?: number;
   layerFilters: LayerFilters;
   setLayerFilters: Dispatch<SetStateAction<LayerFilters>>;
   satelliteCoverageOnMap: boolean;
@@ -53,8 +55,12 @@ export function MapSettingsPopover({
   onCancelSatelliteBoxSelection,
   onOpenDataAcquisition,
   showSatelliteUi = true,
+  openRequestSeq = 0,
 }: MapSettingsPopoverProps) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (openRequestSeq > 0) setOpen(true);
+  }, [openRequestSeq]);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -88,7 +94,7 @@ export function MapSettingsPopover({
         aria-label="Map settings"
         title="Map settings"
       >
-        <Layers size={22} strokeWidth={2} aria-hidden />
+        <Settings2 size={22} strokeWidth={2} aria-hidden />
       </button>
 
       {open && (
@@ -213,7 +219,7 @@ export function MapSettingsPopover({
                     disabled={satelliteSelectionBounds === null}
                     onClick={onOpenDataAcquisition}
                   >
-                    Data Acquisition — Maps
+                    Downloads — Maps
                   </button>
                 ) : (
                   <button
